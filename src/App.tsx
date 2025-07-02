@@ -27,9 +27,14 @@ function App() {
   };
 
   const handleBusinessUpdate = (updatedBusiness: Business) => {
-    setSearchResults(prevResults =>
-      prevResults.map(b => b.id === updatedBusiness.id ? { ...b, ...updatedBusiness } : b)
-    );
+    setSearchResults(prevResults => {
+      const index = prevResults.findIndex(b => b.id === updatedBusiness.id);
+      if (index === -1) return prevResults;
+      
+      const newResults = [...prevResults];
+      newResults[index] = updatedBusiness;
+      return newResults;
+    });
   };
 
   const stats = [
@@ -45,12 +50,19 @@ function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-6">
             <div className="flex items-center space-x-3">
-              <div className="p-2 bg-blue-600 rounded-lg">
-                <Search className="h-6 w-6 text-white" />
-              </div>
+              <img
+                src="https://www.rayapp.io/wp-content/uploads/2024/12/logo-rayapp-azulwebp-300x150-1.webp"
+                alt="RayApp Logo"
+                className="h-10 w-auto object-contain"
+              />
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">OutreachPro</h1>
+                <h1 className="text-2xl font-bold text-gray-900">Google Place Scrapper</h1>
                 <p className="text-sm text-gray-600">Local Business Campaign Manager</p>
+              </div>
+              <div className="ml-2">
+                <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                  v1.0.0
+                </span>
               </div>
             </div>
             

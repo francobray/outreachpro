@@ -49,7 +49,6 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 h-fit">
       <div className="mb-6">
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Find Local Businesses</h2>
-        <p className="text-gray-600">Search for businesses by location and category to start your outreach campaign.</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">

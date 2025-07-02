@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Globe, 
   MapPin, 
@@ -12,7 +12,8 @@ import {
   ExternalLink,
   Map,
   Check,
-  Play
+  Play,
+  Info
 } from 'lucide-react';
 import EmailModal from './EmailModal';
 
@@ -26,12 +27,58 @@ interface Business {
   emails: string[];
   auditReport?: any;
   emailStatus?: 'pending' | 'sent';
+  category?: string;
+  types?: string[];
+  decisionMakers?: { name: string; title: string; email?: string; phone?: string }[];
+  addedAt: string;
+  rating?: number;
+  userRatingsTotal?: number;
 }
 
 interface BusinessTableProps {
   businesses: Business[];
   isLoading: boolean;
   onBusinessUpdate?: (business: Business) => void;
+}
+
+// Sorting helper
+const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 'asc' | 'desc', contactInfo: { [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, loading: boolean } }) => {
+  const sorted = [...businesses];
+  sorted.sort((a, b) => {
+    let aValue: any;
+    let bValue: any;
+    
+    if (sortBy === 'numLocations') {
+      aValue = contactInfo[a.placeId]?.numLocations;
+      bValue = contactInfo[b.placeId]?.numLocations;
+    } else {
+      aValue = a[sortBy as keyof Business];
+      bValue = b[sortBy as keyof Business];
+    }
+    
+    if (sortBy === 'name') {
+      aValue = (aValue as string)?.toLowerCase() || '';
+      bValue = (bValue as string)?.toLowerCase() || '';
+    }
+    
+    if (aValue === undefined || aValue === null) return 1;
+    if (bValue === undefined || bValue === null) return -1;
+    if (aValue < bValue) return sortOrder === 'asc' ? -1 : 1;
+    if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1;
+    return 0;
+  });
+  return sorted;
+};
+
+// Add a utility function to extract the domain from a URL
+function getDomain(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const { hostname } = new URL(url);
+    return hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
 }
 
 const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, onBusinessUpdate }) => {
@@ -43,29 +90,79 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const [isExecuting, setIsExecuting] = useState(false);
   const [emailingBusinesses, setEmailingBusinesses] = useState<Set<string>>(new Set());
   const [recentlySentEmails, setRecentlySentEmails] = useState<Set<string>>(new Set());
+  const [colWidths, setColWidths] = useState({
+    business: 220,
+    category: 120,
+    dm: 120,
+    pdf: 90,
+    discover: 90,
+    delivery: 90,
+  });
+  const resizingCol = useRef<keyof typeof colWidths | null>(null);
+  const startX = useRef(0);
+  const startWidth = useRef(0);
+  const pendingUpdates = useRef<{[key: string]: Business}>({});
+  const [sortBy, setSortBy] = useState('name');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [contactInfo, setContactInfo] = useState<{ [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, loading: boolean } }>({});
+
+  // Auto-fetch contact info for all businesses when they're loaded
+  useEffect(() => {
+    if (businesses.length > 0) {
+      businesses.forEach(business => {
+        if (!contactInfo[business.placeId] && !contactInfo[business.placeId]?.loading) {
+          fetchContactInfo(business.placeId);
+        }
+      });
+    }
+  }, [businesses]);
+
+  const sortedBusinesses = getSortedBusinesses(businesses, sortBy, sortOrder, contactInfo);
+
+  const handleSort = (column: string) => {
+    if (sortBy === column) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(column);
+      setSortOrder('asc');
+    }
+  };
 
   const updateLoadingState = (businessId: string, state: string) => {
     setLoadingStates(prev => ({ ...prev, [businessId]: state }));
   };
 
   const updateBusinessData = (businessId: string, updates: Partial<Business>) => {
-    setBusinessData(prev => {
-      const updated = { ...prev[businessId], ...updates };
-      // Call onBusinessUpdate if provided
-      if (onBusinessUpdate) {
-        const base = businesses.find(b => b.id === businessId);
-        onBusinessUpdate({
-          ...base,
-          ...updated,
-          emails: (updated.emails ?? base?.emails ?? []) as string[],
-        } as Business);
-      }
-      return {
-        ...prev,
-        [businessId]: updated
-      };
-    });
+    const base = businesses.find(b => b.id === businessId);
+    if (!base) return;
+
+    const updatedBusiness = {
+      ...base,
+      ...updates,
+      emails: (updates.emails ?? base.emails ?? []) as string[],
+    } as Business;
+
+    // Store the update for later
+    pendingUpdates.current[businessId] = updatedBusiness;
+
+    // Update local state
+    setBusinessData(prev => ({
+      ...prev,
+      [businessId]: { ...prev[businessId], ...updates }
+    }));
   };
+
+  // Use effect to handle parent updates after state changes
+  useEffect(() => {
+    if (onBusinessUpdate && Object.keys(pendingUpdates.current).length > 0) {
+      const updates = { ...pendingUpdates.current };
+      pendingUpdates.current = {};
+      
+      Object.values(updates).forEach(business => {
+        onBusinessUpdate(business);
+      });
+    }
+  }, [businessData, onBusinessUpdate]);
 
   const getBusinessData = (business: Business) => {
     return { ...business, ...businessData[business.id] };
@@ -95,7 +192,10 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         method: 'POST',
       });
       const data = await response.json();
-      updateBusinessData(business.id, { emails: data.emails });
+      updateBusinessData(business.id, {
+        emails: data.emails,
+        decisionMakers: data.decisionMakers
+      });
     } catch (error) {
       console.error('Failed to find emails:', error);
     } finally {
@@ -237,6 +337,54 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     updateBusinessData(business.id, { emailStatus: 'sent' });
   };
 
+  const startResizing = (e: React.MouseEvent<HTMLDivElement, MouseEvent>, col: keyof typeof colWidths) => {
+    resizingCol.current = col;
+    startX.current = e.clientX;
+    startWidth.current = colWidths[col];
+    window.addEventListener('mousemove', onMouseMove as any);
+    window.addEventListener('mouseup', stopResizing);
+  };
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!resizingCol.current) return;
+    const diff = e.clientX - startX.current;
+    setColWidths(widths => ({
+      ...widths,
+      [String(resizingCol.current)]: Math.max(startWidth.current + diff, 50)
+    }));
+  };
+
+  const stopResizing = () => {
+    resizingCol.current = null;
+    window.removeEventListener('mousemove', onMouseMove as any);
+    window.removeEventListener('mouseup', stopResizing);
+  };
+
+  const fetchContactInfo = async (placeId: string) => {
+    setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, loading: true } }));
+    try {
+      const res = await fetch(`/api/place-details/${placeId}`);
+      const data = await res.json();
+      setContactInfo(prev => ({
+        ...prev,
+        [placeId]: {
+          website: data.website || null,
+          phone: data.formatted_phone_number || null,
+          emails: data.emails || [],
+          numLocations: data.numLocations,
+          loading: false
+        }
+      }));
+      // Also update the emails in businessData so the Emails column is populated
+      const business = businesses.find(b => b.placeId === placeId);
+      if (business) {
+        updateBusinessData(business.id, { emails: data.emails || [] });
+      }
+    } catch {
+      setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, loading: false } }));
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 h-full flex items-center justify-center">
@@ -271,13 +419,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   {selectedBusinesses.size} selected
                 </span>
               )}
-              <button
-                onClick={handleSelectAll}
-                className="flex items-center px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors"
-              >
-                <Check className="h-4 w-4 mr-1" />
-                {selectedBusinesses.size === businesses.length ? 'Deselect All' : 'Select All'}
-              </button>
               {selectedBusinesses.size > 0 && (
                 <button
                   onClick={handleExecute}
@@ -301,45 +442,43 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full table-fixed text-sm border-separate border-spacing-x-[2px]">
+        <div className="overflow-x-auto w-full">
+          <table className="w-full min-w-[900px]">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
-                  <input
-                    type="checkbox"
-                    checked={selectedBusinesses.size === businesses.length && businesses.length > 0}
-                    onChange={handleSelectAll}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                  <input type="checkbox" checked={selectedBusinesses.size === businesses.length && businesses.length > 0} onChange={handleSelectAll} className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" />
                 </th>
-                <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-80">
-                  Business
+                <th style={{ width: 205 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-normal" onClick={() => handleSort('name')}>
+                  BUSINESS
+                  <span className="ml-1">{sortBy === 'name' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-44">
-                  Contact Info
+                <th style={{ width: 150 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Contact Info</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Emails</th>
+                <th style={{ width: 80 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('numLocations')}>
+                  # Locations
+                  <span className="ml-1">{sortBy === 'numLocations' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
-                  Audit Report
+                <th style={{ width: 80 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('rating')}>
+                  ⭐
+                  <span className="ml-1">{sortBy === 'rating' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-25">
-                  Email 🔎
+                <th style={{ width: 80 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('userRatingsTotal')}>
+                  📊 Reviews
+                  <span className="ml-1">{sortBy === 'userRatingsTotal' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
-                  Email 📤
-                </th>
+                <th style={{ width: colWidths.delivery }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-15">📤</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {businesses.map((business) => {
+              {sortedBusinesses.map((business) => {
                 const enrichedBusiness = getBusinessData(business);
                 const loading = loadingStates[business.id];
                 const isEmailing = emailingBusinesses.has(business.id);
                 const isRecentlySent = recentlySentEmails.has(business.id);
-                
                 return (
                   <tr key={business.id} className={`hover:bg-gray-50 transition-colors ${selectedBusinesses.has(business.id) ? 'bg-blue-50' : ''}`}>
-                    <td className="px-2 py-1">
+                    <td className="px-3 py-2">
                       <input
                         type="checkbox"
                         checked={selectedBusinesses.has(business.id)}
@@ -347,147 +486,112 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                       />
                     </td>
-                    <td className="px-2 py-1">
-                      <div>
-                        <div className="text-sm font-medium text-gray-900 truncate leading-tight" title={business.name}>
+                    <td style={{ width: 205 }} className="px-2 py-1 max-w-[205px] align-top">
+                      <div className="flex items-center space-x-2">
+                        <a
+                          href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-medium text-blue-700 hover:underline leading-tight break-words max-w-[170px]"
+                          title={business.name}
+                        >
                           {business.name}
-                        </div>
-                        <div className="text-xs text-gray-500 flex items-center mt-0.5">
-                          <MapPin className="h-3 w-3 mr-1 flex-shrink-0" />
-                          <span className="truncate" title={business.address}>{business.address}</span>
-                        </div>
-                        <div className="flex items-center space-x-1 mt-1">
-                          <a
-                            href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
-                            title="View on Google Maps"
-                          >
-                            <Map className="h-3 w-3 mr-1" />
-                            Maps
-                          </a>
-                        </div>
-                        <div className="text-xs text-gray-400 mt-0.5 truncate" title={`Place ID: ${business.placeId}`}>
-                          ID: {business.placeId.substring(0, 20)}...
-                        </div>
+                        </a>
+                        <a
+                          href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-1 flex items-center justify-center w-6 h-6 bg-gray-100 hover:bg-blue-100 rounded-full text-blue-600 hover:text-blue-800 transition-colors"
+                          title="Open in Google Maps"
+                          tabIndex={-1}
+                          style={{ minWidth: 24, minHeight: 24 }}
+                        >
+                          <ExternalLink className="h-4 w-4 inline text-blue-600" />
+                        </a>
                       </div>
                     </td>
-                    
-                    <td className="px-2 py-1">
-                      <div className="space-y-0.5">
-                        {business.website && (
-                          <div className="flex items-center text-xs text-blue-600">
-                            <Globe className="h-3 w-3 mr-1 flex-shrink-0" />
-                            <a 
-                              href={business.website} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="hover:underline flex items-center truncate"
-                              title={business.website}
+                    <td style={{ width: 150 }} className="px-2 py-1 text-xs">
+                      <div className="flex flex-col gap-1 items-center justify-center">
+                        {contactInfo[business.placeId]?.loading ? (
+                          <span className="flex items-center text-xs text-gray-400"><Loader2 className="h-4 w-4 animate-spin mr-1" />Loading...</span>
+                        ) : contactInfo[business.placeId] ? (
+                          <>
+                            {contactInfo[business.placeId].website ? (
+                              <a
+                                href={contactInfo[business.placeId].website || undefined}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center text-xs text-blue-600 hover:text-blue-800"
+                              >
+                                <Globe className="h-4 w-4 mr-1 inline" />{getDomain(contactInfo[business.placeId].website)}
+                              </a>
+                            ) : (
+                              <span className="flex items-center text-xs text-gray-400"><Globe className="h-4 w-4 mr-1 inline" />No site</span>
+                            )}
+                            {contactInfo[business.placeId].phone ? (
+                              <span className="flex items-center text-xs text-gray-700"><Phone className="h-4 w-4 mr-1 inline" />{contactInfo[business.placeId].phone}</span>
+                            ) : null}
+                          </>
+                        ) : (
+                          <div className="flex justify-center">
+                            <button
+                              className="flex items-center justify-center w-7 h-7 bg-gray-100 hover:bg-blue-100 rounded-full text-blue-600 hover:text-blue-800 transition-colors"
+                              title="Fetch contact info"
+                              onClick={() => { console.log('Phone button clicked for', business.placeId); fetchContactInfo(business.placeId); }}
                             >
-                              Site <ExternalLink className="h-3 w-3 ml-1 flex-shrink-0" />
-                            </a>
+                              <Phone className="h-4 w-4" />
+                            </button>
                           </div>
                         )}
-                        <div className="flex items-center text-xs text-gray-600">
-                          <Phone className="h-3 w-3 mr-1 flex-shrink-0" />
-                          <span className="truncate">{business.phone}</span>
-                        </div>
                       </div>
                     </td>
-                    
-                    <td className="px-2 py-1">
-                      {enrichedBusiness.auditReport ? (
-                        <div className="space-y-1">
-                          <div className="flex items-center text-xs text-green-600">
-                            <CheckCircle className="h-3 w-3 mr-1" />
-                            Ready
-                          </div>
-                          <div className="text-xs text-gray-600">
-                            Score: {enrichedBusiness.auditReport.score}/100
-                          </div>
-                          <button
-                            onClick={() => downloadReport(enrichedBusiness.auditReport.id, business.name)}
-                            className="flex items-center text-xs text-blue-600 hover:text-blue-800"
-                          >
-                            <Download className="h-3 w-3 mr-0.5" />
-                            PDF
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => generateAuditReport(business)}
-                          disabled={loading === 'audit'}
-                          className="flex items-center justify-center w-7 h-7 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 disabled:opacity-50 transition-colors"
-                          title="Generate Audit Report"
-                        >
-                          {loading === 'audit' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <FileText className="h-3 w-3" />
-                          )}
-                        </button>
-                      )}
-                    </td>
-                    
-                    <td className="px-2 py-1">
-                      {enrichedBusiness.emails && enrichedBusiness.emails.length > 0 ? (
+                    <td style={{ width: 120 }} className="px-2 py-1 text-xs">
+                      {Array.isArray(enrichedBusiness.emails) && enrichedBusiness.emails.length > 0 ? (
                         <div className="space-y-0.5">
-                          <div className="flex items-center text-xs text-green-600">
-                            <CheckCircle className="h-3 w-3 mr-1" />
-                            {enrichedBusiness.emails.length} found
-                          </div>
-                          {enrichedBusiness.emails.slice(0, 1).map((email, index) => (
-                            <div key={index} className="text-xs text-gray-600 truncate" title={email}>
-                              {email}
+                          {enrichedBusiness.emails.map((email, idx) => (
+                            <div key={idx} className="flex items-center text-xs text-gray-800">
+                              <Mail className="h-3 w-3 mr-1 text-green-600" />
+                              <span className="truncate" title={email}>{email}</span>
                             </div>
                           ))}
-                          {enrichedBusiness.emails.length > 1 && (
-                            <div className="text-xs text-gray-400">
-                              +{enrichedBusiness.emails.length - 1} more
-                            </div>
-                          )}
                         </div>
                       ) : (
-                        <button
-                          onClick={() => findEmails(business)}
-                          disabled={loading === 'emails'}
-                          className="flex items-center justify-center w-7 h-7 bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 transition-colors"
-                          title="Find Email Addresses"
-                        >
-                          {loading === 'emails' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <Mail className="h-3 w-3" />
-                          )}
-                        </button>
+                        <span className="text-xs text-gray-400">-</span>
                       )}
                     </td>
-                    
-                    <td className="px-2 py-1 w-28">
-                      {enrichedBusiness.emailStatus === 'sent' ? (
-                        <div className="flex items-center text-xs text-green-600 bg-green-50 rounded px-2 py-1 font-medium">
-                          <CheckCircle className="h-3 w-3 mr-1" />
-                          Sent
-                        </div>
-                      ) : isEmailing ? (
-                        <div className="flex items-center text-xs text-orange-700 bg-orange-50 rounded px-2 py-1 font-medium animate-pulse">
-                          <Mail className="h-3 w-3 mr-1" />
-                          Sending...
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center">
-                          <button
-                            onClick={() => handleSendEmail(business)}
-                            disabled={!enrichedBusiness.emails || enrichedBusiness.emails.length === 0}
-                            className="flex items-center justify-center w-8 h-8 bg-orange-100 text-orange-700 rounded-full hover:bg-orange-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm"
-                            title="Send Outreach Email"
-                          >
-                            <Mail className="h-4 w-4" />
-                          </button>
-                        </div>
-                      )}
+                    <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
+                      {typeof contactInfo[business.placeId]?.numLocations === 'number' ? contactInfo[business.placeId].numLocations : '-'}
+                    </td>
+                    <td style={{ width: 80 }} className="px-2 py-1 text-xs">
+                      {enrichedBusiness.rating !== undefined && enrichedBusiness.rating !== null
+                        ? enrichedBusiness.rating.toFixed(1)
+                        : <span className="text-xs text-gray-400">-</span>}
+                    </td>
+                    <td style={{ width: 80 }} className="px-2 py-1 text-xs">
+                      {enrichedBusiness.userRatingsTotal !== undefined && enrichedBusiness.userRatingsTotal !== null
+                        ? enrichedBusiness.userRatingsTotal
+                        : <span className="text-xs text-gray-400">-</span>}
+                    </td>
+                    <td style={{ width: colWidths.delivery }} className="px-2 py-1 w-28 text-xs">
+                      {enrichedBusiness.emailStatus !== 'pending' ? (
+                        enrichedBusiness.emailStatus === 'sent' ? (
+                          <div className="flex items-center text-xs text-green-600 bg-green-50 rounded px-2 py-1 font-medium">
+                            <CheckCircle className="h-3 w-3 mr-1" />
+                            Sent
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center">
+                            <button
+                              onClick={() => handleSendEmail(business)}
+                              disabled={!enrichedBusiness.emails || enrichedBusiness.emails.length === 0}
+                              className="flex items-center justify-center w-8 h-8 bg-orange-100 text-orange-700 rounded-full hover:bg-orange-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm"
+                              title="Send Outreach Email"
+                            >
+                              <Mail className="h-4 w-4" />
+                            </button>
+                          </div>
+                        )
+                      ) : null}
                     </td>
                   </tr>
                 );
