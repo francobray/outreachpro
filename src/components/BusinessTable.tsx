@@ -13,7 +13,9 @@ import {
   Map,
   Check,
   Play,
-  Info
+  Info,
+  Shield,
+  ShieldCheck
 } from 'lucide-react';
 import EmailModal from './EmailModal';
 
@@ -29,7 +31,7 @@ interface Business {
   emailStatus?: 'pending' | 'sent';
   category?: string;
   types?: string[];
-  decisionMakers?: { name: string; title: string; email?: string; phone?: string }[];
+  decisionMakers?: { name: string; title: string; email?: string; phone?: string; email_status?: string; linkedin_url?: string }[];
   addedAt: string;
   rating?: number;
   userRatingsTotal?: number;
@@ -375,10 +377,13 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           loading: false
         }
       }));
-      // Also update the emails in businessData so the Emails column is populated
+      // Also update the emails and decision makers in businessData
       const business = businesses.find(b => b.placeId === placeId);
       if (business) {
-        updateBusinessData(business.id, { emails: data.emails || [] });
+        updateBusinessData(business.id, { 
+          emails: data.emails || [],
+          decisionMakers: data.decisionMakers || []
+        });
       }
     } catch {
       setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, loading: false } }));
@@ -446,28 +451,21 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           <table className="w-full min-w-[900px]">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                   <input type="checkbox" checked={selectedBusinesses.size === businesses.length && businesses.length > 0} onChange={handleSelectAll} className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" />
                 </th>
-                <th style={{ width: 205 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-normal" onClick={() => handleSort('name')}>
+                <th style={{ width: 205 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-normal" onClick={() => handleSort('name')}>
                   BUSINESS
                   <span className="ml-1">{sortBy === 'name' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th style={{ width: 150 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Contact Info</th>
-                <th style={{ width: 120 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Emails</th>
-                <th style={{ width: 80 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('numLocations')}>
+                <th style={{ width: 150 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Contact Info</th>
+                <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('numLocations')}>
                   # Locations
                   <span className="ml-1">{sortBy === 'numLocations' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th style={{ width: 80 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('rating')}>
-                  ⭐
-                  <span className="ml-1">{sortBy === 'rating' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
-                </th>
-                <th style={{ width: 80 }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('userRatingsTotal')}>
-                  📊 Reviews
-                  <span className="ml-1">{sortBy === 'userRatingsTotal' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
-                </th>
-                <th style={{ width: colWidths.delivery }} className="px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-15">📤</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website ✉️</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo ✉️</th>
+                <th style={{ width: colWidths.delivery }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-15">📤</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -487,27 +485,41 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       />
                     </td>
                     <td style={{ width: 205 }} className="px-2 py-1 max-w-[205px] align-top">
-                      <div className="flex items-center space-x-2">
-                        <a
-                          href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs font-medium text-blue-700 hover:underline leading-tight break-words max-w-[170px]"
-                          title={business.name}
-                        >
-                          {business.name}
-                        </a>
-                        <a
-                          href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-1 flex items-center justify-center w-6 h-6 bg-gray-100 hover:bg-blue-100 rounded-full text-blue-600 hover:text-blue-800 transition-colors"
-                          title="Open in Google Maps"
-                          tabIndex={-1}
-                          style={{ minWidth: 24, minHeight: 24 }}
-                        >
-                          <ExternalLink className="h-4 w-4 inline text-blue-600" />
-                        </a>
+                      <div className="flex flex-col space-y-1">
+                        <div className="flex items-center space-x-2">
+                          <a
+                            href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs font-medium text-blue-700 hover:underline leading-tight break-words max-w-[170px]"
+                            title={business.name}
+                          >
+                            {business.name}
+                          </a>
+                          <a
+                            href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ml-1 flex items-center justify-center w-6 h-6 bg-gray-100 hover:bg-blue-100 rounded-full text-blue-600 hover:text-blue-800 transition-colors"
+                            title="Open in Google Maps"
+                            tabIndex={-1}
+                            style={{ minWidth: 24, minHeight: 24 }}
+                          >
+                            <ExternalLink className="h-4 w-4 inline text-blue-600" />
+                          </a>
+                        </div>
+                        <div className="text-xs text-gray-600">
+                          {enrichedBusiness.rating !== undefined && enrichedBusiness.rating !== null ? (
+                            <>
+                              ⭐ {enrichedBusiness.rating.toFixed(1)}
+                              {enrichedBusiness.userRatingsTotal !== undefined && enrichedBusiness.userRatingsTotal !== null && (
+                                <> - 📊 {enrichedBusiness.userRatingsTotal}</>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-gray-400">No rating</span>
+                          )}
+                        </div>
                       </div>
                     </td>
                     <td style={{ width: 150 }} className="px-2 py-1 text-xs">
@@ -545,6 +557,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         )}
                       </div>
                     </td>
+                    <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
+                      {typeof contactInfo[business.placeId]?.numLocations === 'number' ? contactInfo[business.placeId].numLocations : '-'}
+                    </td>
                     <td style={{ width: 120 }} className="px-2 py-1 text-xs">
                       {Array.isArray(enrichedBusiness.emails) && enrichedBusiness.emails.length > 0 ? (
                         <div className="space-y-0.5">
@@ -559,18 +574,46 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         <span className="text-xs text-gray-400">-</span>
                       )}
                     </td>
-                    <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
-                      {typeof contactInfo[business.placeId]?.numLocations === 'number' ? contactInfo[business.placeId].numLocations : '-'}
-                    </td>
-                    <td style={{ width: 80 }} className="px-2 py-1 text-xs">
-                      {enrichedBusiness.rating !== undefined && enrichedBusiness.rating !== null
-                        ? enrichedBusiness.rating.toFixed(1)
-                        : <span className="text-xs text-gray-400">-</span>}
-                    </td>
-                    <td style={{ width: 80 }} className="px-2 py-1 text-xs">
-                      {enrichedBusiness.userRatingsTotal !== undefined && enrichedBusiness.userRatingsTotal !== null
-                        ? enrichedBusiness.userRatingsTotal
-                        : <span className="text-xs text-gray-400">-</span>}
+                    <td style={{ width: 120 }} className="px-2 py-1 text-xs">
+                      {Array.isArray(enrichedBusiness.decisionMakers) && enrichedBusiness.decisionMakers.length > 0 ? (
+                        <div className="space-y-1">
+                          {enrichedBusiness.decisionMakers.map((dm, idx) => (
+                            <div key={idx} className="space-y-0.5">
+                              <div className="flex items-center text-xs text-gray-800">
+                                <span className="truncate" title={`${dm.name} - ${dm.title}`}>{dm.name}</span>
+                                {dm.linkedin_url && (
+                                  <>
+                                    <span className="mx-1 text-gray-400">-</span>
+                                    <a
+                                      href={dm.linkedin_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:underline flex items-center"
+                                      title="View LinkedIn Profile"
+                                    >
+                                      <ExternalLink className="h-3 w-3 mr-1" />
+                                      LinkedIn
+                                    </a>
+                                  </>
+                                )}
+                                {dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available') && (
+                                  <>
+                                    <span className="mx-1 text-gray-400">-</span>
+                                    <span className="text-gray-600">{dm.email}</span>
+                                    {dm.email_status === 'verified' ? (
+                                      <ShieldCheck className="h-3 w-3 ml-1 text-green-600" />
+                                    ) : dm.email_status === 'unverified' ? (
+                                      <Shield className="h-3 w-3 ml-1 text-orange-600" />
+                                    ) : null}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">-</span>
+                      )}
                     </td>
                     <td style={{ width: colWidths.delivery }} className="px-2 py-1 w-28 text-xs">
                       {enrichedBusiness.emailStatus !== 'pending' ? (

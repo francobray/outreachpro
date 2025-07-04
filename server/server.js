@@ -600,7 +600,7 @@ app.post('/api/audit/:businessId', (req, res) => {
   }, 2000);
 });
 
-// Find emails for a business (mocked)
+// Find emails for a business
 app.post('/api/emails/:businessId', async (req, res) => {
   const { businessId } = req.params;
   console.log(`[Apollo] /api/emails/${businessId} endpoint hit`);
@@ -643,9 +643,13 @@ app.post('/api/emails/:businessId', async (req, res) => {
     // 2. Use org_id or domain to search for decision makers
     let peopleBody = {
       api_key: apolloApiKey,
-      person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager'],
+      person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'President', 'General Manager'],
       page: 1,
-      per_page: 3,
+      per_page: 5,
+      email_required: true,
+      reveal_personal_emails: true,
+      contact_email_status: ['verified', 'unverified'],
+      show_personal_emails: true,
     };
     if (orgId) {
       peopleBody['organization_ids'] = [orgId];
@@ -655,7 +659,7 @@ app.post('/api/emails/:businessId', async (req, res) => {
       peopleBody['q_organization_names'] = [business.name];
     }
     console.log('[Apollo] People API request:', peopleBody);
-    const peopleRes = await fetch('https://api.apollo.io/v1/mixed_people/search', {
+    const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -666,17 +670,57 @@ app.post('/api/emails/:businessId', async (req, res) => {
     });
     const peopleData = await peopleRes.json();
     console.log('[Apollo] People API response:', JSON.stringify(peopleData, null, 2));
+    console.log('[Apollo] People API status:', peopleRes.status);
+    console.log('[Apollo] People API total entries:', peopleData.pagination?.total_entries || 0);
 
     // Extract emails and names
     const emails = (peopleData.people || []).map(person => person.email).filter(Boolean);
     business.emails = emails;
 
     // Store decision makers info
-    business.decisionMakers = (peopleData.people || []).map(person => ({
-      name: person.name,
-      title: person.title,
-      email: person.email,
-      linkedin_url: person.linkedin_url,
+    business.decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
+      let email = person.email;
+      // If email is locked, try to enrich
+      if (
+        (!email || email === 'email_not_unlocked@domain.com') &&
+        person.id
+      ) {
+        try {
+          const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'x-api-key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              api_key: apolloApiKey,
+              id: person.id,
+            }),
+          });
+          const enrichData = await enrichRes.json();
+          if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
+            email = enrichData.person.email;
+          } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
+            email = person.personal_emails[0];
+          }
+        } catch (err) {
+          console.log('[Apollo] Error enriching person:', person.id, err);
+        }
+      } else if (
+        (!email || email === 'email_not_unlocked@domain.com') &&
+        Array.isArray(person.personal_emails) &&
+        person.personal_emails.length > 0
+      ) {
+        email = person.personal_emails[0];
+      }
+      return {
+        name: person.name,
+        title: person.title,
+        email,
+        linkedin_url: person.linkedin_url,
+        email_status: person.email_status,
+      };
     }));
 
     res.json({ emails, decisionMakers: business.decisionMakers, enriched: business.enriched });
@@ -759,6 +803,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
   const { placeId } = req.params;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   const geminiApiKey = process.env.GEMINI_API_KEY;
+  const apolloApiKey = process.env.APOLLO_API_KEY;
 
   console.log(`[PlaceDetails] Endpoint hit for placeId: ${placeId}`);
   
@@ -831,8 +876,6 @@ app.get('/api/place-details/:placeId', async (req, res) => {
             const geminiRequestBody = { contents: [{ parts: [{ text: geminiPrompt }] }] };
             
             console.log('[PlaceDetails] Gemini API URL:', 'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=' + geminiApiKey.substring(0, 10) + '...');
-            console.log('[PlaceDetails] Gemini prompt:', geminiPrompt);
-            console.log('[PlaceDetails] Gemini request body:', JSON.stringify(geminiRequestBody, null, 2));
             
             const geminiRes = await fetch('https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=' + geminiApiKey, {
               method: 'POST',
@@ -866,7 +909,131 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         console.log('[PlaceDetails] Error scraping website or extracting emails:', err);
       }
     }
-    res.json({ website, formatted_phone_number: phone, emails, numLocations });
+
+    // Call Apollo API to find decision makers
+    let decisionMakers = [];
+    if (website && apolloApiKey) {
+      try {
+        const domain = extractDomain(website);
+        let orgId = undefined;
+        let enrichedOrg = undefined;
+
+        // Find the business in memory to get the name
+        const existingBusiness = businesses.find(b => b.placeId === placeId);
+        const businessName = existingBusiness?.name || 'Unknown';
+
+        // 1. Enrich the organization if we have a valid domain
+        if (domain) {
+          console.log('[PlaceDetails] Apollo Enrich API request:', { domain, name: businessName });
+          const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'x-api-key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              api_key: apolloApiKey,
+              domain: domain,
+              name: businessName,
+            }),
+          });
+          const enrichData = await enrichRes.json();
+          console.log('[PlaceDetails] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
+          enrichedOrg = enrichData.organization;
+          orgId = enrichedOrg && enrichedOrg.id;
+        }
+
+        // 2. Use org_id or domain to search for decision makers
+        let peopleBody = {
+          api_key: apolloApiKey,
+          person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'President', 'General Manager'],
+          page: 1,
+          per_page: 5,
+          email_required: true,
+          reveal_personal_emails: true,
+          contact_email_status: ['verified', 'unverified'],
+          show_personal_emails: true,
+        };
+        if (orgId) {
+          peopleBody['organization_ids'] = [orgId];
+        } else if (domain) {
+          peopleBody['q_organization_domains'] = [domain];
+        } else {
+          peopleBody['q_organization_names'] = [businessName];
+        }
+        console.log('[PlaceDetails] Apollo People API request:', peopleBody);
+        const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            'x-api-key': apolloApiKey,
+          },
+          body: JSON.stringify(peopleBody),
+        });
+        const peopleData = await peopleRes.json();
+        console.log('[PlaceDetails] Apollo People API response:', JSON.stringify(peopleData, null, 2));
+        console.log('[PlaceDetails] Apollo People API status:', peopleRes.status);
+        console.log('[PlaceDetails] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
+
+        // Store decision makers info
+        decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
+          let email = person.email;
+          // If email is locked, try to enrich
+          if (
+            (!email || email === 'email_not_unlocked@domain.com') &&
+            person.id
+          ) {
+            try {
+              const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Cache-Control': 'no-cache',
+                  'x-api-key': apolloApiKey,
+                },
+                body: JSON.stringify({
+                  api_key: apolloApiKey,
+                  id: person.id,
+                }),
+              });
+              const enrichData = await enrichRes.json();
+              if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
+                email = enrichData.person.email;
+              } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
+                email = person.personal_emails[0];
+              }
+            } catch (err) {
+              console.log('[Apollo] Error enriching person:', person.id, err);
+            }
+          } else if (
+            (!email || email === 'email_not_unlocked@domain.com') &&
+            Array.isArray(person.personal_emails) &&
+            person.personal_emails.length > 0
+          ) {
+            email = person.personal_emails[0];
+          }
+          return {
+            name: person.name,
+            title: person.title,
+            email,
+            linkedin_url: person.linkedin_url,
+            email_status: person.email_status,
+          };
+        }));
+
+        // Also update the business in memory if we can find it
+        if (existingBusiness) {
+          existingBusiness.decisionMakers = decisionMakers;
+          existingBusiness.enriched = enrichedOrg;
+        }
+      } catch (error) {
+        console.error('[PlaceDetails] Apollo API error:', error);
+      }
+    }
+
+    res.json({ website, formatted_phone_number: phone, emails, numLocations, decisionMakers });
   } catch (err) {
     console.error('[PlaceDetails] Error:', err);
     res.status(500).json({ error: 'Failed to fetch place details' });
