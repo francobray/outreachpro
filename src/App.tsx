@@ -12,9 +12,14 @@ interface Business {
   placeId: string;
   phone: string;
   emails: string[];
-  auditReport: any;
-  emailStatus: 'pending' | 'sent';
+  auditReport?: any;
+  emailStatus?: 'pending' | 'sent';
   addedAt: string;
+  category?: string;
+  types?: string[];
+  decisionMakers?: { name: string; title: string; email?: string; phone?: string; email_status?: string; linkedin_url?: string }[];
+  rating?: number;
+  userRatingsTotal?: number;
 }
 
 function App() {
@@ -61,7 +66,7 @@ function App() {
               </div>
               <div className="ml-2">
                 <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                  v1.0.0
+                  v2.0.0
                 </span>
               </div>
             </div>
@@ -115,16 +120,16 @@ function App() {
       {/* Main Content */}
       <main className="w-full px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === 'search' ? (
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
             {/* Left Column - Search Form */}
             <div className="lg:col-span-1">
-              <div className="sticky top-8">
+              <div className="sticky top-8 max-w-[300px] mx-auto lg:mx-0">
                 <SearchForm onResults={handleSearchResults} setIsLoading={setIsLoading} />
               </div>
             </div>
             
             {/* Right Column - Results */}
-            <div className="lg:col-span-3">
+            <div className="lg:col-span-4">
               {(searchResults.length > 0 || isLoading) ? (
                 <BusinessTable businesses={searchResults} isLoading={isLoading} onBusinessUpdate={handleBusinessUpdate} />
               ) : (

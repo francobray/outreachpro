@@ -507,7 +507,6 @@ app.post('/api/search', async (req, res) => {
     const geoRes = await fetch(geocodeUrl);
     const geoData = await geoRes.json();
     console.log('[Search] Geocoding response status:', geoRes.status);
-    console.log('[Search] Geocoding response:', JSON.stringify(geoData, null, 2));
     
     if (!geoData.results || geoData.results.length === 0) {
       console.log('[Search] Location not found in Google Places API, using mock data');
@@ -526,33 +525,37 @@ app.post('/api/search', async (req, res) => {
     const { lat, lng } = geoData.results[0].geometry.location;
     console.log('[Search] Geocoded coordinates:', { lat, lng });
 
-    // Search for places
+    // Search for places - use fields parameter to get as much data as possible in one request
     const placesUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=5000&keyword=${encodeURIComponent(keyword)}&key=${apiKey}`;
     console.log('[Search] Places search request URL:', placesUrl.replace(apiKey, 'API_KEY_HIDDEN'));
     
     const placesRes = await fetch(placesUrl);
     const placesData = await placesRes.json();
     console.log('[Search] Places search response status:', placesRes.status);
-    console.log('[Search] Places search response:', JSON.stringify(placesData, null, 2));
+    console.log('[Search] Found places:', placesData.results?.length || 0);
 
-    // Map Google results to your business format
-    const businessesFound = (placesData.results || []).map(place => ({
-      id: place.place_id,
-      name: place.name,
-      address: place.vicinity,
-      website: null, // Can be fetched with details lookup if needed
-      placeId: place.place_id,
-      phone: '', // Can be fetched with details lookup if needed
-      emails: [],
-      auditReport: null,
-      emailStatus: 'pending',
-      addedAt: new Date().toISOString(),
-      types: place.types || [],
-      rating: place.rating || null,
-      userRatingsTotal: place.user_ratings_total || null,
-    }));
+    // Map Google results to business format without additional API calls
+    const businessesFound = (placesData.results || []).map(place => {
+      const business = {
+        id: place.place_id,
+        name: place.name,
+        address: place.vicinity || '',
+        website: null, // Will be populated on demand with the place-details endpoint
+        placeId: place.place_id,
+        phone: '', // Will be populated on demand with the place-details endpoint
+        emails: [],
+        auditReport: null,
+        emailStatus: 'pending',
+        addedAt: new Date().toISOString(),
+        types: place.types || [],
+        rating: place.rating || null,
+        userRatingsTotal: place.user_ratings_total || null,
+      };
+      
+      return business;
+    });
 
-    console.log('[Search] Found businesses:', businessesFound.length);
+    console.log('[Search] Mapped businesses:', businessesFound.length);
 
     // Add to businesses storage if not already exists
     businessesFound.forEach(business => {
@@ -801,40 +804,66 @@ app.delete('/api/clear', (req, res) => {
 
 app.get('/api/place-details/:placeId', async (req, res) => {
   const { placeId } = req.params;
+  const { enrich, apollo } = req.query;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const apolloApiKey = process.env.APOLLO_API_KEY;
+  const shouldEnrich = enrich === 'true';
+  const shouldUseApollo = apollo === 'true';
 
-  console.log(`[PlaceDetails] Endpoint hit for placeId: ${placeId}`);
-  
-  if (!apiKey) {
-    console.log('[PlaceDetails] No Google Places API key');
-    return res.status(500).json({ error: 'No Google Places API key' });
-  }
-  if (!geminiApiKey) {
-    console.log('[PlaceDetails] No Gemini API key');
-    return res.status(500).json({ error: 'No Gemini API key' });
+  console.log('[PlaceDetails] Request received for place ID:', placeId);
+  console.log('[PlaceDetails] Enrich data:', shouldEnrich);
+  console.log('[PlaceDetails] Use Apollo API:', shouldUseApollo);
+  console.log('[PlaceDetails] API Key present:', !!apiKey);
+  if (apiKey) {
+    console.log('[PlaceDetails] API Key (first 10 chars):', apiKey.substring(0, 10) + '...');
   }
 
-  const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=website,formatted_phone_number&key=${apiKey}`;
-  console.log('[PlaceDetails] Outgoing URL:', url.replace(apiKey, 'API_KEY_HIDDEN'));
+  // Try to find the business in our local data first
+  const existingBusiness = businesses.find(b => b.placeId === placeId);
+  console.log('[PlaceDetails] Found existing business:', existingBusiness ? existingBusiness.name : 'Not found');
+
+  // Get detailed information directly from Google Places API
+  const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
+  console.log('[PlaceDetails] Google API request URL:', url.replace(apiKey, 'API_KEY_HIDDEN'));
 
   try {
     const response = await fetch(url);
     console.log('[PlaceDetails] Google API response status:', response.status);
     const data = await response.json();
+    console.log('[PlaceDetails] Google API full response:', JSON.stringify(data, null, 2));
 
-    //retrieve website and phone number from google places api
-    const website = data.result?.website || null;
+    // Retrieve website and phone number from google places api
+    let website = data.result?.website || null;
     const phone = data.result?.formatted_phone_number || null;
-
-    console.log('[PlaceDetails] Website:', website);
+    
+    // If we have website from existing business but not from API, use that
+    if (!website && existingBusiness && existingBusiness.website) {
+      website = existingBusiness.website;
+      console.log('[PlaceDetails] Using website from local data:', website);
+    }
+    
+    console.log('[PlaceDetails] Final website value:', website);
     console.log('[PlaceDetails] Phone:', phone);
 
+    // If not enriching data, return basic details
+    if (!shouldEnrich) {
+      return res.json({
+        website,
+        formatted_phone_number: phone,
+        emails: [],
+        decisionMakers: []
+      });
+    }
+
+    // If we get here, enrichment was requested
     let emails = [];
     let numLocations = undefined;
+    let locationNames = [];
+    let decisionMakers = [];
 
-    if (website) {
+    // Website scraping for emails if website exists
+    if (website && geminiApiKey) {
       try {
         // 1. Scrape homepage HTML
         const homepageRes = await fetch(website, { headers: { 'User-Agent': 'Mozilla/5.0' } });
@@ -869,10 +898,24 @@ app.get('/api/place-details/:placeId', async (req, res) => {
           try {
             const locationsRes = await fetch(locationsUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
             let locationsHtml = await locationsRes.text();
+            console.log(`[PlaceDetails] Successfully fetched locations page for ${existingBusiness?.name || 'unknown business'}: ${locationsUrl}`);
+            
             // Remove all <svg>...</svg> blocks
             locationsHtml = locationsHtml.replace(/<svg[\s\S]*?<\/svg>/gi, '');
             // Send to Gemini to count locations
-            const geminiPrompt = `How many business locations are listed in the following HTML? Return only a number.\n\nHTML:\n${locationsHtml}`;
+            const geminiPrompt = `Extract information about business locations from the following HTML. 
+1. How many total business locations are there? Return just the number.
+2. What are the names or addresses of these locations? List each one.
+
+Format your response exactly like this:
+Count: [number]
+Locations:
+- [Location 1]
+- [Location 2]
+...
+
+HTML:
+${locationsHtml}`;
             const geminiRequestBody = { contents: [{ parts: [{ text: geminiPrompt }] }] };
             
             console.log('[PlaceDetails] Gemini API URL:', 'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=' + geminiApiKey.substring(0, 10) + '...');
@@ -885,9 +928,26 @@ app.get('/api/place-details/:placeId', async (req, res) => {
             const geminiData = await geminiRes.json();
             console.log('[PlaceDetails] Gemini response for locations:', JSON.stringify(geminiData, null, 2));
             const geminiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            const num = parseInt(geminiText.match(/\d+/)?.[0] || '', 10);
+            
+            // Extract count from response
+            const countMatch = geminiText.match(/Count:\s*(\d+)/i);
+            const num = countMatch ? parseInt(countMatch[1], 10) : NaN;
             if (!isNaN(num)) {
               numLocations = num;
+              console.log(`[PlaceDetails] Found ${numLocations} locations for ${existingBusiness?.name || 'unknown business'}`);
+            }
+            
+            // Extract location names from response
+            const locationsSection = geminiText.split('Locations:')[1];
+            if (locationsSection) {
+              const locationLines = locationsSection.trim().split('\n');
+              locationLines.forEach(line => {
+                const locationName = line.replace(/^-\s*/, '').trim();
+                if (locationName) {
+                  locationNames.push(locationName);
+                }
+              });
+              console.log(`[PlaceDetails] Extracted location names: ${JSON.stringify(locationNames)}`);
             }
           } catch (err) {
             console.log('[PlaceDetails] Failed to fetch or process locations page:', err);
@@ -904,22 +964,111 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         };
         extractEmails(homepageHtml);
         if (contactHtml) extractEmails(contactHtml);
-        emails = Array.from(emailSet);
+        
+        // Get all emails first
+        const allEmails = Array.from(emailSet);
+        console.log(`[PlaceDetails] All extracted emails: ${JSON.stringify(allEmails)}`);
+        
+        // Filter emails to prioritize the most relevant ones
+        const businessName = existingBusiness?.name || '';
+        const domain = extractDomain(website);
+        
+        if (domain) {
+          // Only keep emails from the business domain and filter out third-party emails
+          const businessDomainEmails = allEmails.filter(email => {
+            const emailDomain = email.split('@')[1].toLowerCase();
+            return emailDomain === domain.toLowerCase();
+          });
+          
+          console.log(`[PlaceDetails] Business domain: ${domain}, found ${businessDomainEmails.length} matching emails`);
+          
+          if (businessDomainEmails.length > 0) {
+            // If we have emails from the business domain, only use those
+            emails = businessDomainEmails;
+            
+            // Helper function to score email relevance (lower score = more relevant)
+            const getEmailRelevanceScore = (email) => {
+              const lowerEmail = email.toLowerCase();
+              const emailPrefix = lowerEmail.split('@')[0];
+              let score = 100; // Base score
+              
+              // General contact emails are highly relevant
+              if (['info', 'contact', 'hello', 'support', 'general'].includes(emailPrefix)) {
+                score -= 50;
+              }
+              
+              // If we have a business name, check if the email contains it
+              if (businessName) {
+                const simplifiedName = businessName.toLowerCase()
+                  .replace(/[^\w\s]/g, '') // Remove special chars
+                  .replace(/\s+/g, '');     // Remove spaces
+                
+                if (emailPrefix.includes(simplifiedName)) {
+                  score -= 30;
+                }
+              }
+              
+              // If we have location names, check if the email contains any of them
+              if (locationNames && locationNames.length > 0) {
+                // Extract the location from the business name if possible
+                const businessLocation = businessName.split('–').length > 1 
+                  ? businessName.split('–')[1].trim().toLowerCase() 
+                  : '';
+                
+                if (businessLocation && emailPrefix.includes(businessLocation.replace(/\s+/g, ''))) {
+                  score -= 40; // This is likely the email for this specific location
+                }
+                
+                // Check if email matches any location name
+                for (const location of locationNames) {
+                  const simplifiedLocation = location.toLowerCase()
+                    .replace(/[^\w\s]/g, '')
+                    .replace(/\s+/g, '');
+                  
+                  if (emailPrefix.includes(simplifiedLocation)) {
+                    // If this is the location we're looking for, make it highly relevant
+                    if (businessLocation && simplifiedLocation.includes(businessLocation.replace(/\s+/g, ''))) {
+                      score -= 40;
+                    } else {
+                      // It's a location-specific email, but not for this location
+                      score += 10;
+                    }
+                  }
+                }
+              }
+              
+              return score;
+            };
+            
+            // Sort emails by relevance score
+            const sortedEmails = businessDomainEmails.sort((a, b) => {
+              return getEmailRelevanceScore(a) - getEmailRelevanceScore(b);
+            });
+            
+            // Take only the top 3 most relevant emails
+            emails = sortedEmails.slice(0, 3);
+          } else {
+            // If no business domain emails found, return an empty array
+            emails = [];
+          }
+          console.log(`[PlaceDetails] Filtered to most relevant business domain emails: ${JSON.stringify(emails)}`);
+        } else {
+          emails = [];
+          console.log(`[PlaceDetails] No valid business domain found, no emails returned`);
+        }
       } catch (err) {
         console.log('[PlaceDetails] Error scraping website or extracting emails:', err);
       }
     }
 
-    // Call Apollo API to find decision makers
-    let decisionMakers = [];
-    if (website && apolloApiKey) {
+    // Call Apollo API to find decision makers - only if explicitly requested
+    if (website && apolloApiKey && shouldUseApollo) {
       try {
         const domain = extractDomain(website);
         let orgId = undefined;
         let enrichedOrg = undefined;
 
         // Find the business in memory to get the name
-        const existingBusiness = businesses.find(b => b.placeId === placeId);
         const businessName = existingBusiness?.name || 'Unknown';
 
         // 1. Enrich the organization if we have a valid domain
@@ -1033,9 +1182,21 @@ app.get('/api/place-details/:placeId', async (req, res) => {
       }
     }
 
-    res.json({ website, formatted_phone_number: phone, emails, numLocations, decisionMakers });
-  } catch (err) {
-    console.error('[PlaceDetails] Error:', err);
+    // Return the enriched data
+    const responseData = { 
+      website, 
+      formatted_phone_number: phone, 
+      emails, 
+      numLocations, 
+      locationNames, 
+      decisionMakers,
+      business_name: existingBusiness?.name
+    };
+    
+    res.json(responseData);
+  } catch (error) {
+    console.log('[PlaceDetails] Error fetching place details:', error.message);
+    console.log('[PlaceDetails] Full error:', error);
     res.status(500).json({ error: 'Failed to fetch place details' });
   }
 });

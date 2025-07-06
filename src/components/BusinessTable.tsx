@@ -15,9 +15,9 @@ import {
   Play,
   Info,
   Shield,
-  ShieldCheck
+  ShieldCheck,
+  MapPin as LocationIcon
 } from 'lucide-react';
-import EmailModal from './EmailModal';
 
 interface Business {
   id: string;
@@ -35,6 +35,7 @@ interface Business {
   addedAt: string;
   rating?: number;
   userRatingsTotal?: number;
+  apolloStatus?: 'found' | 'not_found' | 'error';
 }
 
 interface BusinessTableProps {
@@ -44,7 +45,7 @@ interface BusinessTableProps {
 }
 
 // Sorting helper
-const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 'asc' | 'desc', contactInfo: { [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, loading: boolean } }) => {
+const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 'asc' | 'desc', contactInfo: { [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, locationNames?: string[], loading: boolean } }) => {
   const sorted = [...businesses];
   sorted.sort((a, b) => {
     let aValue: any;
@@ -85,20 +86,17 @@ function getDomain(url: string | null): string | null {
 
 const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, onBusinessUpdate }) => {
   const [loadingStates, setLoadingStates] = useState<{[key: string]: string}>({});
-  const [emailModalOpen, setEmailModalOpen] = useState(false);
-  const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
   const [businessData, setBusinessData] = useState<{[key: string]: Business}>({});
   const [selectedBusinesses, setSelectedBusinesses] = useState<Set<string>>(new Set());
   const [isExecuting, setIsExecuting] = useState(false);
-  const [emailingBusinesses, setEmailingBusinesses] = useState<Set<string>>(new Set());
-  const [recentlySentEmails, setRecentlySentEmails] = useState<Set<string>>(new Set());
+  const [isEnrichingPlaces, setIsEnrichingPlaces] = useState(false);
+  const [isEnrichingApollo, setIsEnrichingApollo] = useState(false);
   const [colWidths, setColWidths] = useState({
     business: 220,
     category: 120,
     dm: 120,
     pdf: 90,
     discover: 90,
-    delivery: 90,
   });
   const resizingCol = useRef<keyof typeof colWidths | null>(null);
   const startX = useRef(0);
@@ -106,18 +104,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const pendingUpdates = useRef<{[key: string]: Business}>({});
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-  const [contactInfo, setContactInfo] = useState<{ [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, loading: boolean } }>({});
-
-  // Auto-fetch contact info for all businesses when they're loaded
-  useEffect(() => {
-    if (businesses.length > 0) {
-      businesses.forEach(business => {
-        if (!contactInfo[business.placeId] && !contactInfo[business.placeId]?.loading) {
-          fetchContactInfo(business.placeId);
-        }
-      });
-    }
-  }, [businesses]);
+  const [contactInfo, setContactInfo] = useState<{ 
+    [key: string]: { 
+      website: string | null, 
+      phone: string | null, 
+      emails?: string[], 
+      numLocations?: number,
+      locationNames?: string[],
+      loading: boolean 
+    } 
+  }>({});
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
   const sortedBusinesses = getSortedBusinesses(businesses, sortBy, sortOrder, contactInfo);
 
@@ -186,45 +183,18 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     }
   };
 
-  const findEmails = async (business: Business) => {
+  const findEmails = async (business: Business, useApolloAPI: boolean = false) => {
     updateLoadingState(business.id, 'emails');
     
     try {
-      const response = await fetch(`http://localhost:3001/api/emails/${business.id}`, {
-        method: 'POST',
-      });
-      const data = await response.json();
-      updateBusinessData(business.id, {
-        emails: data.emails,
-        decisionMakers: data.decisionMakers
-      });
+      // Instead of using the separate emails endpoint, use the place-details endpoint with enrichment
+      // This ensures consistency between individual and batch processing
+      await fetchContactInfo(business.placeId, true, useApolloAPI);
     } catch (error) {
       console.error('Failed to find emails:', error);
     } finally {
       updateLoadingState(business.id, '');
     }
-  };
-
-  const handleSendEmail = (business: Business) => {
-    const enrichedBusiness = getBusinessData(business);
-    setSelectedBusiness(enrichedBusiness);
-    setEmailModalOpen(true);
-  };
-
-  const handleEmailSent = (businessId: string) => {
-    updateBusinessData(businessId, { emailStatus: 'sent' });
-    
-    // Add to recently sent for animation
-    setRecentlySentEmails(prev => new Set(prev).add(businessId));
-    
-    // Remove from recently sent after animation completes
-    setTimeout(() => {
-      setRecentlySentEmails(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(businessId);
-        return newSet;
-      });
-    }, 2000);
   };
 
   const handleSelectBusiness = (businessId: string) => {
@@ -287,37 +257,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         
         // Step 2: Find emails if not found
         if (!enrichedBusiness.emails || enrichedBusiness.emails.length === 0) {
-          await findEmails(business);
-          // Small delay to show progression
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-        
-        // Step 3: Send email if not sent
-        const currentBusinessData = getBusinessData(business);
-        if (currentBusinessData.emails && currentBusinessData.emails.length > 0 && 
-            currentBusinessData.emailStatus !== 'sent') {
-          // Add business to emailing set for animation
-          setEmailingBusinesses(prev => new Set(prev).add(business.id));
-          await sendEmailAutomatically(business, currentBusinessData.emails[0]);
-          // Remove from emailing set and add to recently sent
-          setEmailingBusinesses(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(business.id);
-            return newSet;
-          });
-          
-          // Add to recently sent for success animation
-          setRecentlySentEmails(prev => new Set(prev).add(business.id));
-          
-          // Remove from recently sent after animation
-          setTimeout(() => {
-            setRecentlySentEmails(prev => {
-              const newSet = new Set(prev);
-              newSet.delete(business.id);
-              return newSet;
-            });
-          }, 2000);
-          
+          // Pass false for Apollo API usage
+          await findEmails(business, false);
           // Small delay to show progression
           await new Promise(resolve => setTimeout(resolve, 500));
         }
@@ -330,13 +271,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       console.error('Failed to execute bulk operations:', error);
     } finally {
       setIsExecuting(false);
-      setEmailingBusinesses(new Set());
     }
-  };
-
-  const sendEmailAutomatically = async (business: Business, email: string) => {
-    // Mock: immediately mark as sent
-    updateBusinessData(business.id, { emailStatus: 'sent' });
   };
 
   const startResizing = (e: React.MouseEvent<HTMLDivElement, MouseEvent>, col: keyof typeof colWidths) => {
@@ -362,31 +297,210 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     window.removeEventListener('mouseup', stopResizing);
   };
 
-  const fetchContactInfo = async (placeId: string) => {
-    setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, loading: true } }));
+  const fetchContactInfo = async (placeId: string, enrichData: boolean = false, useApolloAPI: boolean = false) => {
+    setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, locationNames: [], loading: true } }));
     try {
-      const res = await fetch(`/api/place-details/${placeId}`);
+      const url = `/api/place-details/${placeId}${enrichData ? `?enrich=true${useApolloAPI ? '&apollo=true' : ''}` : ''}`;
+      console.log(`[Contact Info] Fetching from: ${url}`);
+      const res = await fetch(url);
       const data = await res.json();
+      console.log(`[Contact Info] Received data for ${placeId}:`, data);
+      
+      // Extract website info, check if it's available from business data if not in response
+      let website = data.website || null;
+      const business = businesses.find(b => b.placeId === placeId);
+      if (!website && business?.website) {
+        website = business.website;
+        console.log(`[Contact Info] Using website from business data for ${placeId}:`, website);
+      }
+      
       setContactInfo(prev => ({
         ...prev,
         [placeId]: {
-          website: data.website || null,
+          website: website,
           phone: data.formatted_phone_number || null,
           emails: data.emails || [],
           numLocations: data.numLocations,
+          locationNames: data.locationNames || [],
           loading: false
         }
       }));
+      
       // Also update the emails and decision makers in businessData
-      const business = businesses.find(b => b.placeId === placeId);
       if (business) {
         updateBusinessData(business.id, { 
           emails: data.emails || [],
-          decisionMakers: data.decisionMakers || []
+          decisionMakers: data.decisionMakers || [],
+          website: website || business.website // Preserve existing website if available
         });
       }
-    } catch {
-      setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, loading: false } }));
+    } catch (error) {
+      console.error(`[Contact Info] Error fetching data for ${placeId}:`, error);
+      setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, locationNames: [], loading: false } }));
+    }
+  };
+
+  // Helper function to safely check and get location names
+  const getLocationNames = (placeId: string): string[] => {
+    const info = contactInfo[placeId];
+    if (!info || !info.locationNames) return [];
+    return info.locationNames;
+  };
+  
+  // Helper function to check if a business has multiple locations
+  const hasMultipleLocations = (placeId: string): boolean => {
+    const info = contactInfo[placeId];
+    return info?.numLocations !== undefined && info.numLocations > 1;
+  };
+
+  // Add a function to toggle tooltip visibility
+  const toggleTooltip = (placeId: string | null) => {
+    setActiveTooltip(activeTooltip === placeId ? null : placeId);
+  };
+
+  // Helper method to get the best website URL for a business
+  const getBestWebsiteUrl = (business: Business): string | null => {
+    console.log(`[Website Debug] Looking for website for business: ${business.name} (${business.placeId})`);
+    
+    // First check in enriched contact info
+    const contactInfoWeb = contactInfo[business.placeId]?.website;
+    if (contactInfoWeb) {
+      console.log(`[Website Debug] Found website in contactInfo: ${contactInfoWeb}`);
+      return contactInfoWeb;
+    }
+    
+    // Then check business data from state
+    const businessDataWeb = businessData[business.id]?.website;
+    if (businessDataWeb) {
+      console.log(`[Website Debug] Found website in businessData: ${businessDataWeb}`);
+      return businessDataWeb;
+    }
+    
+    // Finally fall back to original business object
+    console.log(`[Website Debug] Falling back to original business.website: ${business.website || 'null'}`);
+    return business.website;
+  };
+
+  // Add a function to enrich places data
+  const enrichPlacesData = async (business: Business) => {
+    updateLoadingState(business.id, 'enrich');
+    try {
+      // For Google Places enrichment, we do want to update the contact info
+      setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: true } }));
+      
+      const url = `/api/place-details/${business.placeId}?enrich=true`;
+      console.log(`[Places Enrich] Fetching from: ${url}`);
+      const res = await fetch(url);
+      const data = await res.json();
+      console.log(`[Places Enrich] Received data for ${business.placeId}:`, data);
+      
+      // Extract website info, check if it's available from business data if not in response
+      let website = data.website || null;
+      if (!website && business?.website) {
+        website = business.website;
+        console.log(`[Places Enrich] Using website from business data for ${business.placeId}:`, website);
+      }
+      
+      // Update contact info with Google Places data
+      setContactInfo(prev => ({
+        ...prev,
+        [business.placeId]: {
+          website: website,
+          phone: data.formatted_phone_number || null,
+          emails: data.emails || [],
+          numLocations: data.numLocations,
+          locationNames: data.locationNames || [],
+          loading: false
+        }
+      }));
+      
+      // Also update the business data
+      updateBusinessData(business.id, { 
+        emails: data.emails || [],
+        website: website || business.website // Preserve existing website if available
+      });
+    } catch (error) {
+      console.error('Failed to enrich places data:', error);
+      setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: false } }));
+    } finally {
+      updateLoadingState(business.id, '');
+    }
+  };
+
+  // Update the enrichWithApollo function to handle no results
+  const enrichWithApollo = async (business: Business) => {
+    updateLoadingState(business.id, 'apollo');
+    try {
+      // Don't set the contact info loading state when using Apollo
+      const url = `/api/place-details/${business.placeId}?enrich=true&apollo=true`;
+      console.log(`[Apollo Enrich] Fetching from: ${url}`);
+      const res = await fetch(url);
+      const data = await res.json();
+      console.log(`[Apollo Enrich] Received data for ${business.placeId}:`, data);
+      
+      // Update business data with Apollo enrichment results without affecting contact info display
+      if (business) {
+        const decisionMakers = data.decisionMakers || [];
+        updateBusinessData(business.id, { 
+          decisionMakers,
+          apolloStatus: decisionMakers.length > 0 ? 'found' : 'not_found'
+        });
+      }
+    } catch (error) {
+      console.error('Failed to enrich with Apollo:', error);
+      updateBusinessData(business.id, { 
+        apolloStatus: 'error'
+      });
+    } finally {
+      updateLoadingState(business.id, '');
+    }
+  };
+
+  // Add back the batchEnrichPlaces function
+  const batchEnrichPlaces = async () => {
+    if (selectedBusinesses.size === 0) return;
+    
+    setIsEnrichingPlaces(true);
+    
+    try {
+      const selectedBusinessList = businesses.filter(b => selectedBusinesses.has(b.id));
+      
+      // Enrich each selected business with Google Places data
+      for (const business of selectedBusinessList) {
+        updateLoadingState(business.id, 'enrich');
+        await enrichPlacesData(business);
+        // Small delay to show progression
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+    } catch (error) {
+      console.error('Failed to batch enrich with Google Places:', error);
+    } finally {
+      setIsEnrichingPlaces(false);
+    }
+  };
+
+  // Update the batchEnrichApollo function to handle no results
+  const batchEnrichApollo = async () => {
+    if (selectedBusinesses.size === 0) return;
+    
+    setIsEnrichingApollo(true);
+    
+    try {
+      const selectedBusinessList = businesses.filter(b => selectedBusinesses.has(b.id));
+      
+      // Enrich each selected business with Apollo data
+      for (const business of selectedBusinessList) {
+        updateLoadingState(business.id, 'apollo');
+        await enrichWithApollo(business);
+        // Small delay to show progression
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+    } catch (error) {
+      console.error('Failed to batch enrich with Apollo:', error);
+    } finally {
+      setIsEnrichingApollo(false);
     }
   };
 
@@ -425,23 +539,53 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                 </span>
               )}
               {selectedBusinesses.size > 0 && (
-                <button
-                  onClick={handleExecute}
-                  disabled={isExecuting}
-                  className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 transition-all duration-200 shadow-lg"
-                >
-                  {isExecuting ? (
-                    <>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={batchEnrichPlaces}
+                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
+                    className="flex items-center px-3 py-1.5 bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200 disabled:opacity-50 transition-all duration-200"
+                    title="Enrich selected businesses with Google Places data"
+                  >
+                    {isEnrichingPlaces ? (
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Processing Campaign...
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-4 w-4 mr-2" />
-                      Execute Campaign
-                    </>
-                  )}
-                </button>
+                    ) : (
+                      <Map className="h-4 w-4 mr-1" />
+                    )}
+                    Enrich Places
+                  </button>
+                  
+                  <button
+                    onClick={batchEnrichApollo}
+                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
+                    className="flex items-center px-3 py-1.5 bg-purple-100 text-purple-700 rounded-md hover:bg-purple-200 disabled:opacity-50 transition-all duration-200"
+                    title="Find decision makers with Apollo for selected businesses"
+                  >
+                    {isEnrichingApollo ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Shield className="h-4 w-4 mr-1" />
+                    )}
+                    Find Apollo DMs
+                  </button>
+                  
+                  <button
+                    onClick={handleExecute}
+                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
+                    className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 transition-all duration-200 shadow-lg"
+                  >
+                    {isExecuting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4 mr-2" />
+                        Execute Campaign
+                      </>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -452,7 +596,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
-                  <input type="checkbox" checked={selectedBusinesses.size === businesses.length && businesses.length > 0} onChange={handleSelectAll} className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" />
+                  <div className="flex justify-center items-center">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedBusinesses.size === businesses.length && businesses.length > 0} 
+                      onChange={handleSelectAll} 
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" 
+                    />
+                  </div>
                 </th>
                 <th style={{ width: 205 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-normal" onClick={() => handleSort('name')}>
                   BUSINESS
@@ -465,24 +616,24 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                 </th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website ✉️</th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo ✉️</th>
-                <th style={{ width: colWidths.delivery }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-15">📤</th>
+                <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {sortedBusinesses.map((business) => {
                 const enrichedBusiness = getBusinessData(business);
                 const loading = loadingStates[business.id];
-                const isEmailing = emailingBusinesses.has(business.id);
-                const isRecentlySent = recentlySentEmails.has(business.id);
                 return (
                   <tr key={business.id} className={`hover:bg-gray-50 transition-colors ${selectedBusinesses.has(business.id) ? 'bg-blue-50' : ''}`}>
                     <td className="px-3 py-2">
-                      <input
-                        type="checkbox"
-                        checked={selectedBusinesses.has(business.id)}
-                        onChange={() => handleSelectBusiness(business.id)}
-                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                      />
+                      <div className="flex justify-center items-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedBusinesses.has(business.id)}
+                          onChange={() => handleSelectBusiness(business.id)}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                      </div>
                     </td>
                     <td style={{ width: 205 }} className="px-2 py-1 max-w-[205px] align-top">
                       <div className="flex flex-col space-y-1">
@@ -528,14 +679,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                           <span className="flex items-center text-xs text-gray-400"><Loader2 className="h-4 w-4 animate-spin mr-1" />Loading...</span>
                         ) : contactInfo[business.placeId] ? (
                           <>
-                            {contactInfo[business.placeId].website ? (
+                            {getBestWebsiteUrl(business) ? (
                               <a
-                                href={contactInfo[business.placeId].website || undefined}
+                                href={getBestWebsiteUrl(business) || undefined}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="flex items-center text-xs text-blue-600 hover:text-blue-800"
                               >
-                                <Globe className="h-4 w-4 mr-1 inline" />{getDomain(contactInfo[business.placeId].website)}
+                                <Globe className="h-4 w-4 mr-1 inline" />{getDomain(getBestWebsiteUrl(business))}
                               </a>
                             ) : (
                               <span className="flex items-center text-xs text-gray-400"><Globe className="h-4 w-4 mr-1 inline" />No site</span>
@@ -545,20 +696,42 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                             ) : null}
                           </>
                         ) : (
-                          <div className="flex justify-center">
-                            <button
-                              className="flex items-center justify-center w-7 h-7 bg-gray-100 hover:bg-blue-100 rounded-full text-blue-600 hover:text-blue-800 transition-colors"
-                              title="Fetch contact info"
-                              onClick={() => { console.log('Phone button clicked for', business.placeId); fetchContactInfo(business.placeId); }}
-                            >
-                              <Phone className="h-4 w-4" />
-                            </button>
-                          </div>
+                          <span className="text-xs text-gray-400">-</span>
                         )}
                       </div>
                     </td>
                     <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
-                      {typeof contactInfo[business.placeId]?.numLocations === 'number' ? contactInfo[business.placeId].numLocations : '-'}
+                      {typeof contactInfo[business.placeId]?.numLocations === 'number' ? (
+                        <div className="relative">
+                          {hasMultipleLocations(business.placeId) ? (
+                            <div className="relative inline-block">
+                              <button 
+                                className="flex items-center justify-center space-x-1 text-blue-600 hover:text-blue-800 hover:underline" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleTooltip(business.placeId);
+                                }}
+                              >
+                                <span>{contactInfo[business.placeId]?.numLocations}</span>
+                                <LocationIcon className="h-3 w-3" />
+                              </button>
+                              
+                              {activeTooltip === business.placeId && getLocationNames(business.placeId).length > 0 && (
+                                <div className="absolute left-0 z-50 mt-2 bg-white rounded-md shadow-lg py-2 px-3 text-left border border-gray-200 w-48 sm:w-64 whitespace-normal">
+                                  <div className="text-sm font-medium text-gray-800 mb-1">Locations:</div>
+                                  <ul className="list-disc list-inside text-xs space-y-1 text-gray-700 max-h-40 overflow-y-auto">
+                                    {getLocationNames(business.placeId).map((location, idx) => (
+                                      <li key={idx} className="truncate" title={location}>{location}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            contactInfo[business.placeId]?.numLocations
+                          )}
+                        </div>
+                      ) : '-'}
                     </td>
                     <td style={{ width: 120 }} className="px-2 py-1 text-xs">
                       {Array.isArray(enrichedBusiness.emails) && enrichedBusiness.emails.length > 0 ? (
@@ -611,30 +784,42 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                             </div>
                           ))}
                         </div>
+                      ) : enrichedBusiness.apolloStatus === 'not_found' ? (
+                        <span className="text-xs text-gray-500 italic">No DMs found in Apollo</span>
                       ) : (
                         <span className="text-xs text-gray-400">-</span>
                       )}
                     </td>
-                    <td style={{ width: colWidths.delivery }} className="px-2 py-1 w-28 text-xs">
-                      {enrichedBusiness.emailStatus !== 'pending' ? (
-                        enrichedBusiness.emailStatus === 'sent' ? (
-                          <div className="flex items-center text-xs text-green-600 bg-green-50 rounded px-2 py-1 font-medium">
-                            <CheckCircle className="h-3 w-3 mr-1" />
-                            Sent
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-center">
-                            <button
-                              onClick={() => handleSendEmail(business)}
-                              disabled={!enrichedBusiness.emails || enrichedBusiness.emails.length === 0}
-                              className="flex items-center justify-center w-8 h-8 bg-orange-100 text-orange-700 rounded-full hover:bg-orange-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm"
-                              title="Send Outreach Email"
-                            >
-                              <Mail className="h-4 w-4" />
-                            </button>
-                          </div>
-                        )
-                      ) : null}
+                    <td style={{ width: 80 }} className="px-2 py-1 text-xs">
+                      <div className="flex items-center justify-center space-x-1">
+                        {/* Google Places Enrich Button */}
+                        <button
+                          onClick={() => enrichPlacesData(business)}
+                          disabled={loading === 'enrich'}
+                          className="flex items-center justify-center w-6 h-6 bg-blue-100 hover:bg-blue-200 rounded-full text-blue-600 hover:text-blue-800 transition-colors disabled:opacity-50"
+                          title="Enrich Google Places"
+                        >
+                          {loading === 'enrich' ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Map className="h-3 w-3" />
+                          )}
+                        </button>
+                        
+                        {/* Apollo Enrich Button */}
+                        <button
+                          onClick={() => enrichWithApollo(business)}
+                          disabled={loading === 'apollo'}
+                          className="flex items-center justify-center w-6 h-6 bg-purple-100 hover:bg-purple-200 rounded-full text-purple-600 hover:text-purple-800 transition-colors disabled:opacity-50"
+                          title="Enrich with Apollo"
+                        >
+                          {loading === 'apollo' ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Shield className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -643,15 +828,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           </table>
         </div>
       </div>
-
-      {emailModalOpen && selectedBusiness && (
-        <EmailModal
-          business={selectedBusiness}
-          isOpen={emailModalOpen}
-          onClose={() => setEmailModalOpen(false)}
-          onEmailSent={handleEmailSent}
-        />
-      )}
     </>
   );
 };
