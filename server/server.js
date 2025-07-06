@@ -968,7 +968,6 @@ app.get('/api/place-details/:placeId', async (req, res) => {
   console.log(`[PlaceDetails] Fetching details for place ID: ${placeId}, enrich: ${shouldEnrich}, apollo: ${shouldUseApollo}, testUrl: ${testUrl || 'none'}`);
   
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-  const geminiApiKey = process.env.GEMINI_API_KEY;
   const apolloApiKey = process.env.APOLLO_API_KEY;
 
   // Try to find the business in our local data first
@@ -1312,34 +1311,6 @@ app.get('/api/place-details/:placeId', async (req, res) => {
 
     // Log the email extraction process
     console.log('[PlaceDetails] Starting email extraction from website HTML');
-
-    // Read the prompt template
-    try {
-      const emailPromptTemplate = await fs.readFile(path.join(__dirname, 'prompts', 'extractEmails.prompt.txt'), 'utf8');
-      
-      // Create a sample of the HTML for logging
-      const htmlSample = combinedHtml ? combinedHtml.substring(0, 500) + '...' : 'No HTML content';
-      
-      // Replace the placeholder with the HTML content
-      const emailPrompt = emailPromptTemplate.replace('{{HTML_CONTENT}}', combinedHtml || '');
-      
-      // Log the prompt we're sending to Gemini (first 1000 chars)
-      console.log('[PlaceDetails] Email extraction prompt for Gemini (first 1000 chars):');
-      console.log(emailPrompt.substring(0, 1000) + '...');
-      
-      // Log if specific email patterns exist in the HTML
-      console.log('[PlaceDetails] Checking for email patterns in HTML:');
-      const emailPatterns = ['mailto:', '@', '.com', '.org', '.net'];
-      emailPatterns.forEach(pattern => {
-        if (combinedHtml && combinedHtml.includes(pattern)) {
-          console.log(`[PlaceDetails] Found pattern "${pattern}" in HTML`);
-        } else {
-          console.log(`[PlaceDetails] Pattern "${pattern}" NOT found in HTML`);
-        }
-      });
-    } catch (err) {
-      console.error('[PlaceDetails] Error reading email prompt template:', err);
-    }
 
     // Call Apollo API to find decision makers - only if explicitly requested
     if (website && apolloApiKey && shouldUseApollo) {
