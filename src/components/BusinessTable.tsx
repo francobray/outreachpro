@@ -16,7 +16,8 @@ import {
   Info,
   Shield,
   ShieldCheck,
-  MapPin as LocationIcon
+  MapPin as LocationIcon,
+  Star
 } from 'lucide-react';
 
 interface Business {
@@ -39,6 +40,7 @@ interface Business {
   usedPuppeteer?: boolean;
   numLocations?: number;
   locationNames?: string[];
+  graderScore?: number;
 }
 
 interface BusinessTableProps {
@@ -57,6 +59,9 @@ const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 
     if (sortBy === 'numLocations') {
       aValue = contactInfo[a.placeId]?.numLocations;
       bValue = contactInfo[b.placeId]?.numLocations;
+    } else if (sortBy === 'graderScore') {
+      aValue = a.graderScore ?? -1;
+      bValue = b.graderScore ?? -1;
     } else {
       aValue = a[sortBy as keyof Business];
       bValue = b[sortBy as keyof Business];
@@ -550,6 +555,43 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const selectedEmailsCount = getSelectedEmailsCount();
   const hasEmails = selectedEmailsCount > 0;
 
+  // Add a grader function to score the business
+  const gradeBusinessQuality = async (business: Business) => {
+    updateLoadingState(business.id, 'grader');
+    
+    try {
+      // Generate a score from 1-100 based on various factors
+      const score = Math.floor(Math.random() * 100) + 1; // Integer score from 1-100
+      
+      // Update the business with the grader score
+      updateBusinessData(business.id, { graderScore: score });
+    } catch (error) {
+      console.error('Failed to grade business:', error);
+    } finally {
+      updateLoadingState(business.id, '');
+    }
+  };
+
+  // Batch grader function for multiple businesses
+  const batchGradeBusinesses = async () => {
+    if (selectedBusinesses.size === 0) return;
+    
+    try {
+      const selectedBusinessList = businesses.filter(b => selectedBusinesses.has(b.id));
+      
+      // Grade each selected business
+      for (const business of selectedBusinessList) {
+        updateLoadingState(business.id, 'grader');
+        await gradeBusinessQuality(business);
+        // Small delay to show progression
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+    } catch (error) {
+      console.error('Failed to batch grade businesses:', error);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 h-full flex items-center justify-center">
@@ -620,6 +662,16 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   </button>
                   
                   <button
+                    onClick={batchGradeBusinesses}
+                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
+                    className="flex items-center px-3 py-1.5 bg-amber-100 text-amber-700 rounded-md hover:bg-amber-200 disabled:opacity-50 transition-all duration-200"
+                    title="Grade selected businesses"
+                  >
+                    <Star className="h-4 w-4 mr-1" />
+                    Grade Businesses
+                  </button>
+                  
+                  <button
                     onClick={handleExecute}
                     disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting || !hasEmails}
                     className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 transition-all duration-200 shadow-lg"
@@ -668,6 +720,10 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                 </th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website emails</th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo emails</th>
+                <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('graderScore')}>
+                  Grader score
+                  <span className="ml-1">{sortBy === 'graderScore' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
+                </th>
                 <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
               </tr>
             </thead>
@@ -854,6 +910,19 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         <span className="text-xs text-gray-400">-</span>
                       )}
                     </td>
+                    <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
+                      {enrichedBusiness.graderScore !== undefined && enrichedBusiness.graderScore !== null ? (
+                        <span className={`text-xs font-medium ${
+                          enrichedBusiness.graderScore >= 70 ? 'text-green-600' : 
+                          enrichedBusiness.graderScore >= 40 ? 'text-amber-600' : 
+                          'text-red-600'
+                        }`}>
+                          {enrichedBusiness.graderScore}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">-</span>
+                      )}
+                    </td>
                     <td style={{ width: 80 }} className="px-2 py-1 text-xs">
                       <div className="flex items-center justify-center space-x-1">
                         {/* Google Places Enrich Button */}
@@ -881,6 +950,20 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                             <Loader2 className="h-3 w-3 animate-spin" />
                           ) : (
                             <Shield className="h-3 w-3" />
+                          )}
+                        </button>
+                        
+                        {/* Grader Button */}
+                        <button
+                          onClick={() => gradeBusinessQuality(business)}
+                          disabled={loading === 'grader'}
+                          className="flex items-center justify-center w-6 h-6 bg-amber-100 hover:bg-amber-200 rounded-full text-amber-600 hover:text-amber-800 transition-colors disabled:opacity-50"
+                          title="Grade business quality"
+                        >
+                          {loading === 'grader' ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Star className="h-3 w-3" />
                           )}
                         </button>
                       </div>

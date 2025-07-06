@@ -15,4 +15,5 @@ export interface Business {
   rating?: number;
   userRatingsTotal?: number;
   apolloStatus?: 'found' | 'not_found' | 'error';
+  graderScore?: number;
 } 
