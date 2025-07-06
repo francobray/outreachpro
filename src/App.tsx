@@ -90,6 +90,14 @@ function App() {
                   <div className="text-sm text-gray-600">{stat.label}</div>
                 </div>
               ))}
+              {businesses.length > 0 && (
+                <button
+                  onClick={() => setBusinesses([])}
+                  className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  Clear Results
+                </button>
+              )}
             </div>
           </div>
         </div>

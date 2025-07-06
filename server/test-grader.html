@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grader API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            overflow: auto;
+        }
+        .result {
+            margin-top: 20px;
+            display: none;
+        }
+        .info {
+            background-color: #e7f3fe;
+            border-left: 6px solid #2196F3;
+            padding: 10px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Grader API Test</h1>
+    
+    <div class="info">
+        <p><strong>Backend URL:</strong> <span id="backendUrl">Loading...</span></p>
+        <p><strong>Using Mock Data:</strong> <span id="usingMock">Loading...</span></p>
+    </div>
+    
+    <div class="container">
+        <div class="form-group">
+            <label for="placeId">Google Place ID:</label>
+            <input type="text" id="placeId" placeholder="Enter Google Place ID" value="ChIJK3uZ2Z-1RIYRzqG2k4B0VqE">
+        </div>
+        <button onclick="testGraderAPI()">Test Grader API</button>
+        
+        <div id="result" class="result">
+            <h3>API Response:</h3>
+            <pre id="response"></pre>
+        </div>
+    </div>
+
+    <script>
+        // Fetch server configuration
+        async function fetchServerConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const data = await response.json();
+                document.getElementById('backendUrl').textContent = data.graderBackendUrl || 'Default (https://api.raygrader.com)';
+                document.getElementById('usingMock').textContent = data.usingMock ? 'Yes (No API key or using demo key)' : 'No (Using real API)';
+                
+                if (data.usingMock) {
+                    document.getElementById('usingMock').style.color = '#ff9800';
+                } else {
+                    document.getElementById('usingMock').style.color = '#4CAF50';
+                }
+            } catch (error) {
+                document.getElementById('backendUrl').textContent = 'Error fetching configuration';
+                document.getElementById('usingMock').textContent = 'Unknown';
+            }
+        }
+        
+        // Call on page load
+        fetchServerConfig();
+        
+        async function testGraderAPI() {
+            const placeId = document.getElementById('placeId').value;
+            if (!placeId) {
+                alert('Please enter a Google Place ID');
+                return;
+            }
+
+            try {
+                // Show loading state
+                document.getElementById('response').textContent = 'Loading...';
+                document.getElementById('result').style.display = 'block';
+
+                const response = await fetch('http://localhost:3001/api/grade-business', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ placeId })
+                });
+
+                const data = await response.json();
+                
+                // Format and display the response
+                document.getElementById('response').textContent = JSON.stringify(data, null, 2);
+                
+                // If we have a report ID, show a link to view the report
+                if (data.reportId) {
+                    const reportLink = document.createElement('p');
+                    reportLink.innerHTML = `<a href="http://localhost:3001/api/grade-report/${data.reportId}" target="_blank">View Report</a>`;
+                    document.getElementById('result').appendChild(reportLink);
+                }
+            } catch (error) {
+                document.getElementById('response').textContent = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html> 

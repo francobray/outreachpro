@@ -41,6 +41,7 @@ interface Business {
   numLocations?: number;
   locationNames?: string[];
   graderScore?: number;
+  reportId?: string;
 }
 
 interface BusinessTableProps {
@@ -560,15 +561,48 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     updateLoadingState(business.id, 'grader');
     
     try {
-      // Generate a score from 1-100 based on various factors
-      const score = Math.floor(Math.random() * 100) + 1; // Integer score from 1-100
+      // Call the server endpoint to grade the business
+      const response = await fetch('http://localhost:3001/api/grade-business', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ placeId: business.placeId })
+      });
       
-      // Update the business with the grader score
-      updateBusinessData(business.id, { graderScore: score });
+      if (!response.ok) {
+        throw new Error(`Failed to grade business: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      // Calculate the score as a percentage (0-100)
+      // The API returns score as a decimal between 0 and 1
+      const scoreAsPercentage = Math.round((data.score || 0) * 100);
+      
+      // Update the business with the grader score from the API
+      updateBusinessData(business.id, { 
+        graderScore: scoreAsPercentage,
+        reportId: data.reportId  // Store the report ID for viewing later
+      });
+      
+      return data;
     } catch (error) {
       console.error('Failed to grade business:', error);
     } finally {
       updateLoadingState(business.id, '');
+    }
+  };
+
+  // Function to open/view the grader report
+  const viewGraderReport = async (reportId: string, businessName: string) => {
+    if (!reportId) return;
+    
+    try {
+      // Open the report in a new tab
+      window.open(`http://localhost:3001/api/grade-report/${reportId}`, '_blank');
+    } catch (error) {
+      console.error('Failed to view report:', error);
     }
   };
 
@@ -721,7 +755,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website emails</th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo emails</th>
                 <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('graderScore')}>
-                  Grader score
+                  Grader
                   <span className="ml-1">{sortBy === 'graderScore' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
                 <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
@@ -912,13 +946,24 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                     </td>
                     <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
                       {enrichedBusiness.graderScore !== undefined && enrichedBusiness.graderScore !== null ? (
-                        <span className={`text-xs font-medium ${
-                          enrichedBusiness.graderScore >= 70 ? 'text-green-600' : 
-                          enrichedBusiness.graderScore >= 40 ? 'text-amber-600' : 
-                          'text-red-600'
-                        }`}>
-                          {enrichedBusiness.graderScore}%
-                        </span>
+                        <div className="flex flex-col items-center justify-center gap-1">
+                          <span className={`text-xs font-medium ${
+                            enrichedBusiness.graderScore >= 70 ? 'text-green-600' : 
+                            enrichedBusiness.graderScore >= 40 ? 'text-amber-600' : 
+                            'text-red-600'
+                          }`}>
+                            {enrichedBusiness.graderScore}%
+                          </span>
+                          {enrichedBusiness.reportId && (
+                            <button
+                              onClick={() => viewGraderReport(enrichedBusiness.reportId!, enrichedBusiness.name)}
+                              className="text-xs text-blue-600 hover:underline flex items-center"
+                            >
+                              <FileText className="h-3 w-3 mr-1" />
+                              View Report
+                            </button>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-xs text-gray-400">-</span>
                       )}

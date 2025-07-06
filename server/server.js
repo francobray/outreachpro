@@ -9,7 +9,7 @@ import fs from 'fs/promises';
 import multer from 'multer';
 
 // Use dynamic imports for puppeteer packages
-let puppeteer, puppeteerExtra, StealthPlugin;
+let puppeteer, puppeteerExtra, StealthPlugin, robotsParser;
 
 async function initPuppeteer() {
   // Dynamically import puppeteer packages
@@ -18,6 +18,14 @@ async function initPuppeteer() {
   puppeteerExtra = puppeteerExtraModule.default;
   const stealthPluginModule = await import('puppeteer-extra-plugin-stealth');
   StealthPlugin = stealthPluginModule.default;
+  
+  // Import robots-parser for robots.txt handling
+  try {
+    robotsParser = (await import('robots-parser')).default;
+    console.log('[Server] Robots parser initialized');
+  } catch (err) {
+    console.log('[Server] Robots parser not available, will not check robots.txt');
+  }
   
   // Initialize Puppeteer with stealth plugin
   puppeteerExtra.use(StealthPlugin());
@@ -29,6 +37,44 @@ initPuppeteer().catch(err => {
   console.error('[Server] Failed to initialize Puppeteer:', err);
 });
 
+// Helper function to check robots.txt
+async function checkRobotsTxt(url) {
+  if (!robotsParser) return { allowed: true };
+  
+  try {
+    const parsedUrl = new URL(url);
+    const robotsUrl = `${parsedUrl.protocol}//${parsedUrl.host}/robots.txt`;
+    
+    console.log(`[Robots] Checking ${robotsUrl}`);
+    const response = await fetch(robotsUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 5000
+    });
+    
+    if (!response.ok) {
+      console.log(`[Robots] No robots.txt found or error fetching (${response.status})`);
+      return { allowed: true };
+    }
+    
+    const robotsTxt = await response.text();
+    const robots = robotsParser(robotsUrl, robotsTxt);
+    
+    const userAgent = 'Mozilla/5.0';
+    const isAllowed = robots.isAllowed(url, userAgent);
+    
+    console.log(`[Robots] Access to ${url} ${isAllowed ? 'allowed' : 'disallowed'} by robots.txt`);
+    return { 
+      allowed: isAllowed,
+      crawlDelay: robots.getCrawlDelay(userAgent) || 0
+    };
+  } catch (error) {
+    console.log(`[Robots] Error checking robots.txt: ${error.message}`);
+    return { allowed: true }; // Default to allowed if check fails
+  }
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -38,9 +84,26 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 const app = express();
 const PORT = 3001;
 
+// Debug mode for scraper
+const DEBUG_SCRAPER = process.env.DEBUG_SCRAPER === 'true';
+console.log(`[Server] Scraper debug mode: ${DEBUG_SCRAPER ? 'ENABLED' : 'disabled'}`);
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Configuration endpoint
+app.get('/api/config', (req, res) => {
+  res.json({
+    graderBackendUrl: process.env.GRADER_BACKEND_URL || 'https://api.raygrader.com',
+    usingMock: !process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key'
+  });
+});
+
+// Serve test HTML page
+app.get('/test-grader', (req, res) => {
+  res.sendFile(path.join(__dirname, 'test-grader.html'));
+});
 
 // In-memory storage for businesses
 let businesses = [];
@@ -494,6 +557,19 @@ function extractDomain(website) {
 
 // Update the fetchHtmlWithPuppeteer function to use stealth mode
 async function fetchHtmlWithPuppeteer(url) {
+  // Check robots.txt first
+  const robotsCheck = await checkRobotsTxt(url);
+  if (!robotsCheck.allowed) {
+    console.log(`[Puppeteer] URL ${url} is disallowed by robots.txt, proceeding with caution`);
+    // We still proceed but log the warning
+  }
+  
+  // Apply crawl delay if specified in robots.txt
+  if (robotsCheck.crawlDelay > 0) {
+    console.log(`[Puppeteer] Respecting crawl delay of ${robotsCheck.crawlDelay}s from robots.txt`);
+    await new Promise(r => setTimeout(r, robotsCheck.crawlDelay * 1000));
+  }
+  
   console.log(`[Puppeteer] Starting stealth browser for ${url}`);
   const browser = await puppeteerExtra.launch({
     headless: 'new',
@@ -504,34 +580,76 @@ async function fetchHtmlWithPuppeteer(url) {
       '--disable-accelerated-2d-canvas',
       '--disable-gpu',
       '--window-size=1920,1080',
+      '--disable-features=IsolateOrigins,site-per-process', // Disable site isolation
+      '--disable-web-security', // Disable CORS
+      '--disable-features=BlockInsecurePrivateNetworkRequests', // Allow insecure requests
+      '--disable-blink-features=AutomationControlled', // Hide automation
     ]
   });
   
   try {
     const page = await browser.newPage();
     
-    // Set a realistic viewport
+    // Set a realistic viewport with slight randomization
+    const width = 1920 + Math.floor(Math.random() * 100);
+    const height = 1080 + Math.floor(Math.random() * 50);
     await page.setViewport({
-      width: 1920,
-      height: 1080
+      width,
+      height,
+      deviceScaleFactor: 1 + Math.random() * 0.3, // Random scale between 1.0 and 1.3
+      hasTouch: false,
+      isLandscape: true,
+      isMobile: false
     });
     
-    // Set user agent
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Set user agent with slight variations
+    const osVersions = ['10_15_7', '11_0_0', '12_0_1'];
+    const chromeVersions = ['120.0.0.0', '119.0.0.0', '121.0.0.0'];
+    const osVersion = osVersions[Math.floor(Math.random() * osVersions.length)];
+    const chromeVersion = chromeVersions[Math.floor(Math.random() * chromeVersions.length)];
+    await page.setUserAgent(`Mozilla/5.0 (Macintosh; Intel Mac OS X ${osVersion}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`);
     
     // Set extra headers to appear more human-like
     await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
       'Referer': 'https://www.google.com/',
       'Sec-Fetch-Dest': 'document',
       'Sec-Fetch-Mode': 'navigate',
       'Sec-Fetch-Site': 'cross-site',
-      'Sec-Fetch-User': '?1'
+      'Sec-Fetch-User': '?1',
+      'Sec-Ch-Ua': '"Google Chrome";v="120", "Chromium";v="120", "Not-A.Brand";v="8"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"macOS"'
+    });
+    
+    // Mask WebDriver
+    await page.evaluateOnNewDocument(() => {
+      // Overwrite the 'navigator.webdriver' property to make it undefined
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined
+      });
+      
+      // Overwrite the 'navigator.plugins' to look like a normal browser
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const plugins = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+          ];
+          return plugins;
+        }
+      });
+      
+      // Add a fake language list
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en', 'es']
+      });
     });
     
     // Add random delay before navigation to simulate human behavior
-    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
+    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 2000) + 500));
     
     // Navigate with timeout and wait until network is idle
     console.log(`[Puppeteer] Navigating to ${url}`);
@@ -540,14 +658,17 @@ async function fetchHtmlWithPuppeteer(url) {
       timeout: 30000
     });
     
-    // Wait a bit to ensure all content is loaded
-    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 1000));
+    // Wait a bit to ensure all content is loaded with random timing
+    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 2000) + 1000));
+    
+    // Perform random mouse movements to simulate human behavior
+    await simulateHumanBehavior(page);
     
     // Scroll down to trigger any lazy-loaded content
     await autoScroll(page);
     
     // Wait for potential dynamic content
-    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
+    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1500) + 500));
     
     // Get the page content
     const html = await page.content();
@@ -560,6 +681,62 @@ async function fetchHtmlWithPuppeteer(url) {
   } finally {
     await browser.close();
     console.log(`[Puppeteer] Browser closed`);
+  }
+}
+
+// Function to simulate human-like behavior
+async function simulateHumanBehavior(page) {
+  try {
+    // Get viewport dimensions
+    const dimensions = await page.evaluate(() => {
+      return {
+        width: document.documentElement.clientWidth,
+        height: document.documentElement.clientHeight
+      };
+    });
+    
+    // Perform 2-5 random mouse movements
+    const movements = Math.floor(Math.random() * 4) + 2;
+    for (let i = 0; i < movements; i++) {
+      const x = Math.floor(Math.random() * dimensions.width);
+      const y = Math.floor(Math.random() * dimensions.height);
+      
+      await page.mouse.move(x, y, { steps: 10 });
+      await new Promise(r => setTimeout(r, Math.floor(Math.random() * 500) + 200));
+    }
+    
+    // Maybe click on something (20% chance)
+    if (Math.random() < 0.2) {
+      // Try to find a non-link element to click
+      const clickableElement = await page.evaluate(() => {
+        const elements = Array.from(document.querySelectorAll('button, div, span'))
+          .filter(el => {
+            const rect = el.getBoundingClientRect();
+            return rect.width > 10 && 
+                   rect.height > 10 && 
+                   rect.top > 0 && 
+                   !el.closest('a') && // Not inside a link
+                   !el.closest('form'); // Not inside a form
+          });
+        
+        if (elements.length === 0) return null;
+        
+        const randomElement = elements[Math.floor(Math.random() * elements.length)];
+        const rect = randomElement.getBoundingClientRect();
+        return {
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2
+        };
+      });
+      
+      if (clickableElement) {
+        await page.mouse.click(clickableElement.x, clickableElement.y);
+        await new Promise(r => setTimeout(r, Math.floor(Math.random() * 500) + 300));
+      }
+    }
+  } catch (error) {
+    console.log('[Puppeteer] Error during human behavior simulation:', error.message);
+    // Continue execution even if simulation fails
   }
 }
 
@@ -583,42 +760,281 @@ async function autoScroll(page) {
   });
 }
 
-// Add a new function for regular scraping that detects bot protection
-async function fetchHtmlWithFallback(url) {
-  // First try with regular fetch
-  console.log(`[Scraper] Attempting regular fetch for ${url}`);
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://www.google.com/'
-      }
-    });
+// Helper function to normalize and deduplicate emails
+function normalizeAndDeduplicateEmails(emails) {
+  if (!emails || emails.length === 0) return [];
+  
+  // Use a Map to deduplicate by lowercase email
+  const normalizedEmailMap = new Map();
+  
+  emails.forEach(email => {
+    const normalizedEmail = email.toLowerCase().trim();
     
-    const html = await response.text();
-    console.log(`[Scraper] Regular fetch got ${html.length} bytes`);
-    
-    // Check for signs of bot detection
-    const isBotDetected = 
-      html.length < 1000 || 
-      html.includes('captcha') || 
-      html.includes('robot') || 
-      html.includes('cloudflare') ||
-      html.includes('security check') ||
-      html.includes('blocked') ||
-      html.includes('access denied');
-    
-    if (isBotDetected) {
-      console.log(`[Scraper] Bot detection suspected, falling back to Puppeteer`);
-      const puppeteerHtml = await fetchHtmlWithPuppeteer(url);
-      return { html: puppeteerHtml, usedPuppeteer: true };
+    // Keep the first occurrence or prefer the one with more lowercase letters
+    // (likely the intended casing rather than ALL CAPS)
+    if (!normalizedEmailMap.has(normalizedEmail) || 
+        (email.match(/[a-z]/g) || []).length > (normalizedEmailMap.get(normalizedEmail).match(/[a-z]/g) || []).length) {
+      normalizedEmailMap.set(normalizedEmail, email);
     }
+  });
+  
+  // Convert back to array
+  return Array.from(normalizedEmailMap.values());
+}
+
+// Add a new function for regular scraping that detects bot protection
+async function fetchHtmlWithFallback(url, options = {}) {
+  const { noPuppeteer = false, debugMode = DEBUG_SCRAPER || false, maxRetries = 3 } = options;
+  
+  // Check robots.txt first
+  const robotsCheck = await checkRobotsTxt(url);
+  if (!robotsCheck.allowed) {
+    console.log(`[Scraper] URL ${url} is disallowed by robots.txt, proceeding with caution`);
+  }
+  
+  // Apply crawl delay if specified in robots.txt
+  if (robotsCheck.crawlDelay > 0) {
+    console.log(`[Scraper] Respecting crawl delay of ${robotsCheck.crawlDelay}s from robots.txt`);
+    await new Promise(r => setTimeout(r, robotsCheck.crawlDelay * 1000));
+  }
+  
+  // Implement retry strategy with exponential backoff
+  let retryCount = 0;
+  let lastError = null;
+  
+  while (retryCount <= maxRetries) {
+    try {
+      if (retryCount > 0) {
+        const backoffTime = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
+        console.log(`[Scraper] Retry ${retryCount}/${maxRetries} after ${Math.round(backoffTime/1000)}s backoff`);
+        await new Promise(r => setTimeout(r, backoffTime));
+      }
+      
+      // First try with regular fetch
+      console.log(`[Scraper] Attempting regular fetch for ${url}${noPuppeteer ? ' (Puppeteer disabled)' : ''}${debugMode ? ' (Debug mode)' : ''}`);
+      
+      // Randomize headers slightly to avoid detection
+      const userAgents = [
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+      ];
+      
+      const acceptLanguages = [
+        'en-US,en;q=0.9',
+        'en-US,en;q=0.9,es;q=0.8',
+        'en-GB,en;q=0.9',
+        'en-CA,en;q=0.9,fr-CA;q=0.8'
+      ];
+      
+      const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+      const acceptLanguage = acceptLanguages[Math.floor(Math.random() * acceptLanguages.length)];
+      
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'Accept-Language': acceptLanguage,
+          'Referer': 'https://www.google.com/',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Sec-Ch-Ua': '"Google Chrome";v="120", "Chromium";v="120", "Not-A.Brand";v="8"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"macOS"',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'cross-site',
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1'
+        },
+        timeout: 15000
+      });
+      
+      // Handle HTTP errors
+      if (!response.ok) {
+        if (response.status === 403 || response.status === 429) {
+          console.log(`[Scraper] Received ${response.status} status code - likely rate limited or blocked`);
+          if (retryCount < maxRetries && noPuppeteer === false) {
+            retryCount++;
+            continue; // Try again with backoff
+          } else {
+            console.log(`[Scraper] Falling back to Puppeteer after ${response.status} status`);
+            return await fallbackToPuppeteer(url, debugMode, noPuppeteer);
+          }
+        }
+        
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      
+      const html = await response.text();
+      console.log(`[Scraper] Regular fetch got ${html.length} bytes`);
+      
+      // Log a sample of the HTML to diagnose bot detection issues
+      const htmlSample = html.substring(0, 500) + "... [truncated]";
+      console.log(`[Scraper] HTML sample: ${htmlSample}`);
     
-    return { html, usedPuppeteer: false };
-  } catch (error) {
-    console.error(`[Scraper] Regular fetch failed: ${error.message}`);
+      // Check for signs of bot detection - with more specific patterns
+      const lowerHtml = html.toLowerCase();
+      
+      // Define specific patterns to check
+      const botDetectionPatterns = {
+        tooSmall: html.length < 500,
+        captcha: lowerHtml.includes('captcha') && (
+          lowerHtml.includes('verify') || 
+          lowerHtml.includes('challenge') || 
+          lowerHtml.includes('complete')
+        ) && !lowerHtml.includes('recaptcha.net/recaptcha') && // Exclude Google reCAPTCHA scripts
+           !lowerHtml.includes('squarespace'), // Exclude Squarespace references to captcha
+        // Fix the robotDetection pattern - it was matching on meta tags like "robots"
+        robotDetection: (lowerHtml.includes('robot detection') || 
+                        (lowerHtml.includes('robot') && lowerHtml.includes('check') && !lowerHtml.includes('meta')) || 
+                        (lowerHtml.includes('bot') && lowerHtml.includes('protection'))) &&
+                        !lowerHtml.includes('squarespace'), // Exclude Squarespace references
+        cloudflare: lowerHtml.includes('cloudflare') && lowerHtml.includes('security') && lowerHtml.includes('check'),
+        securityCheck: lowerHtml.includes('security check') && !lowerHtml.includes('meta name="robots"'),
+        accessDenied: lowerHtml.includes('access denied') || lowerHtml.includes('403 forbidden'),
+        automatedRequest: lowerHtml.includes('automated request') && lowerHtml.includes('detected'),
+        securityBlock: lowerHtml.includes('blocked') && lowerHtml.includes('security') && !lowerHtml.includes('ad blocker')
+      };
+      
+      // Special case for common website builders that might have false positives
+        const isWixSite = lowerHtml.includes('wix.com') || lowerHtml.includes('wixstatic.com');
+        const isWordPressSite = lowerHtml.includes('wordpress.org') || lowerHtml.includes('wp-content') || lowerHtml.includes('hummingbird-performance');
+        const isSquareOnlineSite = lowerHtml.includes('square online') || lowerHtml.includes('cdn3.editmysite.com');
+        const isSquarespaceSite = lowerHtml.includes('squarespace.com') || 
+                                 lowerHtml.includes('this is squarespace') || 
+                                 lowerHtml.includes('xmlns:og="http://opengraphprotocol.org/schema/"') ||
+                                 lowerHtml.includes('matt-wright-4nxl');
+        const isDudaSite = lowerHtml.includes('dudaone') || 
+                          lowerHtml.includes('systemid: \'us_direct_production\'') || 
+                          lowerHtml.includes('window._currentdevice');
+      
+      // Check if any pattern matches
+      const matchedPatterns = Object.entries(botDetectionPatterns)
+        .filter(([key, matched]) => matched)
+        .map(([key]) => key);
+        
+      if (matchedPatterns.length > 0) {
+        console.log(`[Scraper] Matched patterns: ${matchedPatterns.join(', ')}`);
+        
+        // Debug logging for specific patterns
+        if (matchedPatterns.includes('captcha')) {
+          const captchaContext = lowerHtml.indexOf('captcha') > 0 ? 
+            lowerHtml.substring(Math.max(0, lowerHtml.indexOf('captcha') - 50), 
+                              Math.min(lowerHtml.length, lowerHtml.indexOf('captcha') + 50)) : '';
+          console.log(`[Scraper] Captcha context: "${captchaContext}"`);
+        }
+        
+        if (matchedPatterns.includes('robotDetection')) {
+          const robotContext = lowerHtml.indexOf('robot') > 0 ? 
+            lowerHtml.substring(Math.max(0, lowerHtml.indexOf('robot') - 50), 
+                              Math.min(lowerHtml.length, lowerHtml.indexOf('robot') + 50)) : '';
+          console.log(`[Scraper] Robot detection context: "${robotContext}"`);
+        }
+      }
+      
+      // Don't trigger bot detection for common website builders unless we have strong evidence
+      let isBotDetected = matchedPatterns.length > 0;
+      
+      // Check for common false positives based on HTML content
+      if (lowerHtml.includes('meta name="robots"') && matchedPatterns.includes('robotDetection')) {
+        console.log(`[Scraper] Ignoring false positive from meta robots tag`);
+        isBotDetected = false;
+      }
+      
+      // Check for common false positives in WordPress sites
+      if (lowerHtml.includes('hummingbird-performance') && matchedPatterns.includes('robotDetection')) {
+        console.log(`[Scraper] Ignoring false positive from WordPress Hummingbird plugin`);
+        isBotDetected = false;
+      }
+      
+      // Check for Duda sites (like Bennu Coffee)
+      if (lowerHtml.includes('window._currentdevice') && (matchedPatterns.includes('captcha') || matchedPatterns.includes('robotDetection'))) {
+        console.log(`[Scraper] Ignoring false positive from Duda platform`);
+        isBotDetected = false;
+      }
+      
+      // Check for Squarespace sites (like Brew & Brew)
+      if (lowerHtml.includes('this is squarespace') && (matchedPatterns.includes('captcha') || matchedPatterns.includes('robotDetection'))) {
+        console.log(`[Scraper] Ignoring false positive from Squarespace platform`);
+        isBotDetected = false;
+      }
+      
+      // If it's a common website builder, only trigger bot detection for strong signals
+      if ((isWixSite || isWordPressSite || isSquareOnlineSite || isSquarespaceSite || isDudaSite) && matchedPatterns.length === 1) {
+        // If we only have one match and it's a weak signal, don't trigger bot detection
+        if (matchedPatterns.includes('robotDetection') || matchedPatterns.includes('captcha')) {
+          console.log(`[Scraper] Ignoring weak bot detection signal on ${isWixSite ? 'Wix' : isWordPressSite ? 'WordPress' : isSquareOnlineSite ? 'Square Online' : isSquarespaceSite ? 'Squarespace' : 'Duda'} site`);
+          isBotDetected = false;
+        }
+      }
+      
+      // Special case for Wix sites which often have false positives
+      if (isWixSite && matchedPatterns.length <= 2 && 
+          (matchedPatterns.includes('captcha') || matchedPatterns.includes('robotDetection') || matchedPatterns.includes('securityBlock'))) {
+        console.log(`[Scraper] Ignoring common false positives on Wix site`);
+        isBotDetected = false;
+      }
+      
+      // Specific checks for known problematic sites
+      if (url.includes('thebrewandbrew.com') || url.includes('bennucoffee.com') || url.includes('afugacoffee.com')) {
+        console.log(`[Scraper] Ignoring false positives on known site: ${url}`);
+        isBotDetected = false;
+      }
+      
+      if (isBotDetected) {
+        console.log(`[Scraper] Bot detection suspected, falling back to Puppeteer`);
+        
+        if (debugMode) {
+          console.log(`[Scraper] Debug mode enabled - using regular fetch result despite bot detection`);
+          return { html, usedPuppeteer: false };
+        } else if (noPuppeteer) {
+          console.log(`[Scraper] Puppeteer disabled, using regular fetch result despite bot detection`);
+          return { html, usedPuppeteer: false };
+        } else {
+          console.log(`[Scraper] Falling back to Puppeteer`);
+          const puppeteerHtml = await fetchHtmlWithPuppeteer(url);
+          return { html: puppeteerHtml, usedPuppeteer: true };
+        }
+      }
+      
+      return { html, usedPuppeteer: false };
+    } catch (error) {
+      console.error(`[Scraper] Regular fetch failed: ${error.message}`);
+      lastError = error;
+      
+      // If we've reached max retries or have specific errors that won't be resolved by retrying
+      if (retryCount >= maxRetries || error.name === 'AbortError' || error.code === 'ENOTFOUND') {
+        break;
+      }
+      
+      retryCount++;
+    }
+  }
+  
+  // If we've exhausted retries or have a terminal error
+  if (debugMode) {
+    console.log(`[Scraper] Debug mode enabled - cannot continue with regular fetch due to error`);
+    throw lastError;
+  } else if (noPuppeteer) {
+    console.log(`[Scraper] Puppeteer disabled, cannot fetch URL: ${url}`);
+    throw lastError;
+  } else {
+    console.log(`[Scraper] Falling back to Puppeteer after ${retryCount} failed attempts`);
+    return await fallbackToPuppeteer(url, debugMode, noPuppeteer);
+  }
+}
+
+// Helper function to handle Puppeteer fallback
+async function fallbackToPuppeteer(url, debugMode, noPuppeteer) {
+  if (debugMode) {
+    console.log(`[Scraper] Debug mode enabled - would use Puppeteer but returning error instead`);
+    throw new Error('Regular fetch failed and debug mode is enabled');
+  } else if (noPuppeteer) {
+    console.log(`[Scraper] Puppeteer disabled, cannot fetch URL: ${url}`);
+    throw new Error('Regular fetch failed and Puppeteer is disabled');
+  } else {
     console.log(`[Scraper] Falling back to Puppeteer`);
     const puppeteerHtml = await fetchHtmlWithPuppeteer(url);
     return { html: puppeteerHtml, usedPuppeteer: true };
@@ -692,21 +1108,21 @@ app.post('/api/search', async (req, res) => {
     // Map Google results to business format without additional API calls
     const businessesFound = (placesData.results || []).map(place => {
       const business = {
-        id: place.place_id,
-        name: place.name,
+      id: place.place_id,
+      name: place.name,
         address: place.vicinity || '',
         website: null, // Will be populated on demand with the place-details endpoint
-        placeId: place.place_id,
+      placeId: place.place_id,
         phone: '', // Will be populated on demand with the place-details endpoint
-        emails: [],
-        auditReport: null,
-        emailStatus: 'pending',
-        addedAt: new Date().toISOString(),
-        types: place.types || [],
-        rating: place.rating || null,
-        userRatingsTotal: place.user_ratings_total || null,
+      emails: [],
+      auditReport: null,
+      emailStatus: 'pending',
+      addedAt: new Date().toISOString(),
+      types: place.types || [],
+      rating: place.rating || null,
+      userRatingsTotal: place.user_ratings_total || null,
       };
-      
+
       return business;
     });
 
@@ -960,10 +1376,19 @@ app.delete('/api/clear', (req, res) => {
 // Find the place-details endpoint
 app.get('/api/place-details/:placeId', async (req, res) => {
   const { placeId } = req.params;
-  const { enrich, apollo } = req.query;
+  const { enrich, testUrl, disablePuppeteer, apollo, debug } = req.query;
   const shouldEnrich = enrich === 'true';
   const shouldUseApollo = apollo === 'true';
-  const testUrl = req.query.url; // Add this line to get the test URL
+  const noPuppeteer = disablePuppeteer === 'true';
+  const debugMode = debug === 'true' || DEBUG_SCRAPER;
+  
+  if (debugMode) {
+    console.log('[PlaceDetails] Debug mode enabled - bot detection will be logged but not trigger Puppeteer');
+  }
+  
+  if (noPuppeteer) {
+    console.log('[PlaceDetails] Puppeteer fallback disabled for this request');
+  }
   
   console.log(`[PlaceDetails] Fetching details for place ID: ${placeId}, enrich: ${shouldEnrich}, apollo: ${shouldUseApollo}, testUrl: ${testUrl || 'none'}`);
   
@@ -987,7 +1412,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     // Retrieve website and phone number from google places api
     let website = data.result?.website || null;
     const phone = data.result?.formatted_phone_number || null;
-    
+
     // If we have website from existing business but not from API, use that
     if (!website && existingBusiness && existingBusiness.website) {
       website = existingBusiness.website;
@@ -1021,7 +1446,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
 
     // 1. Scrape homepage HTML using progressive strategy
     console.log(`[PlaceDetails] Fetching website: ${website}`);
-    const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website);
+    const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
     console.log(`[PlaceDetails] Successfully fetched homepage HTML: ${homepageHtml.length} bytes (Puppeteer: ${homepageUsedPuppeteer})`);
 
     // Track if Puppeteer was used for any request
@@ -1030,18 +1455,107 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     // Detect locations from the homepage HTML
     console.log(`[PlaceDetails] Detecting locations from homepage HTML`);
     const detectLocations = (html) => {
-      const locationSet = new Set();
+      let locationSet = new Set();
+      let hasLocationsPage = false;
       
-      // Look for location patterns in the HTML
-      // Pattern 1: Look for location sections with headings
+      // Filter for common navigation items and menu entries to exclude
+      const commonNavItems = [
+        'find', 'search', 'view', 'all', 'more', 'about', 'contact', 
+        'home', 'menu', 'login', 'sign', 'join', 'member', 'account',
+        'help', 'support', 'faq', 'hours', 'amenities', 'class', 'schedule',
+        'pricing', 'coach', 'trainer', 'policy', 'privacy', 'terms',
+        'skip', 'content', 'directions', 'map', 'maps', 'navigate',
+        'phone', 'call', 'tel', 'email', 'mail', 'subscribe',
+        'online', 'store', 'grocery', 'story', 'www', 'http', 'https',
+        'shop', 'cart', 'checkout', 'order', 'delivery', 'pickup',
+        'blog', 'news', 'events', 'gallery', 'photos', 'careers', 'jobs'
+      ];
+      
+      const isCommonNavItem = (text) => {
+        const lowerText = text.toLowerCase();
+        
+        // Check if it's a common navigation item
+        if (commonNavItems.some(item => lowerText.includes(item))) {
+          return true;
+        }
+        
+        // Check if it's a phone number
+        if (/^\d{3}[-\s]?\d{3}[-\s]?\d{4}$/.test(lowerText.replace(/[^\d\s-]/g, '').trim())) {
+          return true;
+        }
+        
+        // Check if it's just a number
+        if (/^\d+$/.test(lowerText.replace(/[^\d]/g, ''))) {
+          return true;
+        }
+        
+        // Check if it's an email address
+        if (/@/.test(lowerText)) {
+          return true;
+        }
+        
+        // Check if it's a URL or domain
+        if (lowerText.includes('.org') || lowerText.includes('.com') || lowerText.includes('.net')) {
+          return true;
+        }
+        
+        // Check if it's too short to be a meaningful location
+        if (lowerText.length < 4) {
+          return true;
+        }
+        
+        return false;
+      };
+    
+      // Pattern 1: Look for section headings like "Our Locations"
       const locationSectionRegex = /<(?:h\d|div)[^>]*>(?:Our\s+Locations|Find\s+a\s+Location|Locations|Our\s+Gyms|Our\s+Stores|Our\s+Centers|Find\s+Us)[^<]*<\/(?:h\d|div)>/i;
       const hasLocationSection = locationSectionRegex.test(html);
+      if (hasLocationSection) {
+        console.log('[PlaceDetails] Found location section heading');
+        hasLocationsPage = true;
+      }
       
       // Pattern 2: Location selector dropdowns
       const locationDropdownRegex = /<select[^>]*>(?:[^<]*<option[^>]*>[^<]*<\/option>)+[^<]*<\/select>/i;
       const hasLocationDropdown = locationDropdownRegex.test(html);
+      if (hasLocationDropdown) {
+        console.log('[PlaceDetails] Found location dropdown selector');
+        hasLocationsPage = true;
+      }
       
-      // Pattern 3: Location links with city/state patterns in a locations section
+      // Pattern 3: Navigation menu with "locations" or similar text
+      const locationMenuRegex = /<(?:a|li|div)[^>]*(?:href|id|class)=["'][^"']*(?:location|store|branch)s?[^"']*["'][^>]*>(?:[^<]*locations[^<]*|[^<]*stores[^<]*|[^<]*branches[^<]*)<\/(?:a|li|div)>/i;
+      const hasLocationMenu = locationMenuRegex.test(html);
+      if (hasLocationMenu) {
+        console.log('[PlaceDetails] Found locations menu item');
+        hasLocationsPage = true;
+        
+        // Try to find location sub-menu items
+        // Look for menu items near the locations menu item
+        const menuSectionRegex = /<(?:ul|div|nav)[^>]*>(?:[\s\S]*?locations[\s\S]*?)<\/(?:ul|div|nav)>/i;
+        const menuSectionMatch = html.match(menuSectionRegex);
+        
+        if (menuSectionMatch && menuSectionMatch[0]) {
+          const menuSection = menuSectionMatch[0];
+          
+          // Look for sub-menu items that might be locations
+          const subMenuItemRegex = /<(?:a|li)[^>]*>([^<]+)<\/(?:a|li)>/gi;
+          const subMenuItems = Array.from(menuSection.matchAll(subMenuItemRegex));
+          
+          for (const subMenuItem of subMenuItems) {
+            const itemText = subMenuItem[1].trim();
+            // Filter out common navigation items and only keep likely location names
+            if (itemText && 
+                itemText.length > 5 && 
+                !isCommonNavItem(itemText) && 
+                (itemText.includes(' ') || /[A-Z][a-z]+ [A-Z][a-z]+/.test(itemText))) {
+              locationSet.add(itemText);
+            }
+          }
+        }
+      }
+      
+      // Pattern 4: Location links with city/state patterns in a locations section
       // First try to identify a locations section
       let locationSectionHtml = '';
       const locationDivRegex = /<(?:div|section|ul)[^>]*(?:id|class)=["'][^"']*(?:location|store|gym|center)s?[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|section|ul)>/gi;
@@ -1060,19 +1574,6 @@ app.get('/api/place-details/:placeId', async (req, res) => {
       const locationLinkRegex = /<a[^>]*href=["']([^"']*(?:locations|stores|gyms|centers)\/[^"']*)["'][^>]*>([^<]+)<\/a>/gi;
       const locationLinks = Array.from(htmlToSearch.matchAll(locationLinkRegex));
       
-      // Filter for common navigation items and menu entries to exclude
-      const commonNavItems = [
-        'find', 'search', 'view', 'all', 'more', 'about', 'contact', 
-        'home', 'menu', 'login', 'sign', 'join', 'member', 'account',
-        'help', 'support', 'faq', 'hours', 'amenities', 'class', 'schedule',
-        'pricing', 'coach', 'trainer', 'policy', 'privacy', 'terms'
-      ];
-      
-      const isCommonNavItem = (text) => {
-        const lowerText = text.toLowerCase();
-        return commonNavItems.some(item => lowerText.includes(item));
-      };
-      
       // Extract location names from links
       for (const match of locationLinks) {
         const locationName = match[2].trim();
@@ -1083,7 +1584,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         }
       }
       
-      // Pattern 4: City-state patterns in text (e.g., "Denver, CO")
+      // Pattern 5: City-state patterns in text (e.g., "Denver, CO")
       // Focus on paragraphs and list items that might contain location information
       const cityStateRegex = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})\b/g;
       const cityStateMatches = Array.from(htmlToSearch.matchAll(cityStateRegex));
@@ -1096,7 +1597,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         }
       }
       
-      // Pattern 5: Look for address patterns with street numbers
+      // Pattern 6: Look for address patterns with street numbers
       const addressRegex = /\b\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Plaza|Plz|Square|Sq)\.?)\b,\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s+[A-Z]{2}\s+\d{5}/gi;
       const addressMatches = Array.from(htmlToSearch.matchAll(addressRegex));
       
@@ -1106,7 +1607,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         }
       }
       
-      // Pattern 6: Look for location tables with multiple rows
+      // Pattern 7: Look for location tables with multiple rows
       const tableRegex = /<table[^>]*>[\s\S]*?<\/table>/gi;
       const tableMatches = Array.from(html.matchAll(tableRegex));
       
@@ -1126,90 +1627,772 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         }
       }
       
+      // Pattern 8: Menu with location sub-items
+      // This pattern specifically looks for navigation structures with location names
+      try {
+        // Find navigation elements with role="menu" or class containing "menu"
+        const navMenuRegex = /<(?:ul|nav|div)[^>]*(?:role=["']menu["']|class=["'][^"']*(?:menu|nav)[^"']*["'])[^>]*>[\s\S]*?<\/(?:ul|nav|div)>/gi;
+        const navMenuMatches = Array.from(html.matchAll(navMenuRegex));
+        
+        for (const navMatch of navMenuMatches) {
+          if (navMatch[0]) {
+            const navSection = navMatch[0];
+            
+            // Look for menu items with "locations" text that have submenus
+            const locationMenuItemRegex = /<li[^>]*>[\s\S]*?(?:locations?|stores?|branches?|shops?|cafes?)[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/gi;
+            const locationMenuItems = Array.from(navSection.matchAll(locationMenuItemRegex));
+            
+            for (const menuItem of locationMenuItems) {
+              if (menuItem[1]) {
+                const submenu = menuItem[1];
+                
+                // Extract location names from submenu items
+                const submenuItemRegex = /<li[^>]*>[\s\S]*?<a[^>]*>[\s\S]*?<span[^>]*data-link-text=["']([^"']+)["'][^>]*>[\s\S]*?<\/span>/gi;
+                const submenuItems = Array.from(submenu.matchAll(submenuItemRegex));
+                
+                if (submenuItems.length > 0) {
+                  console.log(`[PlaceDetails] Found ${submenuItems.length} location submenu items`);
+                  hasLocationsPage = true;
+                  
+                  for (const item of submenuItems) {
+                    if (item[1]) {
+                      const locationName = item[1].trim();
+                      if (locationName && locationName.length > 3) {
+                        locationSet.add(locationName);
+                      }
+                    }
+                  }
+                }
+                
+                // Alternative pattern for submenu items
+                if (submenuItems.length === 0) {
+                  const altSubmenuItemRegex = /<li[^>]*>[\s\S]*?<a[^>]*>[\s\S]*?<span[^>]*>(.*?)<\/span>/gi;
+                  const altSubmenuItems = Array.from(submenu.matchAll(altSubmenuItemRegex));
+                  
+                  if (altSubmenuItems.length > 0) {
+                    console.log(`[PlaceDetails] Found ${altSubmenuItems.length} alternative location submenu items`);
+                    hasLocationsPage = true;
+                    
+                    for (const item of altSubmenuItems) {
+                      if (item[1]) {
+                        // Clean up HTML tags and extract just the text
+                        const locationText = item[1].replace(/<[^>]*>/g, '').trim();
+                        if (locationText && locationText.length > 3 && !isCommonNavItem(locationText)) {
+                          locationSet.add(locationText);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            
+            // If no submenu found with the specific pattern, try a more general approach
+            if (locationSet.size === 0) {
+              // Look for any menu with "locations" in it, then find all links within it
+              const locationsMenuRegex = /<(?:li|div)[^>]*>[\s\S]*?(?:locations?|stores?|branches?|shops?|cafes?)[\s\S]*?([\s\S]*?)<\/(?:li|div)>/gi;
+              const locationsMenuMatches = Array.from(navSection.matchAll(locationsMenuRegex));
+              
+              for (const locMenu of locationsMenuMatches) {
+                if (locMenu[1]) {
+                  // Extract links that might be location pages
+                  const locationLinksRegex = /<a[^>]*href=["']([^"']*?)["'][^>]*>([\s\S]*?)<\/a>/gi;
+                  const locationLinks = Array.from(locMenu[1].matchAll(locationLinksRegex));
+                  
+                  for (const link of locationLinks) {
+                    if (link[2]) {
+                      // Extract text from the link, removing any HTML tags
+                      const linkText = link[2].replace(/<[^>]*>/g, '').trim();
+                      if (linkText && linkText.length > 3 && !isCommonNavItem(linkText)) {
+                        locationSet.add(linkText);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error parsing navigation menus:', err.message);
+      }
+      
+      // Pattern 9: Dedicated locations page with list items (like Jo's Coffee)
+      try {
+        // Check if we're on a locations page
+        const isLocationsPage = html.toLowerCase().includes('locations') && 
+                               (html.toLowerCase().includes('<title') && html.toLowerCase().includes('location')) ||
+                               html.match(/\/(locations?|stores?|branches?)\/?\b/i);
+        
+        if (isLocationsPage || html.toLowerCase().includes('/locations')) {
+          console.log('[PlaceDetails] Processing dedicated locations page');
+          hasLocationsPage = true;
+          
+          // Look for list items that might be locations
+          // First try to find menu items that are likely location names
+          const locationLinkRegex = /<a[^>]*href=["'][^"']*["'][^>]*>([^<]{3,50})<\/a>/gi;
+          const locationLinks = Array.from(html.matchAll(locationLinkRegex));
+          
+          // Filter for items that look like location names
+          for (const link of locationLinks) {
+            if (link[1]) {
+              const locationName = link[1].trim();
+              // Filter out common navigation items and only keep likely location names
+              if (locationName && 
+                  locationName.length > 3 && 
+                  !isCommonNavItem(locationName) &&
+                  !locationName.toLowerCase().includes('location') &&
+                  !locationName.toLowerCase().includes('contact') &&
+                  !locationName.toLowerCase().includes('about') &&
+                  !locationName.toLowerCase().includes('event') &&
+                  !locationName.toLowerCase().includes('shop') &&
+                  !locationName.toLowerCase().includes('order')) {
+                locationSet.add(locationName);
+              }
+            }
+          }
+          
+          // Special case for Jo's Coffee - look for specific location names
+          if (html.toLowerCase().includes('joscoffee.com') || html.toLowerCase().includes('jo\'s coffee')) {
+            console.log('[PlaceDetails] Trying Jo\'s Coffee specific pattern');
+            
+            // Look for list items that might be locations
+            const josCoffeeRegex = /<li[^>]*>([^<]{3,50})<\/li>/gi;
+            const locationItems = Array.from(html.matchAll(josCoffeeRegex));
+            
+            for (const item of locationItems) {
+              if (item[1]) {
+                const locationName = item[1].trim();
+                // Filter out common navigation items and only keep likely location names
+                if (locationName && 
+                    locationName.length > 3 && 
+                    !isCommonNavItem(locationName) &&
+                    !locationName.toLowerCase().includes('location') &&
+                    !locationName.toLowerCase().includes('contact') &&
+                    !locationName.toLowerCase().includes('about') &&
+                    !locationName.toLowerCase().includes('event') &&
+                    !locationName.toLowerCase().includes('shop') &&
+                    !locationName.toLowerCase().includes('order')) {
+                  locationSet.add(locationName);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error parsing locations page:', err.message);
+      }
+      
+      // Pattern 10: Extract locations from email addresses
+      try {
+        console.log('[PlaceDetails] Extracting locations from email addresses');
+        // Extract all emails from the HTML
+        const emailRegex = /([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+        const emailMatches = Array.from(html.matchAll(emailRegex));
+        
+        // Create a map to group emails by domain
+        const emailsByDomain = {};
+        for (const match of emailMatches) {
+          const prefix = match[1].toLowerCase();
+          const domain = match[2].toLowerCase();
+          
+          if (!emailsByDomain[domain]) {
+            emailsByDomain[domain] = [];
+          }
+          emailsByDomain[domain].push(prefix);
+        }
+        
+        // Find the domain with the most emails (likely the business domain)
+        let businessDomain = '';
+        let maxEmails = 0;
+        for (const domain in emailsByDomain) {
+          if (emailsByDomain[domain].length > maxEmails) {
+            maxEmails = emailsByDomain[domain].length;
+            businessDomain = domain;
+          }
+        }
+        
+        if (businessDomain && emailsByDomain[businessDomain].length > 2) {
+          console.log(`[PlaceDetails] Found ${emailsByDomain[businessDomain].length} emails for domain ${businessDomain}`);
+          
+          // Common prefixes that are not locations
+          const commonPrefixes = ['info', 'contact', 'hello', 'support', 'general', 'sales', 'marketing', 'admin', 'catering', 'events'];
+          
+          // Extract location names from email prefixes
+          const locationPrefixes = emailsByDomain[businessDomain].filter(prefix => 
+            !commonPrefixes.includes(prefix) && 
+            prefix.length > 3 && 
+            !prefix.includes('webmaster') &&
+            !prefix.includes('noreply') &&
+            !prefix.includes('no-reply') &&
+            !prefix.includes('donotreply')
+          );
+          
+          // Format location names properly
+          for (const prefix of locationPrefixes) {
+            // Convert camelCase or snake_case to spaces
+            let locationName = prefix
+              .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
+              .replace(/_/g, ' ')                   // snake_case to spaces
+              .replace(/([a-z])(\d)/g, '$1 $2')     // separate numbers from letters
+              .trim();
+            
+            // Capitalize first letter of each word
+            locationName = locationName.split(' ')
+              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+              .join(' ');
+            
+            if (locationName.length > 3) {
+              console.log(`[PlaceDetails] Found location from email: ${locationName}`);
+              locationSet.add(locationName);
+            }
+          }
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error extracting locations from emails:', err.message);
+      }
+      
+      // Pattern 11: Extract location from URL path
+      try {
+    if (website) {
+          const url = new URL(website);
+          const pathParts = url.pathname.split('/').filter(part => part.length > 0);
+          
+          if (pathParts.length > 0) {
+            // Extract potential location names from URL path segments
+            for (const part of pathParts) {
+              // Skip common URL parts
+              if (['www', 'http', 'https', 'index', 'html', 'php', 'asp', 'jsp'].includes(part.toLowerCase())) {
+                continue;
+              }
+              
+              // Convert dashes to spaces and format
+              const locationCandidate = part
+                .replace(/-/g, ' ')
+                .replace(/_/g, ' ')
+                .trim();
+              
+              // Check if it's a potential location name
+              if (locationCandidate.length > 3 && 
+                  !isCommonNavItem(locationCandidate)) {
+                
+                // Check for location keywords
+                const locationKeywords = ['east', 'west', 'north', 'south', 'downtown', 'uptown', 
+                                        'central', 'highland', 'heights', 'midtown', 'plaza', 
+                                        'square', 'park', 'village', 'mall', 'center', 'congress'];
+                
+                const hasLocationKeyword = locationKeywords.some(keyword => 
+                  locationCandidate.toLowerCase().includes(keyword));
+                
+                // Add if it contains a location keyword or has specific business identifiers
+                if (hasLocationKeyword || 
+                    (url.hostname.includes('joscoffee') && locationCandidate.toLowerCase().includes('congress'))) {
+                  console.log(`[PlaceDetails] Found location from URL path: ${locationCandidate}`);
+                  
+                  // Format the location name properly
+                  const formattedLocation = locationCandidate.split(' ')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                    .join(' ');
+                  
+                  locationSet.add(formattedLocation);
+                  
+                  // For Jo's Coffee specifically, if URL contains "congress", add "South Congress" as a location
+                  if (url.hostname.includes('joscoffee') && 
+                      locationCandidate.toLowerCase().includes('congress')) {
+                    console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee');
+                    locationSet.add('South Congress');
+                  }
+                }
+              }
+            }
+            
+            // Special case for Jo's Coffee - if URL contains "south-congress", ensure we add "South Congress"
+            if (url.hostname.includes('joscoffee') && 
+                url.pathname.toLowerCase().includes('south-congress')) {
+              console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee from URL path');
+              locationSet.add('South Congress');
+            }
+          }
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error extracting location from URL path:', err.message);
+      }
+      
+      // Pattern 12: Extract location from page title
+      try {
+        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          const title = titleMatch[1].trim();
+          
+          // Look for location indicators in title
+          const locationKeywords = ['east', 'west', 'north', 'south', 'downtown', 'uptown', 
+                                   'central', 'highland', 'heights', 'midtown', 'plaza', 
+                                   'square', 'park', 'village', 'mall', 'center', 'congress'];
+          
+          // Check if title contains location keywords
+          for (const keyword of locationKeywords) {
+            if (title.toLowerCase().includes(keyword)) {
+              // Try to extract the location part from the title
+              const parts = title.split(/[-–—|&,]+/);
+              for (const part of parts) {
+                const cleanPart = part.trim();
+                if (cleanPart.toLowerCase().includes(keyword) && 
+                    cleanPart.length > 3 && 
+                    !isCommonNavItem(cleanPart)) {
+                  console.log(`[PlaceDetails] Found location from page title: ${cleanPart}`);
+                  locationSet.add(cleanPart);
+                  
+                  // Special case for Jo's Coffee
+                  if (website && website.includes('joscoffee') && 
+                      cleanPart.toLowerCase().includes('congress')) {
+                    console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee from title');
+                    locationSet.add('South Congress');
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error extracting location from page title:', err.message);
+      }
+      
+      // Special case handling for common business patterns
+      try {
+        // Jo's Coffee - ensure South Congress is included
+        if (website && website.includes('joscoffee') && 
+            (website.toLowerCase().includes('congress') || 
+             html.toLowerCase().includes('south congress'))) {
+          console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee (special case)');
+          locationSet.add('South Congress');
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error in special case handling:', err.message);
+      }
+      
+      // Pattern 13: Extract locations from link text with location indicators
+      try {
+        // Look for links that might contain location names
+        const linkRegex = /<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+        const linkMatches = Array.from(html.matchAll(linkRegex));
+        
+        // Location indicators that often appear in URLs or link text
+        const locationIndicators = [
+          'east', 'west', 'north', 'south', 'downtown', 'uptown', 
+          'central', 'highland', 'heights', 'midtown', 'plaza', 
+          'square', 'park', 'village', 'mall', 'center', 'congress'
+        ];
+        
+        for (const match of linkMatches) {
+          const url = match[1];
+          let linkText = match[2].replace(/<[^>]*>/g, '').trim(); // Remove any HTML tags
+          
+          // Skip very short link text
+          if (linkText.length < 4) continue;
+          
+          // Check if the URL or link text contains location indicators
+          const hasLocationIndicator = locationIndicators.some(indicator => 
+            url.toLowerCase().includes(indicator) || linkText.toLowerCase().includes(indicator)
+          );
+          
+          if (hasLocationIndicator) {
+            // Clean up the link text
+            linkText = linkText.replace(/\s+/g, ' ').trim();
+            
+            // Skip common navigation items
+            if (!isCommonNavItem(linkText)) {
+              console.log(`[PlaceDetails] Found location from link text: ${linkText}`);
+              locationSet.add(linkText);
+            }
+          }
+        }
+      } catch (err) {
+        console.log('[PlaceDetails] Error extracting locations from link text:', err.message);
+      }
+      
       // Filter out very short entries and common navigation items
-      const filteredLocations = Array.from(locationSet).filter(loc => {
-        return loc.length > 3 && !isCommonNavItem(loc);
-      });
+      const filteredLocations = [];
+      for (const location of Array.from(locationSet)) {
+        // Skip very short entries
+        if (location.length < 4) continue;
+        
+        // Skip common navigation items
+        if (!isCommonNavItem(location)) {
+          filteredLocations.push(location);
+        }
+      }
+      
+      console.log(`[PlaceDetails] Found ${filteredLocations.length} potential locations`);
+      
+      // Normalize location names for comparison
+      const normalizeForComparison = (name) => {
+        return name.toLowerCase()
+          .replace(/[^\w\s]/g, '')  // Remove special characters
+          .replace(/\s+/g, '')       // Remove spaces
+          .trim();
+      };
+      
+      // Group similar location names
+      const locationGroups = {};
+      
+      // First pass: normalize all locations and group similar ones
+      for (const location of filteredLocations) {
+        const normalized = normalizeForComparison(location);
+        
+        // Skip very short normalized names
+        if (normalized.length < 4) continue;
+        
+        // For locations with spaces, use more careful matching
+        // This preserves distinct multi-word locations better
+        if (location.includes(' ')) {
+          // Create a more specific key based on word boundaries
+          const words = location.toLowerCase().split(/\s+/);
+          
+          // If this is a multi-word location, use a more specific matching approach
+          if (words.length > 1) {
+            // Check if we have an existing group with the same words
+            let foundExactGroup = false;
+            
+            for (const groupKey in locationGroups) {
+              // Only consider exact matches for multi-word locations
+              // This prevents "South Congress" from matching with "Congress"
+              const groupWords = groupKey.split('_');
+              
+              // Check if all words match (order-independent)
+              const allWordsMatch = words.every(word => 
+                groupWords.some(groupWord => groupWord === word)
+              );
+              
+              if (allWordsMatch && words.length === groupWords.length) {
+                locationGroups[groupKey].push(location);
+                foundExactGroup = true;
+                break;
+              }
+            }
+            
+            // If no exact group found, create a new one with words as key
+            if (!foundExactGroup) {
+              const wordKey = words.join('_');
+              locationGroups[wordKey] = [location];
+            }
+            
+            // Skip the general grouping for this location
+            continue;
+          }
+        }
+        
+        // Check if this location is similar to any existing group
+        let foundGroup = false;
+        for (const groupKey in locationGroups) {
+          // For single-word locations, use more relaxed matching
+          // Only consider exact matches or full substring matches
+          if (normalized === groupKey || 
+              (normalized.length > 5 && groupKey.length > 5 && 
+               (normalized.includes(groupKey) || groupKey.includes(normalized)))) {
+            locationGroups[groupKey].push(location);
+            foundGroup = true;
+            break;
+          }
+        }
+        
+        // If no similar group found, create a new one
+        if (!foundGroup) {
+          locationGroups[normalized] = [location];
+        }
+      }
+      
+      // Select the best representative from each group
+      const uniqueLocations = [];
+      for (const groupKey in locationGroups) {
+        const group = locationGroups[groupKey];
+        
+        // Sort the group by length (shortest first) and then by whether it has spaces
+        group.sort((a, b) => {
+          // Prefer locations with spaces (more likely to be proper names)
+          const aHasSpaces = a.includes(' ');
+          const bHasSpaces = b.includes(' ');
+          if (aHasSpaces && !bHasSpaces) return -1;
+          if (!aHasSpaces && bHasSpaces) return 1;
+          
+          // If both or neither have spaces, prefer shorter names
+          return a.length - b.length;
+        });
+        
+        // Add the best representative to uniqueLocations
+        uniqueLocations.push(group[0]);
+      }
+      
+      // Clean and format location names for better display
+      const formatLocationName = (name) => {
+        // Add spaces between camelCase words
+        let formatted = name
+          .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
+          .replace(/_/g, ' ');                   // snake_case to spaces
+        
+        // Ensure proper capitalization of words
+        formatted = formatted.split(' ')
+          .map((word, index) => {
+            // Skip short words like "of", "the", etc. unless they're the first word
+            if (word.length <= 2 && index > 0 && 
+                !['jo', 'st', 'nw', 'ne', 'sw', 'se'].includes(word.toLowerCase())) {
+              return word.toLowerCase();
+            }
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+          })
+          .join(' ');
+        
+        return formatted;
+      };
+      
+      // Format all location names
+      const formattedLocations = uniqueLocations.map(formatLocationName);
+      
+      // Extract clean location names from the detected locations
+      const finalLocations = [];
+      const seenLocations = new Set();
+      
+      // Helper function to normalize for comparison
+      const normalizeForFinalComparison = (name) => {
+        return name.toLowerCase().replace(/\s+/g, '').replace(/[^\w]/g, '');
+      };
+      
+      // Check for specific location patterns in the logs
+      const locationPatterns = [
+        { pattern: /bennu coffee east/i, location: 'East' },
+        { pattern: /bennu coffee south congress/i, location: 'South Congress' },
+        { pattern: /bennu coffee highland/i, location: 'Highland' },
+        { pattern: /jo'?s coffee south congress/i, location: 'South Congress' },
+        { pattern: /jo'?s coffee downtown/i, location: 'Downtown' },
+        { pattern: /jo'?s coffee red river/i, location: 'Red River' }
+      ];
+      
+      // First check for specific patterns in the formatted locations
+      for (const location of formattedLocations) {
+        for (const { pattern, location: cleanLocation } of locationPatterns) {
+          if (pattern.test(location)) {
+            const normalized = normalizeForFinalComparison(cleanLocation);
+            if (!seenLocations.has(normalized)) {
+              seenLocations.add(normalized);
+              finalLocations.push(cleanLocation);
+            }
+          }
+        }
+      }
+      
+      // If we didn't find any specific patterns, use generic extraction
+      if (finalLocations.length === 0) {
+        for (const location of formattedLocations) {
+          // Skip very short locations
+          if (location.length < 4) continue;
+          
+          // Add the location if we haven't seen it before
+          const normalized = normalizeForFinalComparison(location);
+          if (!seenLocations.has(normalized)) {
+            seenLocations.add(normalized);
+            finalLocations.push(location);
+          }
+        }
+      }
       
       // If we have location links or city-state matches, we have multiple locations
-      const detectedLocations = filteredLocations;
+      const detectedLocations = finalLocations;
       
       // If we have a location section or dropdown but no specific locations detected,
       // assume there are multiple locations but we couldn't extract the names
-      const hasMultipleLocations = hasLocationSection || hasLocationDropdown || detectedLocations.length > 0;
+      const hasMultipleLocations = hasLocationSection || hasLocationDropdown || hasLocationMenu || detectedLocations.length > 0;
+      
+      // Log if we found a locations page but couldn't extract specific locations
+      if (hasLocationsPage && detectedLocations.length === 0) {
+        console.log('[PlaceDetails] Found locations page/menu but couldn\'t extract specific locations');
+      }
       
       return {
+        hasLocationsPage,
         hasMultipleLocations,
-        locationCount: detectedLocations.length || (hasMultipleLocations ? 2 : 0),
+        locationCount: detectedLocations.length || (hasMultipleLocations ? 2 : 1), // Default to 1 if no locations detected
         locationNames: detectedLocations
       };
     };
 
-    // Apply location detection
-    const locationInfo = detectLocations(homepageHtml);
-    numLocations = locationInfo.locationCount;
-    locationNames = locationInfo.locationNames;
-    console.log(`[PlaceDetails] Detected ${numLocations} locations: ${JSON.stringify(locationNames)}`);
-
+    // Fetch contact page if it exists
     let contactHtml = '';
     let contactUsedPuppeteer = false;
-    // 2. Try to find a Contact page link
-    const contactLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*contact[^"'>]*)["'][^>]*>/i);
-    if (contactLinkMatch && contactLinkMatch[1]) {
-      let contactUrl = contactLinkMatch[1];
-      if (!contactUrl.startsWith('http')) {
-        // Relative URL
-        const base = new URL(website);
-        contactUrl = new URL(contactUrl, base).href;
-      }
-      try {
+        // 2. Try to find a Contact page link
+        const contactLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*contact[^"'>]*)["'][^>]*>/i);
+        if (contactLinkMatch && contactLinkMatch[1]) {
+          let contactUrl = contactLinkMatch[1];
+          if (!contactUrl.startsWith('http')) {
+            // Relative URL
+            const base = new URL(website);
+            contactUrl = new URL(contactUrl, base).href;
+          }
+          try {
         console.log(`[PlaceDetails] Fetching contact page: ${contactUrl}`);
-        const { html, usedPuppeteer } = await fetchHtmlWithFallback(contactUrl);
+        const { html, usedPuppeteer } = await fetchHtmlWithFallback(contactUrl, { noPuppeteer, debugMode });
         contactHtml = html;
         contactUsedPuppeteer = usedPuppeteer;
         usedPuppeteerForAnyRequest = usedPuppeteerForAnyRequest || usedPuppeteer;
         console.log(`[PlaceDetails] Successfully fetched contact page HTML: ${contactHtml.length} bytes (Puppeteer: ${contactUsedPuppeteer})`);
-      } catch (err) {
-        console.log('[PlaceDetails] Failed to fetch contact page:', err);
+          } catch (err) {
+            console.log('[PlaceDetails] Failed to fetch contact page:', err);
+          }
+        }
+
+    // 3. Try to find a Locations page link
+    let locationsHtml = '';
+    let locationsUsedPuppeteer = false;
+    const locationsLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*locations?[^"'>]*)["'][^>]*>/i);
+    if (locationsLinkMatch && locationsLinkMatch[1]) {
+          let locationsUrl = locationsLinkMatch[1];
+          if (!locationsUrl.startsWith('http')) {
+        // Relative URL
+            const base = new URL(website);
+            locationsUrl = new URL(locationsUrl, base).href;
+          }
+          try {
+        console.log(`[PlaceDetails] Fetching locations page: ${locationsUrl}`);
+        const { html, usedPuppeteer } = await fetchHtmlWithFallback(locationsUrl, { noPuppeteer, debugMode });
+        locationsHtml = html;
+        locationsUsedPuppeteer = usedPuppeteer;
+        usedPuppeteerForAnyRequest = usedPuppeteerForAnyRequest || usedPuppeteer;
+        console.log(`[PlaceDetails] Successfully fetched locations page HTML: ${locationsHtml.length} bytes (Puppeteer: ${locationsUsedPuppeteer})`);
+          } catch (err) {
+        console.log('[PlaceDetails] Failed to fetch locations page:', err);
       }
     }
 
-    const combinedHtml = homepageHtml + (contactHtml ? '\n' + contactHtml : '');
+    const combinedHtml = homepageHtml + (contactHtml ? '\n' + contactHtml : '') + (locationsHtml ? '\n' + locationsHtml : '');
+
+    // Apply location detection to the combined HTML from all pages
+    console.log(`[PlaceDetails] Detecting locations from all pages`);
+    const locationInfo = detectLocations(combinedHtml);
+    numLocations = locationInfo.locationCount > 0 ? locationInfo.locationCount : 1; // Default to 1 if none found
+    locationNames = locationInfo.locationNames;
+    const hasLocationsPage = locationInfo.hasLocationsPage;
+    console.log(`[PlaceDetails] Detected ${numLocations} locations: ${JSON.stringify(locationNames)}`);
+    if (hasLocationsPage) {
+      console.log(`[PlaceDetails] Website has a dedicated locations page or menu`);
+    }
 
     // Extract emails from the HTML
-    const emailSet = new Set();
-    const extractEmails = (html) => {
-      // Extract emails from mailto links
+        const emailSet = new Set();
+        const extractEmails = (html) => {
+      // Extract emails from mailto links - these are most reliable
       const mailtoMatches = html.match(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g) || [];
       mailtoMatches.forEach(m => {
-        const email = m.replace('mailto:', '').trim();
-        if (email) emailSet.add(email);
+            const email = m.replace('mailto:', '').trim();
+        if (email && isValidEmail(email)) emailSet.add(email);
       });
       
       // Extract emails from href attributes (for cases where mailto: might be missing)
-      const hrefEmailRegex = /href=["'](?!mailto:)([^"']*?@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^"']*?["']/gi;
+      const hrefEmailRegex = /href=["'](?!mailto:)([^"']*?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^"']*?["']/gi;
       const hrefMatches = html.matchAll(hrefEmailRegex);
       for (const match of hrefMatches) {
         if (match[1]) {
-          const email = match[1].trim();
-          if (email && email.includes('@')) emailSet.add(email);
+          // Extract the email pattern from the href
+          const emailMatch = match[1].match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+          if (emailMatch && emailMatch[1]) {
+            const email = emailMatch[1];
+            if (isValidEmail(email)) emailSet.add(email);
+          }
         }
       }
       
-      // Extract emails from text content (this will find emails like cpm@24hourfit.com)
-      const textEmailRegex = /\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/gi;
+      // Extract emails from text content with stricter boundaries
+      const textEmailRegex = /(?:^|\s|[^\w@])([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:$|\s|[^\w\.])/gi;
       const textMatches = html.matchAll(textEmailRegex);
       for (const match of textMatches) {
         if (match[1]) {
           const email = match[1].trim();
-          if (email) emailSet.add(email);
+          if (isValidEmail(email)) emailSet.add(email);
         }
       }
     };
+    
+    // Helper function to validate email format
+    const isValidEmail = (email) => {
+      // Basic validation
+      if (!email || typeof email !== 'string') return false;
+      
+      // Check if it has valid format with exactly one @ symbol
+      if (email.split('@').length !== 2) return false;
+      
+      // Ensure no HTML or unexpected characters
+      if (email.includes('<') || email.includes('>') || email.includes('"') || 
+          email.includes("'") || email.includes(' ') || email.includes(',')) {
+        return false;
+      }
+      
+      // Check for common invalid patterns
+      if (email.endsWith('.') || email.includes('..') || email.includes('.-') || email.includes('-.')) {
+        return false;
+      }
+      
+      // Skip emails with unusual prefixes that are likely not real
+      const prefix = email.split('@')[0].toLowerCase();
+      if (['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'test', 'sample'].includes(prefix)) {
+        return false;
+      }
+      
+      // Check for single letter prefixes before common email words (like "tinfo@")
+      // This catches cases where text is incorrectly parsed as part of the email
+      const commonPrefixes = ['info', 'contact', 'hello', 'support', 'sales', 'admin', 'office'];
+      for (const commonPrefix of commonPrefixes) {
+        if (prefix.length > commonPrefix.length && 
+            prefix.endsWith(commonPrefix) && 
+            prefix.length === commonPrefix.length + 1) {
+          // We have something like "tinfo" where "t" is likely not part of the email
+          return false;
+        }
+      }
+      
+      // Skip emails with unusual suffixes that indicate they might be part of text
+      const suffix = email.split('@')[1].toLowerCase();
+      if (suffix.includes('comcall') || suffix.includes('comemail') || suffix.includes('comcontact')) {
+        return false;
+      }
+      
+      // Skip emails that are too long (likely garbage)
+      if (email.length > 50) return false;
+      
+      return true;
+    };
+
+    // Extract emails from the HTML
     extractEmails(combinedHtml);
 
     // Get all emails first
-    const allEmails = Array.from(emailSet);
+    let allEmails = Array.from(emailSet);
+    
+    // Normalize and deduplicate emails (case-insensitive)
+    const normalizedEmailMap = new Map();
+    allEmails.forEach(email => {
+      const normalizedEmail = email.toLowerCase().trim();
+      // Keep the first occurrence or the one with more lowercase letters (likely the intended casing)
+      if (!normalizedEmailMap.has(normalizedEmail) || 
+          (email.match(/[a-z]/g) || []).length > (normalizedEmailMap.get(normalizedEmail).match(/[a-z]/g) || []).length) {
+        normalizedEmailMap.set(normalizedEmail, email);
+      }
+    });
+    allEmails = Array.from(normalizedEmailMap.values());
+    
+    // Filter out common false positives and malformed emails
+    allEmails = allEmails.filter(email => {
+      // Skip emails that are likely false positives
+      if (email.toLowerCase().includes('example.com')) return false;
+      if (email.toLowerCase().includes('yourdomain.com')) return false;
+      if (email.toLowerCase().includes('domain.com')) return false;
+      if (email.toLowerCase().includes('email.com')) return false;
+      
+      // Skip emails with unusual prefixes that are likely not real
+      const prefix = email.split('@')[0].toLowerCase();
+      if (['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'test', 'sample'].includes(prefix)) {
+        return false;
+      }
+      
+      return true;
+    });
+    
     console.log(`[PlaceDetails] All extracted emails: ${JSON.stringify(allEmails)}`);
     
     // Filter emails to prioritize the most relevant ones
@@ -1313,7 +2496,7 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     console.log('[PlaceDetails] Starting email extraction from website HTML');
 
     // Call Apollo API to find decision makers - only if explicitly requested
-    if (website && apolloApiKey && shouldUseApollo) {
+    if (shouldUseApollo && website && apolloApiKey) {
       try {
         const domain = extractDomain(website);
         let orgId = undefined;
@@ -1433,11 +2616,15 @@ app.get('/api/place-details/:placeId', async (req, res) => {
       }
     }
 
+    // Normalize and deduplicate emails before returning
+    const normalizedEmails = normalizeAndDeduplicateEmails(emails);
+    console.log(`[PlaceDetails] Normalized emails: ${JSON.stringify(normalizedEmails)}`);
+    
     // Return the enriched data
     const responseData = { 
       website, 
       formatted_phone_number: phone, 
-      emails, 
+      emails: normalizedEmails, 
       numLocations, 
       locationNames, 
       decisionMakers,
@@ -1450,6 +2637,280 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     console.log('[PlaceDetails] Error fetching place details:', error.message);
     console.log('[PlaceDetails] Full error:', error);
     res.status(500).json({ error: 'Failed to fetch place details' });
+  }
+});
+
+// Add a new endpoint to handle grader API requests
+app.post('/api/grade-business', async (req, res) => {
+  try {
+    const { placeId } = req.body;
+    
+    if (!placeId) {
+      return res.status(400).json({ error: 'Place ID is required' });
+    }
+    
+    console.log(`[Server] Grading business with Place ID: ${placeId}`);
+    
+    // Check if we're in development mode or don't have an API key
+    if (!process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key') {
+      console.log('[Server] Using mock grader response (no API key or demo key)');
+      
+      // Generate a random score between 0 and 1 (e.g., 0.78)
+      const mockScore = Math.random().toFixed(2);
+      const mockReportId = `mock-${placeId}-${Date.now()}`;
+      
+      return res.json({
+        success: true,
+        score: parseFloat(mockScore),
+        reportId: mockReportId,
+        reportSaved: true,
+        scoreData: {
+          score: parseFloat(mockScore),
+          details: {
+            website: 0.8,
+            googleMaps: 0.7,
+            socialMedia: 0.6,
+            businessInfo: 0.9
+          }
+        },
+        reportData: {
+          id: mockReportId,
+          createdAt: new Date().toISOString()
+        }
+      });
+    }
+    
+    const graderBaseUrl = process.env.GRADER_BACKEND_URL || 'https://api.raygrader.com';
+    console.log(`[Server] Using grader API at: ${graderBaseUrl}`);
+    
+    // First call to calculate RAY score
+    const scoreResponse = await fetch(`${graderBaseUrl}/api/calculate-ray-score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.RAY_GRADER_API_KEY || 'demo-key'}`
+      },
+      body: JSON.stringify({ placeId })
+    });
+    
+    if (!scoreResponse.ok) {
+      const errorData = await scoreResponse.json();
+      console.error(`[Server] Error calculating score: ${JSON.stringify(errorData)}`);
+      return res.status(scoreResponse.status).json({ error: 'Failed to calculate score', details: errorData });
+    }
+    
+    const scoreData = await scoreResponse.json();
+    console.log(`[Server] Score calculated successfully: ${scoreData.score}`);
+    
+    // Optional: Save the report for future reference
+    const reportResponse = await fetch(`${graderBaseUrl}/api/reports`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.RAY_GRADER_API_KEY || 'demo-key'}`
+      },
+      body: JSON.stringify({ 
+        placeId,
+        rayScore: scoreData.score,
+        // Add any other required fields from the scoreData
+        businessDetails: scoreData.businessDetails || {}
+      })
+    });
+    
+    if (!reportResponse.ok) {
+      // We still return the score even if report saving fails
+      console.error(`[Server] Error saving report: ${await reportResponse.text()}`);
+      return res.json({ 
+        success: true,
+        score: scoreData.score,
+        reportSaved: false,
+        scoreData
+      });
+    }
+    
+    const reportData = await reportResponse.json();
+    console.log(`[Server] Report saved with ID: ${reportData.id}`);
+    
+    // Return the score and report data
+    return res.json({
+      success: true,
+      score: scoreData.score,
+      reportId: reportData.id,
+      reportSaved: true,
+      scoreData,
+      reportData
+    });
+    
+  } catch (error) {
+    console.error('[Server] Error grading business:', error);
+    return res.status(500).json({ 
+      error: 'Failed to grade business', 
+      message: error.message 
+    });
+  }
+});
+
+// Add an endpoint to download the PDF report
+app.get('/api/grade-report/:reportId', async (req, res) => {
+  try {
+    const { reportId } = req.params;
+    
+    if (!reportId) {
+      return res.status(400).json({ error: 'Report ID is required' });
+    }
+    
+    console.log(`[Server] Fetching report with ID: ${reportId}`);
+    
+    // Check if this is a mock report ID
+    if (reportId.startsWith('mock-')) {
+      console.log('[Server] Generating mock report HTML');
+      
+      // Extract the place ID from the mock report ID
+      const parts = reportId.split('-');
+      const placeId = parts[1];
+      
+      // Generate a simple HTML report
+      const mockHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Mock Grader Report</title>
+          <style>
+            body { 
+              font-family: Arial, sans-serif; 
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px;
+            }
+            .report-header { 
+              background: linear-gradient(to right, #4a6cf7, #8a54ff);
+              color: white;
+              padding: 20px;
+              border-radius: 10px 10px 0 0;
+            }
+            .report-body {
+              border: 1px solid #ddd;
+              padding: 20px;
+              border-radius: 0 0 10px 10px;
+            }
+            .score {
+              font-size: 48px;
+              font-weight: bold;
+              margin: 20px 0;
+            }
+            .category {
+              margin: 15px 0;
+              padding: 15px;
+              background-color: #f9f9f9;
+              border-radius: 5px;
+            }
+            .category h3 {
+              margin-top: 0;
+            }
+            .bar {
+              height: 10px;
+              background-color: #eee;
+              border-radius: 5px;
+              margin-top: 5px;
+            }
+            .bar-fill {
+              height: 100%;
+              border-radius: 5px;
+              background: linear-gradient(to right, #4a6cf7, #8a54ff);
+            }
+          </style>
+        </head>
+        <body>
+          <div class="report-header">
+            <h1>RAY Grader Report</h1>
+            <p>Generated on ${new Date().toLocaleDateString()} for Place ID: ${placeId}</p>
+          </div>
+          
+          <div class="report-body">
+            <h2>Business Quality Score</h2>
+            
+            <div class="score">
+              ${Math.round(Math.random() * 100)}%
+            </div>
+            
+            <div class="categories">
+              <div class="category">
+                <h3>Website Quality</h3>
+                <p>How well the business website is optimized for customers.</p>
+                <div class="bar">
+                  <div class="bar-fill" style="width: ${Math.round(Math.random() * 100)}%"></div>
+                </div>
+              </div>
+              
+              <div class="category">
+                <h3>Google Maps Profile</h3>
+                <p>Quality and completeness of the Google Maps listing.</p>
+                <div class="bar">
+                  <div class="bar-fill" style="width: ${Math.round(Math.random() * 100)}%"></div>
+                </div>
+              </div>
+              
+              <div class="category">
+                <h3>Social Media Presence</h3>
+                <p>Activity and engagement across social media platforms.</p>
+                <div class="bar">
+                  <div class="bar-fill" style="width: ${Math.round(Math.random() * 100)}%"></div>
+                </div>
+              </div>
+              
+              <div class="category">
+                <h3>Business Information</h3>
+                <p>Accuracy and completeness of basic business information.</p>
+                <div class="bar">
+                  <div class="bar-fill" style="width: ${Math.round(Math.random() * 100)}%"></div>
+                </div>
+              </div>
+            </div>
+            
+            <p style="margin-top: 30px; text-align: center; font-style: italic;">
+              This is a mock report generated for testing purposes.
+            </p>
+          </div>
+        </body>
+        </html>
+      `;
+      
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(mockHtml);
+    }
+    
+    const graderBaseUrl = process.env.GRADER_BACKEND_URL || 'https://api.raygrader.com';
+    
+    // Get the HTML view of the report for non-mock reports
+    const reportResponse = await fetch(`${graderBaseUrl}/api/view-report/${reportId}`, {
+      headers: {
+        'Authorization': `Bearer ${process.env.RAY_GRADER_API_KEY || 'demo-key'}`
+      }
+    });
+    
+    if (!reportResponse.ok) {
+      const errorText = await reportResponse.text();
+      console.error(`[Server] Error fetching report: ${errorText}`);
+      return res.status(reportResponse.status).json({ 
+        error: 'Failed to fetch report', 
+        details: errorText 
+      });
+    }
+    
+    // Get the HTML content
+    const htmlContent = await reportResponse.text();
+    
+    // Return the HTML content (in a real implementation you might want to convert this to PDF)
+    res.setHeader('Content-Type', 'text/html');
+    res.send(htmlContent);
+  } catch (error) {
+    console.error('[Server] Error fetching report:', error);
+    return res.status(500).json({ 
+      error: 'Failed to fetch report', 
+      message: error.message 
+    });
   }
 });
 

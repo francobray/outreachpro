@@ -45,6 +45,10 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
     { keyword: 'salons', location: 'portland' },
   ];
 
+  const clearResults = () => {
+    onResults([]);
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 h-fit">
       <div className="mb-6">
@@ -106,6 +110,14 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
               <span>Search Businesses</span>
             </>
           )}
+        </button>
+
+        <button
+          type="button"
+          onClick={clearResults}
+          className="w-full mt-2 px-6 py-2 bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors flex items-center justify-center space-x-2"
+        >
+          <span>Clear Results</span>
         </button>
       </form>
 
