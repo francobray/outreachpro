@@ -12,4 +12,7 @@ export default defineConfig({
       '/api': 'http://localhost:3001',
     },
   },
+  json: {
+    stringify: true,
+  },
 });

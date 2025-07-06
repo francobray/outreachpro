@@ -5,6 +5,8 @@ import Dashboard from './components/Dashboard';
 import { Search, BarChart3, Users, Mail } from 'lucide-react';
 import { Business } from './types';
 import EmailModal from './components/EmailModal';
+// Import the version from package.json
+import packageInfo from '../package.json';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'dashboard'>('search');
@@ -88,7 +90,7 @@ function App() {
               </div>
               <div className="ml-2">
                 <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                  v2.0.0
+                  v{packageInfo.version}
                 </span>
               </div>
             </div>
