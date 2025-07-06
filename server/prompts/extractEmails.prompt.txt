@@ -1,4 +1,12 @@
-Extract all contact email addresses you can find from the following HTML. Return only a JSON array of emails.
+Extract all contact email addresses you can find from the following HTML. Look for:
+1. Emails in mailto: links
+2. Emails in href attributes
+3. Emails in plain text content (like "contact us at example@domain.com")
+4. Emails in anchor text
+
+Pay special attention to contact emails, support emails, and info emails
+
+Return only a JSON array of emails.
  
 HTML:
 {{HTML_CONTENT}} 

@@ -3,50 +3,72 @@ import SearchForm from './components/SearchForm';
 import BusinessTable from './components/BusinessTable';
 import Dashboard from './components/Dashboard';
 import { Search, BarChart3, Users, Mail } from 'lucide-react';
-
-interface Business {
-  id: string;
-  name: string;
-  address: string;
-  website: string | null;
-  placeId: string;
-  phone: string;
-  emails: string[];
-  auditReport?: any;
-  emailStatus?: 'pending' | 'sent';
-  addedAt: string;
-  category?: string;
-  types?: string[];
-  decisionMakers?: { name: string; title: string; email?: string; phone?: string; email_status?: string; linkedin_url?: string }[];
-  rating?: number;
-  userRatingsTotal?: number;
-}
+import { Business } from './types';
+import EmailModal from './components/EmailModal';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'dashboard'>('search');
-  const [searchResults, setSearchResults] = useState<Business[]>([]);
+  const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const handleSearchResults = (results: Business[]) => {
-    setSearchResults(results);
+  const handleSearch = async (keyword: string, location: string) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`http://localhost:3001/api/search?keyword=${encodeURIComponent(keyword)}&location=${encodeURIComponent(location)}`);
+      const data = await response.json();
+      setBusinesses(data);
+    } catch (error) {
+      console.error('Failed to search businesses:', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleBusinessUpdate = (updatedBusiness: Business) => {
-    setSearchResults(prevResults => {
-      const index = prevResults.findIndex(b => b.id === updatedBusiness.id);
-      if (index === -1) return prevResults;
-      
-      const newResults = [...prevResults];
-      newResults[index] = updatedBusiness;
-      return newResults;
-    });
+    setBusinesses(prev => 
+      prev.map(b => b.id === updatedBusiness.id ? { ...b, ...updatedBusiness } : b)
+    );
+  };
+
+  const handleOpenModal = (business: Business) => {
+    setSelectedBusiness(business);
+    setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setSelectedBusiness(null);
+  };
+
+  const handleEmailSent = (businessId: string) => {
+    setBusinesses(prev => 
+      prev.map(b => b.id === businessId ? { ...b, emailStatus: 'sent' } : b)
+    );
   };
 
   const stats = [
-    { label: 'Businesses Found', value: searchResults.length, icon: Users },
-    { label: 'Reports Generated', value: searchResults.filter(b => b.auditReport).length, icon: BarChart3 },
-    { label: 'Emails Sent', value: searchResults.filter(b => b.emailStatus === 'sent').length, icon: Mail },
+    { label: 'Businesses Found', value: businesses.length, icon: Users },
+    { label: 'Reports Generated', value: businesses.filter(b => b.auditReport).length, icon: BarChart3 },
+    { label: 'Emails Sent', value: businesses.filter(b => b.emailStatus === 'sent').length, icon: Mail },
   ];
+
+  // Test function for 24 Hour Fitness
+  const test24HourFitness = async () => {
+    try {
+      console.log("Testing 24 Hour Fitness email extraction");
+      // Use the real 24 Hour Fitness URL for testing
+      const url = "https://www.24hourfitness.com/gyms/denver-co/highlands-garden-active?Adb_id=GGL_LOC_ACQ_CDP";
+      const response = await fetch(`http://localhost:3001/api/place-details/ChIJD3n0er2-1RIYRzqG2k4B0VqJ?enrich=true&url=${encodeURIComponent(url)}`);
+      const data = await response.json();
+      console.log("24 Hour Fitness test result:", data);
+      alert(`Emails found: ${JSON.stringify(data.emails || [])}`);
+    } catch (error) {
+      console.error("Test failed:", error);
+      alert("Test failed: " + error);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
@@ -124,14 +146,24 @@ function App() {
             {/* Left Column - Search Form */}
             <div className="lg:col-span-1">
               <div className="sticky top-8 max-w-[300px] mx-auto lg:mx-0">
-                <SearchForm onResults={handleSearchResults} setIsLoading={setIsLoading} />
+                <SearchForm 
+                  onResults={setBusinesses} 
+                  setIsLoading={setIsLoading}
+                />
+                {/* Test button for 24 Hour Fitness */}
+                <button 
+                  onClick={test24HourFitness}
+                  className="mt-4 px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300"
+                >
+                  Test 24 Hour Fitness Email Extraction
+                </button>
               </div>
             </div>
             
             {/* Right Column - Results */}
             <div className="lg:col-span-4">
-              {(searchResults.length > 0 || isLoading) ? (
-                <BusinessTable businesses={searchResults} isLoading={isLoading} onBusinessUpdate={handleBusinessUpdate} />
+              {(businesses.length > 0 || isLoading) ? (
+                <BusinessTable businesses={businesses} isLoading={isLoading} onBusinessUpdate={handleBusinessUpdate} />
               ) : (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
                   <div>
@@ -147,6 +179,14 @@ function App() {
           <Dashboard />
         )}
       </main>
+      {selectedBusiness && (
+        <EmailModal 
+          isOpen={isModalOpen} 
+          onClose={handleCloseModal} 
+          business={selectedBusiness}
+          onEmailSent={handleEmailSent}
+        />
+      )}
     </div>
   );
 }

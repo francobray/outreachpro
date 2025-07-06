@@ -36,6 +36,9 @@ interface Business {
   rating?: number;
   userRatingsTotal?: number;
   apolloStatus?: 'found' | 'not_found' | 'error';
+  usedPuppeteer?: boolean;
+  numLocations?: number;
+  locationNames?: string[];
 }
 
 interface BusinessTableProps {
@@ -111,7 +114,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       emails?: string[], 
       numLocations?: number,
       locationNames?: string[],
-      loading: boolean 
+      loading: boolean,
+      usedPuppeteer?: boolean
     } 
   }>({});
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -322,7 +326,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           emails: data.emails || [],
           numLocations: data.numLocations,
           locationNames: data.locationNames || [],
-          loading: false
+          loading: false,
+          usedPuppeteer: data.usedPuppeteer || false
         }
       }));
       
@@ -331,7 +336,10 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         updateBusinessData(business.id, { 
           emails: data.emails || [],
           decisionMakers: data.decisionMakers || [],
-          website: website || business.website // Preserve existing website if available
+          website: website || business.website, // Preserve existing website if available
+          usedPuppeteer: data.usedPuppeteer || false,
+          numLocations: data.numLocations,
+          locationNames: data.locationNames || []
         });
       }
     } catch (error) {
@@ -385,19 +393,33 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const enrichPlacesData = async (business: Business) => {
     updateLoadingState(business.id, 'enrich');
     try {
-      // For Google Places enrichment, we do want to update the contact info
-      setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: true } }));
+      // Get the website from the business data or fetch it if not available
+      let website = business.website;
+      if (!website) {
+        const url = `/api/place-details/${business.placeId}`;
+        console.log(`[Places Enrich] Fetching website for ${business.placeId} from:`, url);
+        const res = await fetch(url);
+        const placeData = await res.json();
+        website = placeData.website;
+        console.log(`[Places Enrich] Received website for ${business.placeId}:`, website);
+      }
       
-      const url = `/api/place-details/${business.placeId}?enrich=true`;
-      console.log(`[Places Enrich] Fetching from: ${url}`);
+      if (!website) {
+        console.log(`[Places Enrich] No website found for ${business.placeId}`);
+        setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: false } }));
+        return;
+      }
+      
+      // Enrich with website data
+      const url = `/api/place-details/${business.placeId}?enrich=true&website=${encodeURIComponent(website)}`;
+      console.log(`[Places Enrich] Enriching data for ${business.placeId} from:`, url);
       const res = await fetch(url);
       const data = await res.json();
-      console.log(`[Places Enrich] Received data for ${business.placeId}:`, data);
+      console.log(`[Places Enrich] Received enriched data for ${business.placeId}:`, data);
       
-      // Extract website info, check if it's available from business data if not in response
-      let website = data.website || null;
-      if (!website && business?.website) {
-        website = business.website;
+      // If the website from the enriched data is different, use that
+      if (data.website && data.website !== website) {
+        website = data.website;
         console.log(`[Places Enrich] Using website from business data for ${business.placeId}:`, website);
       }
       
@@ -410,14 +432,18 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           emails: data.emails || [],
           numLocations: data.numLocations,
           locationNames: data.locationNames || [],
-          loading: false
+          loading: false,
+          usedPuppeteer: data.usedPuppeteer || false
         }
       }));
       
       // Also update the business data
       updateBusinessData(business.id, { 
         emails: data.emails || [],
-        website: website || business.website // Preserve existing website if available
+        website: website || business.website, // Preserve existing website if available
+        usedPuppeteer: data.usedPuppeteer || false,
+        numLocations: data.numLocations,
+        locationNames: data.locationNames || []
       });
     } catch (error) {
       console.error('Failed to enrich places data:', error);
@@ -504,6 +530,26 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     }
   };
 
+  // Get the total number of emails in selected businesses
+  const getSelectedEmailsCount = (): number => {
+    if (selectedBusinesses.size === 0) return 0;
+    
+    let totalEmails = 0;
+    selectedBusinesses.forEach(businessId => {
+      const business = businesses.find(b => b.id === businessId);
+      if (business) {
+        const enrichedBusiness = getBusinessData(business);
+        totalEmails += (enrichedBusiness.emails?.length || 0);
+      }
+    });
+    
+    return totalEmails;
+  };
+  
+  // Check if selected businesses have any emails
+  const selectedEmailsCount = getSelectedEmailsCount();
+  const hasEmails = selectedEmailsCount > 0;
+
   if (isLoading) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 h-full flex items-center justify-center">
@@ -534,9 +580,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
             </h3>
             <div className="flex items-center space-x-4">
               {selectedBusinesses.size > 0 && (
-                <span className="text-sm text-gray-600">
-                  {selectedBusinesses.size} selected
-                </span>
+                <div className="flex items-center space-x-3">
+                  <span className="text-sm text-gray-600">
+                    {selectedBusinesses.size} selected
+                  </span>
+                  <span className="text-sm px-2 py-1 bg-blue-50 text-blue-700 rounded-md">
+                    {selectedEmailsCount} emails in selection
+                  </span>
+                </div>
               )}
               {selectedBusinesses.size > 0 && (
                 <div className="flex items-center space-x-2">
@@ -570,8 +621,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   
                   <button
                     onClick={handleExecute}
-                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
+                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting || !hasEmails}
                     className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 transition-all duration-200 shadow-lg"
+                    title={!hasEmails ? "The campaign can't start because there are 0 emails in the selected Google Places" : "Execute campaign for selected businesses"}
                   >
                     {isExecuting ? (
                       <>
@@ -614,8 +666,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   # Locations
                   <span className="ml-1">{sortBy === 'numLocations' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website ✉️</th>
-                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo ✉️</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website emails</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo emails</th>
                 <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
               </tr>
             </thead>
@@ -680,16 +732,28 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         ) : contactInfo[business.placeId] ? (
                           <>
                             {getBestWebsiteUrl(business) ? (
-                              <a
-                                href={getBestWebsiteUrl(business) || undefined}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center text-xs text-blue-600 hover:text-blue-800"
-                              >
-                                <Globe className="h-4 w-4 mr-1 inline" />{getDomain(getBestWebsiteUrl(business))}
-                              </a>
+                              <div className="flex items-center">
+                                <a
+                                  href={getBestWebsiteUrl(business) || undefined}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center text-xs text-blue-600 hover:text-blue-800"
+                                >
+                                  <Globe className="h-4 w-4 mr-1 inline" />{getDomain(getBestWebsiteUrl(business))}
+                                </a>
+                                {contactInfo[business.placeId]?.usedPuppeteer && (
+                                  <div 
+                                    className="ml-1 relative group inline-block"
+                                  >
+                                    <span className="text-amber-500 cursor-pointer">⚠️</span>
+                                    <div className="absolute bottom-full left-0 mb-2 px-3 py-2 bg-gray-800 text-white text-xs rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-50 w-72 max-w-[300px]">
+                                      This website was accessed using advanced techniques to bypass bot protection
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             ) : (
-                              <span className="flex items-center text-xs text-gray-400"><Globe className="h-4 w-4 mr-1 inline" />No site</span>
+                              <span className="flex items-center text-xs text-gray-400"><Globe className="h-4 w-4 mr-1 inline" />No website found</span>
                             )}
                             {contactInfo[business.placeId].phone ? (
                               <span className="flex items-center text-xs text-gray-700"><Phone className="h-4 w-4 mr-1 inline" />{contactInfo[business.placeId].phone}</span>
