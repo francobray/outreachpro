@@ -56,22 +56,6 @@ function App() {
     { label: 'Emails Sent', value: businesses.filter(b => b.emailStatus === 'sent').length, icon: Mail },
   ];
 
-  // Test function for 24 Hour Fitness
-  const test24HourFitness = async () => {
-    try {
-      console.log("Testing 24 Hour Fitness email extraction");
-      // Use the real 24 Hour Fitness URL for testing
-      const url = "https://www.24hourfitness.com/gyms/denver-co/highlands-garden-active?Adb_id=GGL_LOC_ACQ_CDP";
-      const response = await fetch(`http://localhost:3001/api/place-details/ChIJD3n0er2-1RIYRzqG2k4B0VqJ?enrich=true&url=${encodeURIComponent(url)}`);
-      const data = await response.json();
-      console.log("24 Hour Fitness test result:", data);
-      alert(`Emails found: ${JSON.stringify(data.emails || [])}`);
-    } catch (error) {
-      console.error("Test failed:", error);
-      alert("Test failed: " + error);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
       {/* Header */}
@@ -152,13 +136,6 @@ function App() {
                   onResults={setBusinesses} 
                   setIsLoading={setIsLoading}
                 />
-                {/* Test button for 24 Hour Fitness */}
-                <button 
-                  onClick={test24HourFitness}
-                  className="mt-4 px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300"
-                >
-                  Test 24 Hour Fitness Email Extraction
-                </button>
               </div>
             </div>
             
