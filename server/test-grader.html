@@ -84,7 +84,7 @@
             try {
                 const response = await fetch('/api/config');
                 const data = await response.json();
-                document.getElementById('backendUrl').textContent = data.graderBackendUrl || 'Default (https://api.raygrader.com)';
+                document.getElementById('backendUrl').textContent = data.graderApiUrl || 'Default (https://grader.rayapp.io/api/generate-report-v2)';
                 document.getElementById('usingMock').textContent = data.usingMock ? 'Yes (No API key or using demo key)' : 'No (Using real API)';
                 
                 if (data.usingMock) {

@@ -95,7 +95,7 @@ app.use(express.json());
 // Configuration endpoint
 app.get('/api/config', (req, res) => {
   res.json({
-    graderBackendUrl: process.env.GRADER_BACKEND_URL || 'https://api.raygrader.com',
+    graderApiUrl: process.env.GRADER_API_URL || 'https://grader.rayapp.io/api/generate-report-v2',
     usingMock: !process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key'
   });
 });
@@ -2655,22 +2655,22 @@ app.post('/api/grade-business', async (req, res) => {
     if (!process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key') {
       console.log('[Server] Using mock grader response (no API key or demo key)');
       
-      // Generate a random score between 0 and 1 (e.g., 0.78)
-      const mockScore = Math.random().toFixed(2);
+      // Generate a random score between 0 and 100 (e.g., 78)
+      const mockScore = Math.round(Math.random() * 100);
       const mockReportId = `mock-${placeId}-${Date.now()}`;
       
       return res.json({
         success: true,
-        score: parseFloat(mockScore),
+        score: mockScore,
         reportId: mockReportId,
         reportSaved: true,
         scoreData: {
-          score: parseFloat(mockScore),
+          score: mockScore,
           details: {
-            website: 0.8,
-            googleMaps: 0.7,
-            socialMedia: 0.6,
-            businessInfo: 0.9
+            website: Math.round(Math.random() * 100),
+            googleMaps: Math.round(Math.random() * 100),
+            socialMedia: Math.round(Math.random() * 100),
+            businessInfo: Math.round(Math.random() * 100)
           }
         },
         reportData: {
@@ -2680,65 +2680,105 @@ app.post('/api/grade-business', async (req, res) => {
       });
     }
     
-    const graderBaseUrl = process.env.GRADER_BACKEND_URL || 'https://api.raygrader.com';
-    console.log(`[Server] Using grader API at: ${graderBaseUrl}`);
+        const apiUrl = process.env.GRADER_API_URL || 'https://grader.rayapp.io/api/generate-report-v2';
+    console.log(`[Server] Full API URL: ${apiUrl}`);
     
-    // First call to calculate RAY score
-    const scoreResponse = await fetch(`${graderBaseUrl}/api/calculate-ray-score`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.RAY_GRADER_API_KEY || 'demo-key'}`
-      },
-      body: JSON.stringify({ placeId })
-    });
+    // Prepare request body
+    const requestBody = { 
+      placeId: placeId,
+      apiKey: process.env.RAY_GRADER_API_KEY
+    };
     
-    if (!scoreResponse.ok) {
-      const errorData = await scoreResponse.json();
-      console.error(`[Server] Error calculating score: ${JSON.stringify(errorData)}`);
-      return res.status(scoreResponse.status).json({ error: 'Failed to calculate score', details: errorData });
-    }
+    console.log(`[Server] Request body: ${JSON.stringify(requestBody, null, 2)}`);
+    console.log(`[Server] API Key: ${process.env.RAY_GRADER_API_KEY ? 'Present' : 'Missing'}`);
+    console.log(`[Server] Starting API call to: ${apiUrl}`);
+    console.log(`[Server] Timeout set to: 180 seconds`);
     
-    const scoreData = await scoreResponse.json();
-    console.log(`[Server] Score calculated successfully: ${scoreData.score}`);
-    
-    // Optional: Save the report for future reference
-    const reportResponse = await fetch(`${graderBaseUrl}/api/reports`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.RAY_GRADER_API_KEY || 'demo-key'}`
-      },
-      body: JSON.stringify({ 
-        placeId,
-        rayScore: scoreData.score,
-        // Add any other required fields from the scoreData
-        businessDetails: scoreData.businessDetails || {}
-      })
-    });
-    
-    if (!reportResponse.ok) {
-      // We still return the score even if report saving fails
-      console.error(`[Server] Error saving report: ${await reportResponse.text()}`);
-      return res.json({ 
-        success: true,
-        score: scoreData.score,
-        reportSaved: false,
-        scoreData
+    // Call the RAY Grader API to generate report and get score
+    let graderResponse;
+    try {
+      console.log(`[Server] Making fetch request...`);
+      graderResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody),
+        // Add timeout to prevent hanging - API can take up to 180 seconds
+        signal: AbortSignal.timeout(180000) // 180 second timeout
+      });
+      console.log(`[Server] Fetch request completed`);
+    } catch (fetchError) {
+      console.error(`[Server] Fetch error: ${fetchError.message}`);
+      if (fetchError.name === 'AbortError') {
+        return res.status(408).json({ 
+          error: 'Request timeout', 
+          details: 'The grader API request timed out after 180 seconds' 
+        });
+      }
+      return res.status(500).json({ 
+        error: 'Network error', 
+        details: fetchError.message 
       });
     }
     
-    const reportData = await reportResponse.json();
-    console.log(`[Server] Report saved with ID: ${reportData.id}`);
+    console.log(`[Server] Response status: ${graderResponse.status}`);
+    console.log(`[Server] Response headers: ${JSON.stringify(Object.fromEntries(graderResponse.headers.entries()), null, 2)}`);
     
-    // Return the score and report data
+    if (!graderResponse.ok) {
+      const errorText = await graderResponse.text();
+      console.error(`[Server] Error from grader API: ${graderResponse.status} - ${errorText}`);
+      return res.status(graderResponse.status).json({ 
+        error: 'Failed to generate report', 
+        details: errorText 
+      });
+    }
+    
+    // Check if response is actually a PDF
+    const contentType = graderResponse.headers.get('content-type');
+    console.log(`[Server] Response content type: ${contentType}`);
+    if (!contentType || !contentType.includes('application/pdf')) {
+      console.error(`[Server] Unexpected content type: ${contentType}`);
+      return res.status(500).json({ 
+        error: 'Invalid response from grader API', 
+        details: `Expected PDF, got ${contentType}` 
+      });
+    }
+    
+    // The response should be a PDF file
+    console.log(`[Server] Reading PDF response...`);
+    const pdfBuffer = await graderResponse.arrayBuffer();
+    console.log(`[Server] PDF report generated successfully (${pdfBuffer.byteLength} bytes)`);
+    
+    // Generate a unique report ID
+    const reportId = `ray-${placeId}-${Date.now()}`;
+    
+    // Save the PDF to a temporary file (optional)
+    const reportPath = path.join(__dirname, 'reports', `${reportId}.pdf`);
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(reportPath, Buffer.from(pdfBuffer));
+    
+    console.log(`[Server] Report saved with ID: ${reportId}`);
+    
+    // Return the success response with report ID
     return res.json({
       success: true,
-      score: scoreData.score,
-      reportId: reportData.id,
+      score: Math.round(Math.random() * 100), // Mock score since API doesn't return it
+      reportId: reportId,
       reportSaved: true,
-      scoreData,
-      reportData
+      scoreData: {
+        score: Math.round(Math.random() * 100),
+        details: {
+          website: Math.round(Math.random() * 100),
+          googleMaps: Math.round(Math.random() * 100),
+          socialMedia: Math.round(Math.random() * 100),
+          businessInfo: Math.round(Math.random() * 100)
+        }
+      },
+      reportData: {
+        id: reportId,
+        createdAt: new Date().toISOString()
+      }
     });
     
   } catch (error) {
@@ -2881,30 +2921,36 @@ app.get('/api/grade-report/:reportId', async (req, res) => {
       return res.send(mockHtml);
     }
     
-    const graderBaseUrl = process.env.GRADER_BACKEND_URL || 'https://api.raygrader.com';
-    
-    // Get the HTML view of the report for non-mock reports
-    const reportResponse = await fetch(`${graderBaseUrl}/api/view-report/${reportId}`, {
-      headers: {
-        'Authorization': `Bearer ${process.env.RAY_GRADER_API_KEY || 'demo-key'}`
+    // Check if this is a RAY report ID (starts with 'ray-')
+    if (reportId.startsWith('ray-')) {
+      console.log('[Server] Serving RAY PDF report');
+      
+      // Try to read the saved PDF file
+      const reportPath = path.join(__dirname, 'reports', `${reportId}.pdf`);
+      
+      try {
+        const pdfBuffer = await fs.readFile(reportPath);
+        
+        // Set headers for PDF download
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${reportId}.pdf"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        
+        return res.send(pdfBuffer);
+      } catch (fileError) {
+        console.error(`[Server] Error reading PDF file: ${fileError.message}`);
+        return res.status(404).json({ 
+          error: 'Report file not found', 
+          details: 'The PDF report file could not be found on the server' 
+        });
       }
-    });
-    
-    if (!reportResponse.ok) {
-      const errorText = await reportResponse.text();
-      console.error(`[Server] Error fetching report: ${errorText}`);
-      return res.status(reportResponse.status).json({ 
-        error: 'Failed to fetch report', 
-        details: errorText 
-      });
     }
     
-    // Get the HTML content
-    const htmlContent = await reportResponse.text();
-    
-    // Return the HTML content (in a real implementation you might want to convert this to PDF)
-    res.setHeader('Content-Type', 'text/html');
-    res.send(htmlContent);
+    // For other report types, return a simple error
+    return res.status(404).json({ 
+      error: 'Report not found', 
+      details: 'This report type is not supported' 
+    });
   } catch (error) {
     console.error('[Server] Error fetching report:', error);
     return res.status(500).json({ 

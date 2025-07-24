@@ -2,14 +2,15 @@ import React, { useState } from 'react';
 import SearchForm from './components/SearchForm';
 import BusinessTable from './components/BusinessTable';
 import Dashboard from './components/Dashboard';
-import { Search, BarChart3, Users, Mail } from 'lucide-react';
+import EmailTemplates from './components/EmailTemplates';
+import { Search, BarChart3, Users, Mail, Briefcase } from 'lucide-react';
 import { Business } from './types';
 import EmailModal from './components/EmailModal';
 // Import the version from package.json
 import packageInfo from '../package.json';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'dashboard'>('search');
+  const [activeTab, setActiveTab] = useState<'templates' | 'dashboard'>('dashboard');
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
@@ -119,6 +120,17 @@ function App() {
               Search & Outreach
             </button>
             <button
+              onClick={() => setActiveTab('templates')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                activeTab === 'templates'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Mail className="inline h-5 w-5 mr-2" />
+              Email Templates
+            </button>
+            <button
               onClick={() => setActiveTab('dashboard')}
               className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'dashboard'
@@ -126,7 +138,7 @@ function App() {
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
               }`}
             >
-              <BarChart3 className="inline h-5 w-5 mr-2" />
+              <Briefcase className="inline h-5 w-5 mr-2" />
               Dashboard
             </button>
           </div>
@@ -162,18 +174,13 @@ function App() {
               )}
             </div>
           </div>
-        ) : (
+        ) : activeTab === 'dashboard' ? (
           <Dashboard />
+        ) : (
+          <EmailTemplates />
         )}
       </main>
-      {selectedBusiness && (
-        <EmailModal 
-          isOpen={isModalOpen} 
-          onClose={handleCloseModal} 
-          business={selectedBusiness}
-          onEmailSent={handleEmailSent}
-        />
-      )}
+      
     </div>
   );
 }

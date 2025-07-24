@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Mail, Loader2, Paperclip } from 'lucide-react';
+import { X, Mail, Loader2, Paperclip, FileText } from 'lucide-react';
 
 interface Business {
   id: string;
@@ -18,25 +18,61 @@ interface EmailModalProps {
 
 const EmailModal: React.FC<EmailModalProps> = ({ business, isOpen, onClose, onEmailSent }) => {
   const [selectedEmail, setSelectedEmail] = useState(business.emails[0] || '');
-  const [subject, setSubject] = useState(`Free Business Audit Report for ${business.name}`);
-  const [message, setMessage] = useState(`Hi there,
-
-I hope this email finds you well. I recently came across ${business.name} and was impressed by your business.
-
-I've prepared a complimentary business audit report that highlights some opportunities for growth and improvement. The report is attached to this email.
-
-Key findings include:
-• Website optimization opportunities
-• Local SEO improvements
-• Customer engagement strategies
-
-I'd love to discuss how we can help you implement these recommendations to drive more customers to your business.
-
-Would you be interested in a brief 15-minute call this week to go over the findings?
-
-Best regards,
-Your Marketing Team`);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
+  const [subject, setSubject] = useState('');
+  const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [templates, setTemplates] = useState<any[]>([]);
+
+  // Load templates and set default
+  React.useEffect(() => {
+    const savedTemplates = localStorage.getItem('emailTemplates');
+    if (savedTemplates) {
+      const parsedTemplates = JSON.parse(savedTemplates);
+      setTemplates(parsedTemplates);
+      
+      // Find default template or use first one
+      const defaultTemplate = parsedTemplates.find((t: any) => t.isDefault) || parsedTemplates[0];
+      if (defaultTemplate) {
+        setSelectedTemplate(defaultTemplate.id);
+        applyTemplate(defaultTemplate);
+      }
+    }
+  }, [business]);
+
+  const applyTemplate = (template: any) => {
+    if (!template) return;
+
+    // Replace variables with business data
+    const variables = {
+      '{{LEAD_NAME}}': business.name,
+      '{{LEAD_EMAIL}}': business.emails[0] || '',
+      '{{LOCATION_NAME}}': business.address.split(',').slice(-2).join(',').trim(),
+      '{{AUDIT_SCORE}}': business.auditReport?.score?.toString() || 'N/A',
+      '{{BUSINESS_ADDRESS}}': business.address,
+      '{{BUSINESS_WEBSITE}}': business.website || 'N/A'
+    };
+
+    let processedSubject = template.subject;
+    let processedBody = template.body;
+
+    Object.entries(variables).forEach(([variable, value]) => {
+      const regex = new RegExp(variable.replace(/[{}]/g, '\\$&'), 'g');
+      processedSubject = processedSubject.replace(regex, value);
+      processedBody = processedBody.replace(regex, value);
+    });
+
+    setSubject(processedSubject);
+    setMessage(processedBody);
+  };
+
+  const handleTemplateChange = (templateId: string) => {
+    setSelectedTemplate(templateId);
+    const template = templates.find(t => t.id === templateId);
+    if (template) {
+      applyTemplate(template);
+    }
+  };
 
   const handleSend = async () => {
     if (!selectedEmail.trim() || !subject.trim() || !message.trim()) return;
@@ -93,6 +129,34 @@ Your Marketing Team`);
 
         {/* Body */}
         <div className="p-6 max-h-[calc(90vh-140px)] overflow-y-auto space-y-4">
+          {/* Template Selection */}
+          {templates.length > 0 && (
+            <div>
+              <label htmlFor="template" className="block text-sm font-medium text-gray-700 mb-2">
+                Email Template
+              </label>
+              <div className="flex items-center space-x-2">
+                <select
+                  id="template"
+                  value={selectedTemplate}
+                  onChange={(e) => handleTemplateChange(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="">Select a template...</option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name} {template.isDefault ? '(Default)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center text-xs text-gray-500">
+                  <FileText className="h-4 w-4 mr-1" />
+                  Variables auto-filled
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Email Selection */}
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
