@@ -52,20 +52,26 @@ const EmailTemplates: React.FC = () => {
     {
       key: '{{LEAD_NAME}}',
       label: 'Lead Name',
-      description: 'Business name from the search results',
-      example: 'Blue Bottle Coffee'
+      description: 'The name of the business owner or decision maker',
+      example: 'John Doe'
+    },
+    {
+      key: '{{BUSINESS_NAME}}',
+      label: 'Business Name',
+      description: 'The name of the business from the search results',
+      example: 'Temple Wynwood'
     },
     {
       key: '{{LEAD_EMAIL}}',
       label: 'Lead Email',
       description: 'Primary email address found for the business',
-      example: 'info@bluebottlecoffee.com'
+      example: 'info@templewynwood.com'
     },
     {
       key: '{{LOCATION_NAME}}',
       label: 'Location Name',
       description: 'City/location where the business is located',
-      example: 'Austin, TX'
+      example: 'Miami, FL'
     },
     {
       key: '{{AUDIT_SCORE}}',
@@ -77,30 +83,97 @@ const EmailTemplates: React.FC = () => {
       key: '{{BUSINESS_ADDRESS}}',
       label: 'Business Address',
       description: 'Full address of the business',
-      example: '2001 E 2nd St, Austin, TX 78702'
+      example: '151 NW 24th St #102, Miami, FL 33127, USA'
     },
     {
       key: '{{BUSINESS_WEBSITE}}',
       label: 'Business Website',
       description: 'Website URL if available',
       example: 'https://bluebottlecoffee.com'
+    },
+    {
+      key: '{{REVENUE_LOSS}}',
+      label: 'Revenue Loss',
+      description: 'Estimated potential revenue loss per month',
+      example: '$7,950'
+    },
+    {
+      key: '{{COMPETITOR_LIST}}',
+      label: 'Competitor List',
+      description: 'A list of top local competitors',
+      example: '1. Pastis Miami, 2. Syndicate Wynwood'
+    },
+    {
+      key: '{{HEALTH_GRADE}}',
+      label: 'Health Grade',
+      description: 'The overall health grade of the business (e.g., Fair, Good, Poor)',
+      example: 'Fair'
+    },
+    {
+      key: '{{SEARCH_RESULTS_SCORE}}',
+      label: 'Search Results Score',
+      description: 'The score for search result presence (e.g., 3/40)',
+      example: '3/40'
+    },
+    {
+      key: '{{SEARCH_RESULTS_GRADE}}',
+      label: 'Search Results Grade',
+      description: 'The grade for search result presence (e.g., Poor)',
+      example: 'Poor'
+    },
+    {
+      key: '{{WEBSITE_EXPERIENCE_SCORE}}',
+      label: 'Website Experience Score',
+      description: 'The score for website user experience (e.g., 37/40)',
+      example: '37/40'
+    },
+    {
+      key: '{{LOCAL_LISTINGS_SCORE}}',
+      label: 'Local Listings Score',
+      description: 'The score for local listings accuracy and presence (e.g., 20/20)',
+      example: '20/20'
+    },
+    {
+      key: '{{GOOGLE_RATING}}',
+      label: 'Google Rating',
+      description: 'The average Google rating (e.g., 4.8/5)',
+      example: '4.8/5'
+    },
+    {
+      key: '{{REVIEW_COUNT}}',
+      label: 'Review Count',
+      description: 'The total number of Google reviews',
+      example: '669'
+    },
+    {
+      key: '{{BUSINESS_CATEGORY}}',
+      label: 'Business Category',
+      description: 'The primary category of the business (e.g., Bar, Restaurant)',
+      example: 'Bar'
+    },
+    {
+      key: '{{YEARLY_REVENUE_LOSS}}',
+      label: 'Yearly Revenue Loss',
+      description: 'Estimated potential revenue loss per year',
+      example: '$95,400'
     }
   ];
 
   // Load templates from localStorage on component mount
   useEffect(() => {
-    const savedTemplates = localStorage.getItem('emailTemplates');
-    if (savedTemplates) {
-      setTemplates(JSON.parse(savedTemplates));
-    } else {
-      // Create default template
-      const defaultTemplate: EmailTemplate = {
-        id: 'default-1',
-        name: 'Business Audit Outreach',
-        subject: 'Free Business Audit Report for {{LEAD_NAME}}',
-        body: `Hi there,
+    const savedTemplatesJSON = localStorage.getItem('emailTemplates');
+    const allStoredTemplates: EmailTemplate[] = savedTemplatesJSON ? JSON.parse(savedTemplatesJSON) : [];
 
-I hope this email finds you well. I recently came across {{LEAD_NAME}} in {{LOCATION_NAME}} and was impressed by your business.
+    const now = new Date().toISOString();
+    
+    const defaultTemplatesInCode: EmailTemplate[] = [
+        {
+          id: 'default-1',
+          name: 'Business Audit Outreach',
+          subject: 'Free Business Audit Report for {{BUSINESS_NAME}}',
+          body: `Hi {{LEAD_NAME}},
+
+I hope this email finds you well. I recently came across {{BUSINESS_NAME}} in {{LOCATION_NAME}} and was impressed by your business.
 
 I've prepared a complimentary business audit report that highlights some opportunities for growth and improvement. Based on my analysis, your business scored {{AUDIT_SCORE}}/100, which shows great potential with some strategic improvements.
 
@@ -114,14 +187,80 @@ I'd love to discuss how we can help you implement these recommendations to drive
 Would you be interested in a brief 15-minute call this week to go over the findings?
 
 Best regards,
-Your Marketing Team`,
-        isDefault: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      setTemplates([defaultTemplate]);
-      localStorage.setItem('emailTemplates', JSON.stringify([defaultTemplate]));
+[Your Name]`,
+          isDefault: false,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: 'default-2',
+          name: 'Unlock Hidden Revenue',
+          subject: 'Is {{BUSINESS_NAME}} losing {{REVENUE_LOSS}} each month?',
+          body: `Hi {{LEAD_NAME}},
+
+I ran a quick digital health check for businesses in {{LOCATION_NAME}} and discovered an opportunity for you.
+
+My analysis shows that {{BUSINESS_NAME}} could be losing an estimated {{REVENUE_LOSS}} in potential revenue each month due to low visibility in Google search results. This happens when customers can't find you easily, and instead find your competitors.
+
+I have a full report that pinpoints these issues. I'd be happy to walk you through it and show you how to improve your search ranking to capture that lost revenue.
+
+Are you available for a brief chat next week?
+
+Best regards,
+[Your Name]`,
+          isDefault: false,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: 'default-3',
+          name: 'Competitive Search Analysis',
+          subject: 'How {{BUSINESS_NAME}} can outrank local competitors',
+          body: `Hi {{LEAD_NAME}},
+
+I was looking at the competitive landscape for businesses like yours in {{LOCATION_NAME}}, and I noticed something you should see.
+
+Your business, {{BUSINESS_NAME}}, is currently being outranked on Google by several key competitors, including:
+{{COMPETITOR_LIST}}
+
+This means potential customers looking for your services are likely finding them first. The good news is that this is fixable.
+
+I have a report that breaks down why you're being outranked and the specific steps you can take to claim a top spot.
+
+Would you be open to a quick 15-minute call to review these insights?
+
+Regards,
+[Your Name]`,
+          isDefault: false,
+          createdAt: now,
+          updatedAt: now
+        }
+    ];
+
+    const defaultTemplateIds = new Set(defaultTemplatesInCode.map(t => t.id));
+    const customTemplates = allStoredTemplates.filter(t => !defaultTemplateIds.has(t.id));
+
+    const finalTemplates = [...defaultTemplatesInCode, ...customTemplates];
+
+    // Default selection logic:
+    // 1. Prefer a user's custom default template.
+    // 2. Fallback to default-1.
+    // 3. Fallback to the first template in the list.
+    let defaultId: string | null = null;
+    const customDefault = customTemplates.find(t => t.isDefault);
+    if (customDefault) {
+        defaultId = customDefault.id;
+    } else if (finalTemplates.find(t => t.id === 'default-1')) {
+        defaultId = 'default-1';
+    } else if (finalTemplates.length > 0) {
+        defaultId = finalTemplates[0].id;
     }
+
+    // Apply the default flag to the selected template
+    finalTemplates.forEach(t => t.isDefault = (t.id === defaultId));
+    
+    setTemplates(finalTemplates);
+    localStorage.setItem('emailTemplates', JSON.stringify(finalTemplates));
   }, []);
 
   // Save templates to localStorage whenever templates change
@@ -253,12 +392,24 @@ Your Marketing Team`,
 
   const getPreviewText = (template: EmailTemplate) => {
     const sampleData = {
-      '{{LEAD_NAME}}': 'Blue Bottle Coffee',
-      '{{LEAD_EMAIL}}': 'info@bluebottlecoffee.com',
-      '{{LOCATION_NAME}}': 'Austin, TX',
-      '{{AUDIT_SCORE}}': '87',
-      '{{BUSINESS_ADDRESS}}': '2001 E 2nd St, Austin, TX 78702',
-      '{{BUSINESS_WEBSITE}}': 'https://bluebottlecoffee.com'
+      '{{LEAD_NAME}}': 'John Doe',
+      '{{BUSINESS_NAME}}': 'Temple Wynwood',
+      '{{LEAD_EMAIL}}': 'info@templewynwood.com',
+      '{{LOCATION_NAME}}': 'Miami, FL',
+      '{{AUDIT_SCORE}}': '53',
+      '{{BUSINESS_ADDRESS}}': '151 NW 24th St #102, Miami, FL 33127, USA',
+      '{{BUSINESS_WEBSITE}}': 'https://bluebottlecoffee.com',
+      '{{REVENUE_LOSS}}': '$7,950',
+      '{{COMPETITOR_LIST}}': '1. Pastis Miami, 2. Syndicate Wynwood',
+      '{{HEALTH_GRADE}}': 'Fair',
+      '{{SEARCH_RESULTS_SCORE}}': '3/40',
+      '{{SEARCH_RESULTS_GRADE}}': 'Poor',
+      '{{WEBSITE_EXPERIENCE_SCORE}}': '37/40',
+      '{{LOCAL_LISTINGS_SCORE}}': '20/20',
+      '{{GOOGLE_RATING}}': '4.8/5',
+      '{{REVIEW_COUNT}}': '669',
+      '{{BUSINESS_CATEGORY}}': 'Bar',
+      '{{YEARLY_REVENUE_LOSS}}': '$95,400'
     };
 
     let previewSubject = template.subject;
@@ -382,8 +533,8 @@ Your Marketing Team`,
       {/* Edit Template Modal */}
       {showEditModal && editingTemplate && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
               <div className="flex items-center space-x-2">
                 <Edit3 className="h-5 w-5 text-orange-600" />
                 <h3 className="text-lg font-semibold text-gray-900">Edit Template</h3>
@@ -396,7 +547,7 @@ Your Marketing Team`,
               </button>
             </div>
 
-            <div className="flex max-h-[calc(90vh-140px)]">
+            <div className="flex flex-grow overflow-hidden">
               {/* Template Form */}
               <div className="flex-1 p-6 overflow-y-auto">
                 <div className="space-y-4">
@@ -432,14 +583,20 @@ Your Marketing Team`,
                     <label htmlFor="template-body" className="block text-sm font-medium text-gray-700 mb-2">
                       Email Body
                     </label>
-                    <textarea
-                      id="template-body"
-                      value={formData.body}
-                      onChange={(e) => setFormData(prev => ({ ...prev, body: e.target.value }))}
-                      placeholder="Write your email template here. Use variables like {{LEAD_NAME}} to personalize..."
-                      rows={16}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm"
-                    />
+                    <div className="relative">
+                      <div 
+                        className="w-full px-3 py-2 border border-transparent rounded-lg font-mono text-sm whitespace-pre-wrap pointer-events-none absolute inset-0"
+                        dangerouslySetInnerHTML={{ __html: formData.body.replace(/({{[A-Z_]+}})/g, '<span class="text-blue-600 bg-blue-100 rounded">$1</span>') + '<br/>' }}
+                      />
+                      <textarea
+                        id="template-body"
+                        value={formData.body}
+                        onChange={(e) => setFormData(prev => ({ ...prev, body: e.target.value }))}
+                        placeholder="Write your email template here, including your signature. Use variables like {{LEAD_NAME}} to personalize..."
+                        rows={22}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm relative bg-transparent caret-gray-800"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -493,7 +650,7 @@ Your Marketing Team`,
               </div>
             </div>
 
-            <div className="flex items-center justify-end space-x-3 p-6 border-t border-gray-200">
+            <div className="flex items-center justify-end space-x-3 p-6 border-t border-gray-200 flex-shrink-0">
               <button
                 onClick={handleCancelEditTemplate}
                 className="px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -516,8 +673,8 @@ Your Marketing Team`,
       {/* Create Template Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 flex-shrink-0">
               <div className="flex items-center space-x-2">
                 <Plus className="h-5 w-5 text-blue-600" />
                 <h3 className="text-lg font-semibold text-gray-900">Create New Template</h3>
@@ -530,7 +687,7 @@ Your Marketing Team`,
               </button>
             </div>
 
-            <div className="flex max-h-[calc(90vh-140px)]">
+            <div className="flex flex-grow overflow-hidden">
               {/* Template Form */}
               <div className="flex-1 p-6 overflow-y-auto">
                 <div className="space-y-4">
@@ -566,14 +723,20 @@ Your Marketing Team`,
                     <label htmlFor="create-template-body" className="block text-sm font-medium text-gray-700 mb-2">
                       Email Body
                     </label>
-                    <textarea
-                      id="create-template-body"
-                      value={createFormData.body}
-                      onChange={(e) => setCreateFormData(prev => ({ ...prev, body: e.target.value }))}
-                      placeholder="Write your email template here. Use variables like {{LEAD_NAME}} to personalize..."
-                      rows={16}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm"
-                    />
+                    <div className="relative">
+                      <div
+                        className="w-full px-3 py-2 border border-transparent rounded-lg font-mono text-sm whitespace-pre-wrap pointer-events-none absolute inset-0"
+                        dangerouslySetInnerHTML={{ __html: createFormData.body.replace(/({{[A-Z_]+}})/g, '<span class="text-blue-600 bg-blue-100 rounded">$1</span>') + '<br/>' }}
+                      />
+                      <textarea
+                        id="create-template-body"
+                        value={createFormData.body}
+                        onChange={(e) => setCreateFormData(prev => ({ ...prev, body: e.target.value }))}
+                        placeholder="Write your email template here, including your signature. Use variables like {{LEAD_NAME}} to personalize..."
+                        rows={22}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm relative bg-transparent caret-gray-800"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -627,7 +790,7 @@ Your Marketing Team`,
               </div>
             </div>
 
-            <div className="flex items-center justify-end space-x-3 p-6 border-t border-gray-200">
+            <div className="flex items-center justify-end space-x-3 p-6 border-t border-gray-200 flex-shrink-0">
               <button
                 onClick={handleCancelCreate}
                 className="px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"

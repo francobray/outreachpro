@@ -1,60 +1,66 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import SearchForm from './components/SearchForm';
 import BusinessTable from './components/BusinessTable';
 import Dashboard from './components/Dashboard';
 import EmailTemplates from './components/EmailTemplates';
-import { Search, BarChart3, Users, Mail, Briefcase } from 'lucide-react';
-import { Business } from './types';
-import EmailModal from './components/EmailModal';
-// Import the version from package.json
+import CampaignModal from './components/CampaignModal';
+import CampaignDetails from './components/CampaignDetails'; // Import CampaignDetails
+import { Search, Mail, Briefcase, Send, Users } from 'lucide-react';
+import { Business, Campaign } from './types';
+import { useCampaigns } from './context/CampaignContext';
 import packageInfo from '../package.json';
 
+// Define the EmailTemplate type
+interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<'templates' | 'dashboard'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'dashboard'>('search');
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedBusinesses, setSelectedBusinesses] = useState<Business[]>([]);
+  const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
+  const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>([]);
+  const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
 
-  const handleSearch = async (keyword: string, location: string) => {
-    setIsLoading(true);
-    try {
-      const response = await fetch(`http://localhost:3001/api/search?keyword=${encodeURIComponent(keyword)}&location=${encodeURIComponent(location)}`);
-      const data = await response.json();
-      setBusinesses(data);
-    } catch (error) {
-      console.error('Failed to search businesses:', error);
-    } finally {
-      setIsLoading(false);
+  const { campaigns, createCampaign } = useCampaigns();
+
+  // Load email templates from local storage
+  useEffect(() => {
+    const savedTemplates = localStorage.getItem('emailTemplates');
+    if (savedTemplates) {
+      setEmailTemplates(JSON.parse(savedTemplates));
+    }
+  }, []);
+
+  const handleSelectionChange = (selected: Business[]) => {
+    setSelectedBusinesses(selected);
+  };
+
+  const openCampaignModal = () => {
+    if (selectedBusinesses.length > 0) {
+      setIsCampaignModalOpen(true);
+    } else {
+      alert('Please select at least one business to create a campaign.');
     }
   };
 
-  const handleBusinessUpdate = (updatedBusiness: Business) => {
-    setBusinesses(prev => 
-      prev.map(b => b.id === updatedBusiness.id ? { ...b, ...updatedBusiness } : b)
-    );
+  const handleViewCampaignDetails = (campaign: Campaign) => {
+    setSelectedCampaign(campaign);
   };
 
-  const handleOpenModal = (business: Business) => {
-    setSelectedBusiness(business);
-    setIsModalOpen(true);
+  const handleBackToDashboard = () => {
+    setSelectedCampaign(null);
   };
-
-  const handleCloseModal = () => {
-    setIsModalOpen(false);
-    setSelectedBusiness(null);
-  };
-
-  const handleEmailSent = (businessId: string) => {
-    setBusinesses(prev => 
-      prev.map(b => b.id === businessId ? { ...b, emailStatus: 'sent' } : b)
-    );
-  };
-
+  
   const stats = [
     { label: 'Businesses Found', value: businesses.length, icon: Users },
-    { label: 'Reports Generated', value: businesses.filter(b => b.auditReport).length, icon: BarChart3 },
-    { label: 'Emails Sent', value: businesses.filter(b => b.emailStatus === 'sent').length, icon: Mail },
+    { label: 'Campaigns Created', value: campaigns.length, icon: Send },
+    { label: 'Emails Sent', value: campaigns.reduce((acc, c) => acc + c.stats.emails_sent, 0), icon: Mail },
   ];
 
   return (
@@ -117,7 +123,7 @@ function App() {
               }`}
             >
               <Search className="inline h-5 w-5 mr-2" />
-              Search & Outreach
+              Search Places
             </button>
             <button
               onClick={() => setActiveTab('templates')}
@@ -149,7 +155,6 @@ function App() {
       <main className="w-full px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === 'search' ? (
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
-            {/* Left Column - Search Form */}
             <div className="lg:col-span-1">
               <div className="sticky top-8 max-w-[300px] mx-auto lg:mx-0">
                 <SearchForm 
@@ -159,10 +164,14 @@ function App() {
               </div>
             </div>
             
-            {/* Right Column - Results */}
             <div className="lg:col-span-4">
               {(businesses.length > 0 || isLoading) ? (
-                <BusinessTable businesses={businesses} isLoading={isLoading} onBusinessUpdate={handleBusinessUpdate} />
+                <BusinessTable 
+                  businesses={businesses} 
+                  isLoading={isLoading}
+                  onSelectionChange={handleSelectionChange}
+                  onCreateCampaign={openCampaignModal}
+                />
               ) : (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
                   <div>
@@ -175,12 +184,23 @@ function App() {
             </div>
           </div>
         ) : activeTab === 'dashboard' ? (
-          <Dashboard />
+          selectedCampaign ? (
+            <CampaignDetails campaign={selectedCampaign} onBack={handleBackToDashboard} />
+          ) : (
+            <Dashboard campaigns={campaigns} onViewDetails={handleViewCampaignDetails} />
+          )
         ) : (
           <EmailTemplates />
         )}
       </main>
       
+      <CampaignModal 
+        isOpen={isCampaignModalOpen}
+        onClose={() => setIsCampaignModalOpen(false)}
+        selectedBusinesses={selectedBusinesses}
+        emailTemplates={emailTemplates}
+        onCreateCampaign={createCampaign}
+      />
     </div>
   );
 }

@@ -17,36 +17,17 @@ import {
   Shield,
   ShieldCheck,
   MapPin as LocationIcon,
-  Star
+  Star,
+  Send
 } from 'lucide-react';
 
-interface Business {
-  id: string;
-  name: string;
-  address: string;
-  website: string | null;
-  placeId: string;
-  phone: string;
-  emails: string[];
-  auditReport?: any;
-  emailStatus?: 'pending' | 'sent';
-  category?: string;
-  types?: string[];
-  decisionMakers?: { name: string; title: string; email?: string; phone?: string; email_status?: string; linkedin_url?: string }[];
-  addedAt: string;
-  rating?: number;
-  userRatingsTotal?: number;
-  apolloStatus?: 'found' | 'not_found' | 'error';
-  usedPuppeteer?: boolean;
-  numLocations?: number;
-  locationNames?: string[];
-  graderScore?: number;
-  reportId?: string;
-}
+import { Business } from '../types';
 
 interface BusinessTableProps {
   businesses: Business[];
   isLoading: boolean;
+  onSelectionChange: (selected: Business[]) => void;
+  onCreateCampaign: () => void;
   onBusinessUpdate?: (business: Business) => void;
 }
 
@@ -93,7 +74,7 @@ function getDomain(url: string | null): string | null {
   }
 }
 
-const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, onBusinessUpdate }) => {
+const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, onSelectionChange, onCreateCampaign, onBusinessUpdate }) => {
   const [loadingStates, setLoadingStates] = useState<{[key: string]: string}>({});
   const [businessData, setBusinessData] = useState<{[key: string]: Business}>({});
   const [selectedBusinesses, setSelectedBusinesses] = useState<Set<string>>(new Set());
@@ -208,25 +189,29 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   };
 
   const handleSelectBusiness = (businessId: string) => {
-    setSelectedBusinesses(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(businessId)) {
-        newSet.delete(businessId);
-      } else {
-        newSet.add(businessId);
-      }
-      return newSet;
-    });
+    const newSelectedIds = new Set(selectedBusinesses);
+    if (newSelectedIds.has(businessId)) {
+      newSelectedIds.delete(businessId);
+    } else {
+      newSelectedIds.add(businessId);
+    }
+    setSelectedBusinesses(newSelectedIds);
+    
+    const selected = businesses.filter(b => newSelectedIds.has(b.id));
+    onSelectionChange(selected);
   };
 
   const handleSelectAll = () => {
+    let newSelectedIds: Set<string>;
     if (selectedBusinesses.size === businesses.length) {
-      // Deselect all
-      setSelectedBusinesses(new Set());
+      newSelectedIds = new Set();
     } else {
-      // Select all
-      setSelectedBusinesses(new Set(businesses.map(b => b.id)));
+      newSelectedIds = new Set(businesses.map(b => b.id));
     }
+    setSelectedBusinesses(newSelectedIds);
+
+    const selected = businesses.filter(b => newSelectedIds.has(b.id));
+    onSelectionChange(selected);
   };
 
   const downloadReport = async (reportId: string, businessName: string) => {
@@ -247,41 +232,11 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   };
 
   const handleExecute = async () => {
-    if (selectedBusinesses.size === 0) return;
-    
-    setIsExecuting(true);
-    
-    try {
-      const selectedBusinessList = businesses.filter(b => selectedBusinesses.has(b.id));
-      
-      // Execute the complete workflow for each selected business
-      for (const business of selectedBusinessList) {
-        const enrichedBusiness = getBusinessData(business);
-        
-        // Step 1: Generate audit report if not exists
-        if (!enrichedBusiness.auditReport) {
-          await generateAuditReport(business);
-          // Small delay to show progression
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-        
-        // Step 2: Find emails if not found
-        if (!enrichedBusiness.emails || enrichedBusiness.emails.length === 0) {
-          // Pass false for Apollo API usage
-          await findEmails(business, false);
-          // Small delay to show progression
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
-      
-      // Clear selection after execution
-      setSelectedBusinesses(new Set());
-      
-    } catch (error) {
-      console.error('Failed to execute bulk operations:', error);
-    } finally {
-      setIsExecuting(false);
+    if (selectedBusinesses.size === 0) {
+      alert("Please select at least one business.");
+      return;
     }
+    onCreateCampaign();
   };
 
   const startResizing = (e: React.MouseEvent<HTMLDivElement, MouseEvent>, col: keyof typeof colWidths) => {
@@ -707,9 +662,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   
                   <button
                     onClick={handleExecute}
-                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting || !hasEmails}
+                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
                     className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 transition-all duration-200 shadow-lg"
-                    title={!hasEmails ? "The campaign can't start because there are 0 emails in the selected Google Places" : "Execute campaign for selected businesses"}
+                    title="Create a campaign with the selected businesses"
                   >
                     {isExecuting ? (
                       <>
@@ -718,8 +673,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       </>
                     ) : (
                       <>
-                        <Play className="h-4 w-4 mr-2" />
-                        Execute Campaign
+                        <Send className="h-4 w-4 mr-2" />
+                        Create Campaign
                       </>
                     )}
                   </button>

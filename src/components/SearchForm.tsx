@@ -1,39 +1,60 @@
 import React, { useState } from 'react';
-import { Search, MapPin, Tag, Loader2 } from 'lucide-react';
+import { Loader2, Search } from 'lucide-react';
+import { Business, Location } from '../types';
 
 interface SearchFormProps {
-  onResults: (results: any[]) => void;
-  setIsLoading: (loading: boolean) => void;
+  onResults: (businesses: Business[]) => void;
+  setIsLoading: (isLoading: boolean) => void;
 }
 
 const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
-  const [location, setLocation] = useState('');
-  const [keyword, setKeyword] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!location.trim() || !keyword.trim()) return;
-
-    setIsSearching(true);
+  const [keyword, setKeyword] = useState('coffee shops');
+  const [location, setLocation] = useState('austin');
+  
+  const handleSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setIsLoading(true);
-
     try {
-      const response = await fetch('http://localhost:3001/api/search', {
+      const response = await fetch(`http://localhost:3001/api/search`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ location: location.trim(), keyword: keyword.trim() }),
+        body: JSON.stringify({ keyword, location }),
       });
-
       const data = await response.json();
-      onResults(data.businesses || []);
+
+      // Transform the data to the new Business structure
+      const transformedData: Business[] = (data.businesses || []).map((item: any) => {
+        const firstLocation: Location = {
+          id: item.placeId, // Assuming placeId can serve as a unique ID for the main location
+          address: item.address,
+          website: item.website,
+          phone: item.phone,
+          emails: item.emails || []
+        };
+        
+        return {
+          id: item.id,
+          name: item.name,
+          placeId: item.placeId,
+          locations: [firstLocation],
+          decisionMakers: item.decisionMakers || [],
+          category: item.category,
+          types: item.types,
+          rating: item.rating,
+          userRatingsTotal: item.userRatingsTotal,
+          apolloStatus: 'pending',
+          graderReport: null,
+          addedAt: item.addedAt || new Date().toISOString(),
+        };
+      });
+      
+      onResults(transformedData);
     } catch (error) {
-      console.error('Search failed:', error);
+      console.error('Failed to search businesses:', error);
       onResults([]);
     } finally {
-      setIsSearching(false);
       setIsLoading(false);
     }
   };
@@ -42,98 +63,69 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
     { keyword: 'coffee shops', location: 'austin' },
     { keyword: 'restaurants', location: 'miami' },
     { keyword: 'gyms', location: 'denver' },
-    { keyword: 'salons', location: 'portland' },
+    { keyword: 'salons', location: 'portland' }
   ];
 
-  const clearResults = () => {
-    onResults([]);
+  const handleQuickSearch = (k: string, l: string) => {
+    setKeyword(k);
+    setLocation(l);
+    handleSearch();
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 h-fit">
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold text-gray-900 mb-2">Find Local Businesses</h2>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="keyword" className="block text-sm font-medium text-gray-700 mb-2">
-              Business Type
-            </label>
-            <div className="relative">
-              <Tag className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <input
-                id="keyword"
-                type="text"
-                value={keyword}
-                onChange={(e) => setKeyword(e.target.value)}
-                placeholder="e.g., coffee shops, restaurants, gyms"
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                disabled={isSearching}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-2">
-              Location
-            </label>
-            <div className="relative">
-              <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <input
-                id="location"
-                type="text"
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                placeholder="e.g., Austin, Miami, Denver"
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                disabled={isSearching}
-              />
-            </div>
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+      <h2 className="text-xl font-semibold mb-4 text-gray-800">Find Local Businesses</h2>
+      <form onSubmit={handleSearch} className="space-y-4">
+        <div>
+          <label htmlFor="business-type" className="block text-sm font-medium text-gray-700 mb-1">Business Type</label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+            <input
+              id="business-type"
+              type="text"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="e.g., coffee shops"
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
           </div>
         </div>
-
+        <div>
+          <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-1">Location</label>
+           <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+            <input
+              id="location"
+              type="text"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="e.g., Austin"
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+        </div>
         <button
           type="submit"
-          disabled={isSearching || !location.trim() || !keyword.trim()}
-          className="w-full px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center space-x-2"
+          disabled={!keyword || !location}
+          className="w-full flex items-center justify-center bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isSearching ? (
-            <>
-              <Loader2 className="h-5 w-5 animate-spin" />
-              <span>Searching...</span>
-            </>
-          ) : (
-            <>
-              <Search className="h-5 w-5" />
-              <span>Search Businesses</span>
-            </>
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={clearResults}
-          className="w-full mt-2 px-6 py-2 bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors flex items-center justify-center space-x-2"
-        >
-          <span>Clear Results</span>
+          <Search className="h-5 w-5 mr-2" />
+          Search Businesses
         </button>
       </form>
-
-      {/* Quick Search Options */}
-      <div className="mt-6 pt-6 border-t border-gray-200">
-        <p className="text-sm font-medium text-gray-700 mb-3">Quick searches:</p>
-        <div className="grid grid-cols-1 gap-2">
+      <div className="mt-4">
+        <button onClick={() => onResults([])} className="w-full text-center py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+          Clear Results
+        </button>
+      </div>
+       <div className="mt-6">
+        <h3 className="text-sm font-medium text-gray-500 mb-2">Quick searches:</h3>
+        <div className="flex flex-wrap gap-2">
           {quickSearches.map((search, index) => (
             <button
               key={index}
-              onClick={() => {
-                setKeyword(search.keyword);
-                setLocation(search.location);
-              }}
-              className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-left"
-              disabled={isSearching}
+              onClick={() => handleQuickSearch(search.keyword, search.location)}
+              className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 transition-colors"
             >
               {search.keyword} in {search.location}
             </button>
