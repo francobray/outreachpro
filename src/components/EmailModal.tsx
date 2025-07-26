@@ -138,11 +138,11 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
                 </div>
               </div>
               
-              <div className="p-4 border border-gray-200 rounded-lg">
-                  <h4 className="text-sm font-medium text-gray-700 flex items-center mb-2">
+              <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
                       <FlaskConical className="h-4 w-4 mr-2 text-blue-600" />
                       Send a Test Email
-                  </h4>
+                  </label>
                   <div className="flex items-center space-x-2">
                       <input
                           type="email"
