@@ -1,246 +1,167 @@
-import React, { useState } from 'react';
-import { X, Mail, Loader2, Paperclip, FileText } from 'lucide-react';
-
-interface Business {
-  id: string;
-  name: string;
-  website: string | null;
-  emails: string[];
-  auditReport?: any;
-}
+import React, { useState, useEffect } from 'react';
+import { Business, DecisionMaker, EmailTemplate } from '../types';
+import { X, Send, Loader2, User, Mail, ChevronDown, Eye } from 'lucide-react';
+import EmailPreviewModal from './EmailPreviewModal';
 
 interface EmailModalProps {
-  business: Business;
   isOpen: boolean;
   onClose: () => void;
-  onEmailSent: (businessId: string) => void;
+  business: Business | null;
+  emailTemplates: EmailTemplate[];
+  onSendEmail: (dm: DecisionMaker, templateId: string) => Promise<void>;
 }
 
-const EmailModal: React.FC<EmailModalProps> = ({ business, isOpen, onClose, onEmailSent }) => {
-  const [selectedEmail, setSelectedEmail] = useState(business.emails[0] || '');
-  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
-  const [subject, setSubject] = useState('');
-  const [message, setMessage] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const [templates, setTemplates] = useState<any[]>([]);
+const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emailTemplates, onSendEmail }) => {
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [sendingStates, setSendingStates] = useState<{[key: string]: boolean}>({});
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewContent, setPreviewContent] = useState({ subject: '', body: '' });
 
-  // Load templates and set default
-  React.useEffect(() => {
-    const savedTemplates = localStorage.getItem('emailTemplates');
-    if (savedTemplates) {
-      const parsedTemplates = JSON.parse(savedTemplates);
-      setTemplates(parsedTemplates);
-      
-      // Find default template or use first one
-      const defaultTemplate = parsedTemplates.find((t: any) => t.isDefault) || parsedTemplates[0];
-      if (defaultTemplate) {
-        setSelectedTemplate(defaultTemplate.id);
-        applyTemplate(defaultTemplate);
-      }
+  useEffect(() => {
+    if (emailTemplates.length > 0) {
+      const defaultTemplate = emailTemplates.find(t => t.isDefault) || emailTemplates[0];
+      setSelectedTemplateId(defaultTemplate.id);
     }
-  }, [business]);
+  }, [emailTemplates]);
+  
+  if (!isOpen || !business) {
+    return null;
+  }
 
-  const applyTemplate = (template: any) => {
-    if (!template) return;
+  const handleSend = async (decisionMaker: DecisionMaker) => {
+    if (!selectedTemplateId) {
+      alert('Please select an email template.');
+      return;
+    }
+    setSendingStates(prev => ({ ...prev, [decisionMaker.id]: true }));
+    try {
+      await onSendEmail(decisionMaker, selectedTemplateId);
+    } finally {
+      setSendingStates(prev => ({ ...prev, [decisionMaker.id]: false }));
+    }
+  };
 
-    // Replace variables with business data
+  const handlePreview = (decisionMaker: DecisionMaker) => {
+    if (!selectedTemplateId) {
+      alert('Please select an email template to preview.');
+      return;
+    }
+    
+    const template = emailTemplates.find(t => t.id === selectedTemplateId);
+    if (!template || !business) return;
+
+    // A more robust variable replacement might be needed depending on the actual variables
     const variables = {
-      '{{LEAD_NAME}}': business.name,
-      '{{LEAD_EMAIL}}': business.emails[0] || '',
-      '{{LOCATION_NAME}}': business.address.split(',').slice(-2).join(',').trim(),
-      '{{AUDIT_SCORE}}': business.auditReport?.score?.toString() || 'N/A',
-      '{{BUSINESS_ADDRESS}}': business.address,
-      '{{BUSINESS_WEBSITE}}': business.website || 'N/A'
+      '{{LEAD_NAME}}': decisionMaker.name,
+      '{{BUSINESS_NAME}}': business.name,
+      // Add other variables from your grader report here
     };
 
-    let processedSubject = template.subject;
-    let processedBody = template.body;
+    let subject = template.subject;
+    let body = template.body;
 
-    Object.entries(variables).forEach(([variable, value]) => {
-      const regex = new RegExp(variable.replace(/[{}]/g, '\\$&'), 'g');
-      processedSubject = processedSubject.replace(regex, value);
-      processedBody = processedBody.replace(regex, value);
-    });
-
-    setSubject(processedSubject);
-    setMessage(processedBody);
-  };
-
-  const handleTemplateChange = (templateId: string) => {
-    setSelectedTemplate(templateId);
-    const template = templates.find(t => t.id === templateId);
-    if (template) {
-      applyTemplate(template);
+    for (const [key, value] of Object.entries(variables)) {
+      subject = subject.replace(new RegExp(key, 'g'), value);
+      body = body.replace(new RegExp(key, 'g'), value);
     }
+    
+    setPreviewContent({ subject, body });
+    setIsPreviewOpen(true);
   };
 
-  const handleSend = async () => {
-    if (!selectedEmail.trim() || !subject.trim() || !message.trim()) return;
-
-    setIsSending(true);
-
-    try {
-      const response = await fetch(`http://localhost:3001/api/send-email/${business.id}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          recipientEmail: selectedEmail,
-          subject: subject.trim(),
-          message: message.trim(),
-        }),
-      });
-
-      if (response.ok) {
-        onEmailSent(business.id);
-        onClose();
-      }
-    } catch (error) {
-      console.error('Failed to send email:', error);
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  if (!isOpen) return null;
+  const decisionMakers = business.decisionMakers?.filter(dm => dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available')) || [];
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-blue-100 rounded-lg">
-              <Mail className="h-5 w-5 text-blue-600" />
-            </div>
+    <>
+      <div className={`fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 ${isOpen ? '' : 'hidden'}`}>
+        <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full">
+          <div className="flex items-center justify-between p-6 border-b border-gray-200">
             <div>
-              <h3 className="text-lg font-semibold text-gray-900">Send Outreach Email</h3>
-              <p className="text-sm text-gray-600">to {business.name}</p>
+              <h3 className="text-lg font-semibold text-gray-900">Send Email to {business.name}</h3>
+              <p className="text-sm text-gray-500">Select a template and a contact to send an email.</p>
             </div>
+            <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+              <X className="h-5 w-5 text-gray-500" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            <X className="h-5 w-5 text-gray-500" />
-          </button>
-        </div>
 
-        {/* Body */}
-        <div className="p-6 max-h-[calc(90vh-140px)] overflow-y-auto space-y-4">
-          {/* Template Selection */}
-          {templates.length > 0 && (
+          <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
             <div>
-              <label htmlFor="template" className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="email-template" className="block text-sm font-medium text-gray-700 mb-2">
                 Email Template
               </label>
-              <div className="flex items-center space-x-2">
+              <div className="relative">
                 <select
-                  id="template"
-                  value={selectedTemplate}
-                  onChange={(e) => handleTemplateChange(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  id="email-template"
+                  value={selectedTemplateId}
+                  onChange={(e) => setSelectedTemplateId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
                 >
-                  <option value="">Select a template...</option>
-                  {templates.map((template) => (
+                  {emailTemplates.map((template) => (
                     <option key={template.id} value={template.id}>
-                      {template.name} {template.isDefault ? '(Default)' : ''}
+                      {template.name}
                     </option>
                   ))}
                 </select>
-                <div className="flex items-center text-xs text-gray-500">
-                  <FileText className="h-4 w-4 mr-1" />
-                  Variables auto-filled
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+              </div>
+            </div>
+            
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">Apollo Contacts</h4>
+              {decisionMakers.length > 0 ? (
+                decisionMakers.map(dm => (
+                <div key={dm.id} className="bg-gray-50 p-3 rounded-lg flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center">
+                      <User className="h-4 w-4 mr-2 text-gray-600" />
+                      <span className="font-medium text-gray-900">{dm.name}</span>
+                      <span className="text-xs text-gray-500 ml-2">{dm.title}</span>
+                    </div>
+                    <div className="flex items-center mt-1">
+                      <Mail className="h-4 w-4 mr-2 text-gray-500" />
+                      <span className="text-sm text-blue-600">{dm.email}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => handlePreview(dm)}
+                      className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="Preview Email"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => handleSend(dm)}
+                      disabled={sendingStates[dm.id] || !selectedTemplateId}
+                      className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
+                    >
+                      {sendingStates[dm.id] ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      <span className="ml-2">{sendingStates[dm.id] ? 'Sending...' : 'Send'}</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
+                ))
+              ) : (
+                <p className="text-sm text-gray-500">No Apollo contacts with valid emails found for this business.</p>
+              )}
             </div>
-          )}
-
-          {/* Email Selection */}
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-              Send to
-            </label>
-            <select
-              id="email"
-              value={selectedEmail}
-              onChange={(e) => setSelectedEmail(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {business.emails.map((email, index) => (
-                <option key={index} value={email}>{email}</option>
-              ))}
-            </select>
           </div>
 
-          {/* Subject */}
-          <div>
-            <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-2">
-              Subject
-            </label>
-            <input
-              id="subject"
-              type="text"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+          <div className="flex items-center justify-end p-6 border-t border-gray-200">
+            <button onClick={onClose} className="px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+              Close
+            </button>
           </div>
-
-          {/* Message */}
-          <div>
-            <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-2">
-              Message
-            </label>
-            <textarea
-              id="message"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              rows={12}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-            />
-          </div>
-
-          {/* Attachment Info */}
-          {business.auditReport && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-              <div className="flex items-center space-x-2 text-sm text-blue-800">
-                <Paperclip className="h-4 w-4" />
-                <span>Audit report will be attached: {business.name.replace(/\s+/g, '_')}_audit_report.pdf</span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end space-x-3 p-6 border-t border-gray-200">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSend}
-            disabled={isSending || !selectedEmail.trim() || !subject.trim() || !message.trim()}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
-          >
-            {isSending ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Sending...</span>
-              </>
-            ) : (
-              <>
-                <Mail className="h-4 w-4" />
-                <span>Send Email</span>
-              </>
-            )}
-          </button>
         </div>
       </div>
-    </div>
+      <EmailPreviewModal 
+        isOpen={isPreviewOpen}
+        onClose={() => setIsPreviewOpen(false)}
+        subject={previewContent.subject}
+        body={previewContent.body}
+      />
+    </>
   );
 };
 

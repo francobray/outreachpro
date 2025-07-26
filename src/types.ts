@@ -14,6 +14,7 @@ export interface Location {
   website: string | null;
   phone: string;
   emails: string[];
+  websiteStatus?: 'ok' | 'timeout' | 'not_found' | 'error' | 'enotfound';
 }
 
 export interface Business {

@@ -593,7 +593,7 @@ Regards,
                         value={formData.body}
                         onChange={(e) => setFormData(prev => ({ ...prev, body: e.target.value }))}
                         placeholder="Write your email template here, including your signature. Use variables like {{LEAD_NAME}} to personalize..."
-                        rows={22}
+                        rows={28}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm relative bg-transparent caret-gray-800"
                       />
                     </div>
@@ -733,7 +733,7 @@ Regards,
                         value={createFormData.body}
                         onChange={(e) => setCreateFormData(prev => ({ ...prev, body: e.target.value }))}
                         placeholder="Write your email template here, including your signature. Use variables like {{LEAD_NAME}} to personalize..."
-                        rows={22}
+                        rows={28}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm relative bg-transparent caret-gray-800"
                       />
                     </div>

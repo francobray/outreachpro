@@ -21,7 +21,8 @@ import {
   Send
 } from 'lucide-react';
 
-import { Business } from '../types';
+import { Business, DecisionMaker } from '../types';
+import EmailModal from './EmailModal';
 
 interface BusinessTableProps {
   businesses: Business[];
@@ -29,10 +30,11 @@ interface BusinessTableProps {
   onSelectionChange: (selected: Business[]) => void;
   onCreateCampaign: () => void;
   onBusinessUpdate?: (business: Business) => void;
+  emailTemplates: any[]; // Replace with a proper EmailTemplate type
 }
 
 // Sorting helper
-const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 'asc' | 'desc', contactInfo: { [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, locationNames?: string[], loading: boolean } }) => {
+const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 'asc' | 'desc', contactInfo: { [key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, locationNames?: string[], loading: boolean, usedPuppeteer?: boolean, websiteStatus?: 'ok' | 'timeout' | 'not_found' | 'error' | 'enotfound'; } }) => {
   const sorted = [...businesses];
   sorted.sort((a, b) => {
     let aValue: any;
@@ -74,13 +76,15 @@ function getDomain(url: string | null): string | null {
   }
 }
 
-const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, onSelectionChange, onCreateCampaign, onBusinessUpdate }) => {
+const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, onSelectionChange, onCreateCampaign, onBusinessUpdate, emailTemplates }) => {
   const [loadingStates, setLoadingStates] = useState<{[key: string]: string}>({});
   const [businessData, setBusinessData] = useState<{[key: string]: Business}>({});
   const [selectedBusinesses, setSelectedBusinesses] = useState<Set<string>>(new Set());
   const [isExecuting, setIsExecuting] = useState(false);
   const [isEnrichingPlaces, setIsEnrichingPlaces] = useState(false);
   const [isEnrichingApollo, setIsEnrichingApollo] = useState(false);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [selectedBusinessForEmail, setSelectedBusinessForEmail] = useState<Business | null>(null);
   const [colWidths, setColWidths] = useState({
     business: 220,
     category: 120,
@@ -102,7 +106,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       numLocations?: number,
       locationNames?: string[],
       loading: boolean,
-      usedPuppeteer?: boolean
+      usedPuppeteer?: boolean,
+      websiteStatus?: 'ok' | 'timeout' | 'not_found' | 'error' | 'enotfound';
     } 
   }>({});
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -128,17 +133,15 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
 
     const updatedBusiness = {
       ...base,
+      ...businessData[businessId],
       ...updates,
-      emails: (updates.emails ?? base.emails ?? []) as string[],
     } as Business;
 
-    // Store the update for later
     pendingUpdates.current[businessId] = updatedBusiness;
 
-    // Update local state
     setBusinessData(prev => ({
       ...prev,
-      [businessId]: { ...prev[businessId], ...updates }
+      [businessId]: updatedBusiness
     }));
   };
 
@@ -214,6 +217,18 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     onSelectionChange(selected);
   };
 
+  const openEmailModal = (business: Business) => {
+    setSelectedBusinessForEmail(business);
+    setIsEmailModalOpen(true);
+  };
+
+  const handleSendEmail = async (dm: DecisionMaker, templateId: string) => {
+    // Placeholder for sending email
+    console.log(`Sending email to ${dm.email} with template ${templateId}`);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Here you would update the decision maker's email_status
+  };
+
   const downloadReport = async (reportId: string, businessName: string) => {
     try {
       const response = await fetch(`http://localhost:3001/api/reports/${reportId}/download`);
@@ -263,7 +278,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   };
 
   const fetchContactInfo = async (placeId: string, enrichData: boolean = false, useApolloAPI: boolean = false) => {
-    setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, locationNames: [], loading: true } }));
+    setContactInfo(prev => ({ ...prev, [placeId]: { ...prev[placeId], loading: true } }));
     try {
       const url = `/api/place-details/${placeId}${enrichData ? `?enrich=true${useApolloAPI ? '&apollo=true' : ''}` : ''}`;
       console.log(`[Contact Info] Fetching from: ${url}`);
@@ -288,24 +303,27 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           numLocations: data.numLocations,
           locationNames: data.locationNames || [],
           loading: false,
-          usedPuppeteer: data.usedPuppeteer || false
+          usedPuppeteer: data.usedPuppeteer || false,
+          websiteStatus: data.website_status || 'ok'
         }
       }));
       
       // Also update the emails and decision makers in businessData
       if (business) {
         updateBusinessData(business.id, { 
-          emails: data.emails || [],
+          locations: business.locations.map(loc => loc.id === placeId ? {
+            ...loc,
+            website: website || loc.website,
+            emails: data.emails || [],
+            websiteStatus: data.website_status || 'ok'
+          } : loc),
           decisionMakers: data.decisionMakers || [],
-          website: website || business.website, // Preserve existing website if available
-          usedPuppeteer: data.usedPuppeteer || false,
-          numLocations: data.numLocations,
-          locationNames: data.locationNames || []
+          apolloStatus: data.decisionMakers && data.decisionMakers.length > 0 ? 'found' : business.apolloStatus
         });
       }
     } catch (error) {
       console.error(`[Contact Info] Error fetching data for ${placeId}:`, error);
-      setContactInfo(prev => ({ ...prev, [placeId]: { website: null, phone: null, emails: [], numLocations: undefined, locationNames: [], loading: false } }));
+      setContactInfo(prev => ({ ...prev, [placeId]: { ...prev[placeId], loading: false } }));
     }
   };
 
@@ -394,17 +412,19 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           numLocations: data.numLocations,
           locationNames: data.locationNames || [],
           loading: false,
-          usedPuppeteer: data.usedPuppeteer || false
+          usedPuppeteer: data.usedPuppeteer || false,
+          websiteStatus: data.website_status || 'ok'
         }
       }));
       
       // Also update the business data
-      updateBusinessData(business.id, { 
-        emails: data.emails || [],
-        website: website || business.website, // Preserve existing website if available
-        usedPuppeteer: data.usedPuppeteer || false,
-        numLocations: data.numLocations,
-        locationNames: data.locationNames || []
+      updateBusinessData(business.id, {
+        locations: business.locations.map(loc => loc.id === business.placeId ? {
+            ...loc,
+            website: website || loc.website,
+            emails: data.emails || [],
+            websiteStatus: data.website_status || 'ok'
+        } : loc)
       });
     } catch (error) {
       console.error('Failed to enrich places data:', error);
@@ -491,25 +511,52 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     }
   };
 
-  // Get the total number of emails in selected businesses
-  const getSelectedEmailsCount = (): number => {
+  // Get the total number of website emails in selected businesses
+  const getSelectedWebsiteEmailsCount = (): number => {
     if (selectedBusinesses.size === 0) return 0;
     
-    let totalEmails = 0;
+    const websiteEmails = new Set<string>();
+
     selectedBusinesses.forEach(businessId => {
       const business = businesses.find(b => b.id === businessId);
       if (business) {
         const enrichedBusiness = getBusinessData(business);
-        totalEmails += (enrichedBusiness.emails?.length || 0);
+        
+        enrichedBusiness.locations?.forEach(location => {
+          location.emails?.forEach(email => {
+            if (email) websiteEmails.add(email);
+          });
+        });
       }
     });
     
-    return totalEmails;
+    return websiteEmails.size;
+  };
+
+  // Get the total number of Apollo emails in selected businesses
+  const getSelectedApolloEmailsCount = (): number => {
+    if (selectedBusinesses.size === 0) return 0;
+    
+    const apolloEmails = new Set<string>();
+
+    selectedBusinesses.forEach(businessId => {
+      const business = businesses.find(b => b.id === businessId);
+      if (business) {
+        const enrichedBusiness = getBusinessData(business);
+
+        enrichedBusiness.decisionMakers?.forEach(dm => {
+          if (dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available')) {
+            apolloEmails.add(dm.email);
+          }
+        });
+      }
+    });
+    
+    return apolloEmails.size;
   };
   
-  // Check if selected businesses have any emails
-  const selectedEmailsCount = getSelectedEmailsCount();
-  const hasEmails = selectedEmailsCount > 0;
+  const websiteEmailsCount = getSelectedWebsiteEmailsCount();
+  const apolloEmailsCount = getSelectedApolloEmailsCount();
 
   // Add a grader function to score the business
   const gradeBusinessQuality = async (business: Business) => {
@@ -531,9 +578,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       
       const data = await response.json();
       
-      // Calculate the score as a percentage (0-100)
       // The API returns score as a decimal between 0 and 1
-      const scoreAsPercentage = Math.round((data.score || 0) * 100);
+      const scoreAsPercentage = Math.round(data.score || 0);
       
       // Update the business with the grader score from the API
       updateBusinessData(business.id, { 
@@ -616,7 +662,10 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                     {selectedBusinesses.size} selected
                   </span>
                   <span className="text-sm px-2 py-1 bg-blue-50 text-blue-700 rounded-md">
-                    {selectedEmailsCount} emails in selection
+                    {websiteEmailsCount} Website emails
+                  </span>
+                  <span className="text-sm px-2 py-1 bg-purple-50 text-purple-700 rounded-md">
+                    {apolloEmailsCount} Apollo emails
                   </span>
                 </div>
               )}
@@ -658,25 +707,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   >
                     <Star className="h-4 w-4 mr-1" />
                     Grade Businesses
-                  </button>
-                  
-                  <button
-                    onClick={handleExecute}
-                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
-                    className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-md hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 transition-all duration-200 shadow-lg"
-                    title="Create a campaign with the selected businesses"
-                  >
-                    {isExecuting ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <Send className="h-4 w-4 mr-2" />
-                        Create Campaign
-                      </>
-                    )}
                   </button>
                 </div>
               )}
@@ -786,6 +816,15 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                                 >
                                   <Globe className="h-4 w-4 mr-1 inline" />{getDomain(getBestWebsiteUrl(business))}
                                 </a>
+                                {contactInfo[business.placeId]?.websiteStatus === 'timeout' && (
+                                  <span className="ml-1" title="Website timed out">🕰️</span>
+                                )}
+                                {contactInfo[business.placeId]?.websiteStatus === 'not_found' && (
+                                  <span className="ml-1" title="Website not found (404)">⚠️</span>
+                                )}
+                                {contactInfo[business.placeId]?.websiteStatus === 'enotfound' && (
+                                  <span className="ml-1" title="Website not found (DNS lookup failed)">🚫</span>
+                                )}
                                 {contactInfo[business.placeId]?.usedPuppeteer && (
                                   <div 
                                     className="ml-1 relative group inline-block"
@@ -843,9 +882,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       ) : '-'}
                     </td>
                     <td style={{ width: 120 }} className="px-2 py-1 text-xs">
-                      {Array.isArray(enrichedBusiness.emails) && enrichedBusiness.emails.length > 0 ? (
+                      {Array.isArray(enrichedBusiness.locations?.[0]?.emails) && enrichedBusiness.locations[0].emails.length > 0 ? (
                         <div className="space-y-0.5">
-                          {enrichedBusiness.emails.map((email, idx) => (
+                          {enrichedBusiness.locations[0].emails.map((email, idx) => (
                             <div key={idx} className="flex items-center text-xs text-gray-800">
                               <Mail className="h-3 w-3 mr-1 text-green-600" />
                               <span className="truncate" title={email}>{email}</span>
@@ -901,8 +940,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                     </td>
                     <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
                       {enrichedBusiness.graderScore !== undefined && enrichedBusiness.graderScore !== null ? (
-                        <div className="flex flex-col items-center justify-center gap-1">
-                          <span className={`text-xs font-medium ${
+                        <div className="flex flex-row items-center justify-center gap-2">
+                          <span className={`text-sm font-medium ${
                             enrichedBusiness.graderScore >= 70 ? 'text-green-600' : 
                             enrichedBusiness.graderScore >= 40 ? 'text-amber-600' : 
                             'text-red-600'
@@ -913,9 +952,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                             <button
                               onClick={() => viewGraderReport(enrichedBusiness.reportId!, enrichedBusiness.name)}
                               className="text-xs text-blue-600 hover:underline flex items-center"
+                              title="View Report"
                             >
-                              <FileText className="h-3 w-3 mr-1" />
-                              View Report
+                              <FileText className="h-4 w-4" />
                             </button>
                           )}
                         </div>
@@ -966,6 +1005,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                             <Star className="h-3 w-3" />
                           )}
                         </button>
+                        <button
+                          onClick={() => openEmailModal(enrichedBusiness)}
+                          className="flex items-center justify-center w-6 h-6 bg-green-100 hover:bg-green-200 rounded-full text-green-600 hover:text-green-800 transition-colors disabled:opacity-50"
+                          title="Send Email"
+                          disabled={!enrichedBusiness.decisionMakers?.some(dm => dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available'))}
+                        >
+                          <Mail className="h-3 w-3" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -975,6 +1022,13 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           </table>
         </div>
       </div>
+      <EmailModal 
+        isOpen={isEmailModalOpen}
+        onClose={() => setIsEmailModalOpen(false)}
+        business={selectedBusinessForEmail}
+        emailTemplates={emailTemplates}
+        onSendEmail={handleSendEmail}
+      />
     </>
   );
 };

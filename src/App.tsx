@@ -5,7 +5,7 @@ import Dashboard from './components/Dashboard';
 import EmailTemplates from './components/EmailTemplates';
 import CampaignModal from './components/CampaignModal';
 import CampaignDetails from './components/CampaignDetails'; // Import CampaignDetails
-import { Search, Mail, Briefcase, Send, Users } from 'lucide-react';
+import { Search, Mail, Briefcase } from 'lucide-react';
 import { Business, Campaign } from './types';
 import { useCampaigns } from './context/CampaignContext';
 import packageInfo from '../package.json';
@@ -57,12 +57,6 @@ function App() {
     setSelectedCampaign(null);
   };
   
-  const stats = [
-    { label: 'Businesses Found', value: businesses.length, icon: Users },
-    { label: 'Campaigns Created', value: campaigns.length, icon: Send },
-    { label: 'Emails Sent', value: campaigns.reduce((acc, c) => acc + c.stats.emails_sent, 0), icon: Mail },
-  ];
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
       {/* Header */}
@@ -88,23 +82,7 @@ function App() {
             
             {/* Stats */}
             <div className="hidden md:flex items-center space-x-8">
-              {stats.map((stat, index) => (
-                <div key={index} className="text-center">
-                  <div className="flex items-center justify-center space-x-2">
-                    <stat.icon className="h-5 w-5 text-blue-600" />
-                    <div className="text-2xl font-bold text-gray-900">{stat.value}</div>
-                  </div>
-                  <div className="text-sm text-gray-600">{stat.label}</div>
-                </div>
-              ))}
-              {businesses.length > 0 && (
-                <button
-                  onClick={() => setBusinesses([])}
-                  className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                >
-                  Clear Results
-                </button>
-              )}
+              {/* "Clear Results" button was here */}
             </div>
           </div>
         </div>
@@ -171,6 +149,7 @@ function App() {
                   isLoading={isLoading}
                   onSelectionChange={handleSelectionChange}
                   onCreateCampaign={openCampaignModal}
+                  emailTemplates={emailTemplates}
                 />
               ) : (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
