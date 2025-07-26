@@ -1,6 +1,7 @@
 import React from 'react';
 import { Campaign } from '../types';
 import { Send, CheckCircle, AlertCircle, RefreshCw, Archive } from 'lucide-react';
+import { Toaster } from 'react-hot-toast';
 
 interface DashboardProps {
   campaigns: Campaign[];
@@ -19,6 +20,7 @@ const Dashboard: React.FC<DashboardProps> = ({ campaigns, onViewDetails }) => {
 
   return (
     <div className="space-y-6">
+      <Toaster position="top-right" />
       <h2 className="text-2xl font-bold text-gray-900">Campaigns Dashboard</h2>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {campaigns.map((campaign) => (

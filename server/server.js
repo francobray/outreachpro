@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import multer from 'multer';
+import { Resend } from 'resend';
 
 // Use dynamic imports for puppeteer packages
 let puppeteer, puppeteerExtra, StealthPlugin, robotsParser;
@@ -80,6 +81,8 @@ const __dirname = path.dirname(__filename);
 
 // Load .env from the project root (parent directory)
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const app = express();
 const PORT = 3001;
@@ -1304,28 +1307,32 @@ app.post('/api/emails/:businessId', async (req, res) => {
   }
 });
 
-// Send outreach email (mocked)
-app.post('/api/send-email/:businessId', (req, res) => {
-  const { businessId } = req.params;
-  const { subject, message, recipientEmail } = req.body;
-  const business = businesses.find(b => b.id === businessId);
-  
-  if (!business) {
-    return res.status(404).json({ error: 'Business not found' });
+// Send outreach email
+app.post('/api/send-email', async (req, res) => {
+  const { to, from, subject, html } = req.body;
+
+  if (!to || !from || !subject || !html) {
+    return res.status(400).json({ error: 'Missing required fields: to, from, subject, html' });
   }
-  
-  // Simulate email sending delay
-  setTimeout(() => {
-    business.emailStatus = 'sent';
-    business.lastEmailSent = new Date().toISOString();
-    
-    res.json({ 
-      success: true, 
-      message: 'Email sent successfully',
-      sentTo: recipientEmail,
-      sentAt: new Date().toISOString()
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: from,
+      to: [to],
+      subject: subject,
+      html: html,
     });
-  }, 1000);
+
+    if (error) {
+      console.error('Resend API Error:', error);
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.json({ success: true, message: 'Email sent successfully', data });
+  } catch (error) {
+    console.error('Failed to send email:', error);
+    res.status(500).json({ error: 'Failed to send email' });
+  }
 });
 
 // Download audit report PDF (mocked)

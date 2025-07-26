@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Business, DecisionMaker, EmailTemplate } from '../types';
 import { X, Send, Loader2, User, Mail, ChevronDown, Eye, FlaskConical } from 'lucide-react';
 import EmailPreviewModal from './EmailPreviewModal';
+import toast from 'react-hot-toast';
 
 interface EmailModalProps {
   isOpen: boolean;
@@ -32,7 +33,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
   const handleSend = async (decisionMaker: DecisionMaker) => {
     if (!selectedTemplateId) {
-      alert('Please select an email template.');
+      toast.error('Please select an email template.');
       return;
     }
     setSendingStates(prev => ({ ...prev, [decisionMaker.id]: true }));
@@ -45,11 +46,11 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
   const handleSendTestEmail = async () => {
     if (!testEmail || !/^\S+@\S+\.\S+$/.test(testEmail)) {
-      alert('Please enter a valid test email address.');
+      toast.error('Please enter a valid test email address.');
       return;
     }
     if (!selectedTemplateId) {
-      alert('Please select an email template.');
+      toast.error('Please select an email template.');
       return;
     }
 
@@ -62,10 +63,10 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
         title: 'Test',
       };
       await onSendEmail(testDecisionMaker, selectedTemplateId);
-      alert(`Test email sent to ${testEmail}`);
+      toast.success(`Test email sent to ${testEmail}`);
     } catch (error) {
       console.error("Failed to send test email", error);
-      alert('Failed to send test email. Check the console for details.');
+      toast.error('Failed to send test email. Check the console for details.');
     } finally {
       setIsSendingTest(false);
     }
@@ -73,7 +74,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
   const handlePreview = (decisionMaker: DecisionMaker) => {
     if (!selectedTemplateId) {
-      alert('Please select an email template to preview.');
+      toast.error('Please select an email template to preview.');
       return;
     }
     
