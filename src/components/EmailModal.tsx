@@ -116,49 +116,51 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
           </div>
 
           <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-            <div>
-              <label htmlFor="email-template" className="block text-sm font-medium text-gray-700 mb-2">
-                Email Template
-              </label>
-              <div className="relative">
-                <select
-                  id="email-template"
-                  value={selectedTemplateId}
-                  onChange={(e) => setSelectedTemplateId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
-                >
-                  {emailTemplates.map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {template.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
-              </div>
-            </div>
-            
-            <div className="space-y-3 p-4 border border-gray-200 rounded-lg bg-gray-50">
-                <h4 className="text-sm font-medium text-gray-700 flex items-center">
-                    <FlaskConical className="h-4 w-4 mr-2 text-blue-600" />
-                    Send a Test Email
-                </h4>
-                <div className="flex items-center space-x-2">
-                    <input
-                        type="email"
-                        placeholder="Enter email for test"
-                        value={testEmail}
-                        onChange={(e) => setTestEmail(e.target.value)}
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    />
-                    <button
-                        onClick={handleSendTestEmail}
-                        disabled={isSendingTest || !selectedTemplateId || !testEmail}
-                        className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
-                    >
-                        {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                        <span className="ml-2">{isSendingTest ? 'Sending...' : 'Send Test'}</span>
-                    </button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label htmlFor="email-template" className="block text-sm font-medium text-gray-700 mb-2">
+                  Email Template
+                </label>
+                <div className="relative">
+                  <select
+                    id="email-template"
+                    value={selectedTemplateId}
+                    onChange={(e) => setSelectedTemplateId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
+                  >
+                    {emailTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
                 </div>
+              </div>
+              
+              <div className="p-4 border border-gray-200 rounded-lg bg-gray-50">
+                  <h4 className="text-sm font-medium text-gray-700 flex items-center mb-2">
+                      <FlaskConical className="h-4 w-4 mr-2 text-blue-600" />
+                      Send a Test Email
+                  </h4>
+                  <div className="flex items-center space-x-2">
+                      <input
+                          type="email"
+                          placeholder="Enter email for test"
+                          value={testEmail}
+                          onChange={(e) => setTestEmail(e.target.value)}
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
+                      <button
+                          onClick={handleSendTestEmail}
+                          disabled={isSendingTest || !selectedTemplateId || !testEmail}
+                          className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
+                      >
+                          {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                          <span className="ml-2">{isSendingTest ? 'Sending...' : 'Send Test'}</span>
+                      </button>
+                  </div>
+              </div>
             </div>
 
             <div className="space-y-3">
