@@ -223,10 +223,65 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   };
 
   const handleSendEmail = async (dm: DecisionMaker, templateId: string) => {
-    // Placeholder for sending email
-    console.log(`Sending email to ${dm.email} with template ${templateId}`);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    // Here you would update the decision maker's email_status
+    const template = emailTemplates.find(t => t.id === templateId);
+    if (!template || !selectedBusinessForEmail) {
+      console.error('Template or business not found');
+      return;
+    }
+
+    const variables: { [key: string]: string } = {
+      '{{LEAD_NAME}}': dm.name,
+      '{{BUSINESS_NAME}}': selectedBusinessForEmail.name,
+      // Default values for other variables, you might want to fetch real data
+      '{{REVENUE_LOSS}}': '$5,000',
+      '{{COMPETITOR_LIST}}': 'Competitor A, Competitor B',
+      '{{HEALTH_GRADE}}': 'B+',
+      '{{SEARCH_RESULTS_SCORE}}': '85',
+      '{{SEARCH_RESULTS_GRADE}}': 'A',
+      '{{WEBSITE_EXPERIENCE_SCORE}}': '75',
+      '{{LOCAL_LISTINGS_SCORE}}': '90',
+      '{{GOOGLE_RATING}}': '4.5',
+      '{{REVIEW_COUNT}}': '150',
+      '{{BUSINESS_CATEGORY}}': 'Restaurant',
+      '{{YEARLY_REVENUE_LOSS}}': '$60,000'
+    };
+
+    let subject = template.subject;
+    let body = template.body;
+
+    for (const [key, value] of Object.entries(variables)) {
+      subject = subject.split(key).join(value || '');
+      body = body.split(key).join(value || '');
+    }
+
+    const htmlBody = body.replace(/\n/g, '<br />');
+    
+    try {
+      const response = await fetch('http://localhost:3001/api/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: dm.email,
+          from: 'Outreach Pro <franco@rayapp.io>', // This needs to be a verified domain in Resend
+          subject: subject,
+          html: htmlBody,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to send email');
+      }
+
+      const result = await response.json();
+      console.log('Email sent successfully:', result);
+      // Here you could update the decision maker's email_status to 'sent'
+    } catch (error) {
+      console.error('Error sending email:', error);
+      throw error; // Re-throw to be caught in the modal
+    }
   };
 
   const downloadReport = async (reportId: string, businessName: string) => {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Business, DecisionMaker, EmailTemplate } from '../types';
-import { X, Send, Loader2, User, Mail, ChevronDown, Eye } from 'lucide-react';
+import { X, Send, Loader2, User, Mail, ChevronDown, Eye, FlaskConical } from 'lucide-react';
 import EmailPreviewModal from './EmailPreviewModal';
 
 interface EmailModalProps {
@@ -16,6 +16,8 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   const [sendingStates, setSendingStates] = useState<{[key: string]: boolean}>({});
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState({ subject: '', body: '' });
+  const [testEmail, setTestEmail] = useState<string>('');
+  const [isSendingTest, setIsSendingTest] = useState(false);
 
   useEffect(() => {
     if (emailTemplates.length > 0) {
@@ -38,6 +40,34 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
       await onSendEmail(decisionMaker, selectedTemplateId);
     } finally {
       setSendingStates(prev => ({ ...prev, [decisionMaker.id]: false }));
+    }
+  };
+
+  const handleSendTestEmail = async () => {
+    if (!testEmail || !/^\S+@\S+\.\S+$/.test(testEmail)) {
+      alert('Please enter a valid test email address.');
+      return;
+    }
+    if (!selectedTemplateId) {
+      alert('Please select an email template.');
+      return;
+    }
+
+    setIsSendingTest(true);
+    try {
+      const testDecisionMaker: DecisionMaker = {
+        id: 'test-user',
+        name: 'Test User',
+        email: testEmail,
+        title: 'Test',
+      };
+      await onSendEmail(testDecisionMaker, selectedTemplateId);
+      alert(`Test email sent to ${testEmail}`);
+    } catch (error) {
+      console.error("Failed to send test email", error);
+      alert('Failed to send test email. Check the console for details.');
+    } finally {
+      setIsSendingTest(false);
     }
   };
 
@@ -74,7 +104,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   return (
     <>
       <div className={`fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 ${isOpen ? '' : 'hidden'}`}>
-        <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full">
+        <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full">
           <div className="flex items-center justify-between p-6 border-b border-gray-200">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Send Email to {business.name}</h3>
@@ -85,7 +115,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
             </button>
           </div>
 
-          <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+          <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
             <div>
               <label htmlFor="email-template" className="block text-sm font-medium text-gray-700 mb-2">
                 Email Template
@@ -107,6 +137,30 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
               </div>
             </div>
             
+            <div className="space-y-3 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                <h4 className="text-sm font-medium text-gray-700 flex items-center">
+                    <FlaskConical className="h-4 w-4 mr-2 text-blue-600" />
+                    Send a Test Email
+                </h4>
+                <div className="flex items-center space-x-2">
+                    <input
+                        type="email"
+                        placeholder="Enter email for test"
+                        value={testEmail}
+                        onChange={(e) => setTestEmail(e.target.value)}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                    <button
+                        onClick={handleSendTestEmail}
+                        disabled={isSendingTest || !selectedTemplateId || !testEmail}
+                        className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
+                    >
+                        {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                        <span className="ml-2">{isSendingTest ? 'Sending...' : 'Send Test'}</span>
+                    </button>
+                </div>
+            </div>
+
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Apollo Contacts</h4>
               {decisionMakers.length > 0 ? (
