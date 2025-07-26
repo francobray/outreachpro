@@ -79,10 +79,17 @@ async function checkRobotsTxt(url) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from the server directory
-dotenv.config({ path: path.join(__dirname, '.env') });
+// Load .env from the project root (parent directory)
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Initialize Resend with API key, or use a mock if not available
+let resend;
+try {
+  resend = new Resend(process.env.RESEND_API_KEY);
+} catch (error) {
+  console.log('[Server] Resend API key not found, using mock email service');
+  resend = null;
+}
 
 const app = express();
 const PORT = 3001;
@@ -1309,29 +1316,61 @@ app.post('/api/emails/:businessId', async (req, res) => {
 
 // Send outreach email
 app.post('/api/send-email', async (req, res) => {
+  console.log('[Email API] Received email request:', {
+    to: req.body.to,
+    subject: req.body.subject,
+    htmlLength: req.body.html?.length || 0,
+    from: process.env.EMAIL_FROM
+  });
+
   const { to, subject, html } = req.body;
   const from = process.env.EMAIL_FROM;
 
   if (!to || !from || !subject || !html) {
+    console.log('[Email API] Missing required fields:', { to, from, subject: !!subject, html: !!html });
     return res.status(400).json({ error: 'Missing required fields: to, subject, html, or EMAIL_FROM not set' });
   }
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: from,
-      to: [to],
-      subject: subject,
-      html: html,
-    });
+    if (resend) {
+      console.log('[Email API] Using real Resend service');
+      // Use real Resend service
+      const { data, error } = await resend.emails.send({
+        from: from,
+        to: [to],
+        subject: subject,
+        html: html,
+      });
 
-    if (error) {
-      console.error('Resend API Error:', error);
-      return res.status(400).json({ error: error.message });
+      if (error) {
+        console.error('[Email API] Resend API Error:', error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      console.log('[Email API] Email sent successfully via Resend:', data);
+      res.json({ success: true, message: 'Email sent successfully', data });
+    } else {
+      console.log('[Email API] Using mock email service');
+      // Mock email service for testing
+      console.log('[Mock Email] Sending email:', {
+        from,
+        to,
+        subject,
+        html: html.substring(0, 100) + '...' // Log first 100 chars
+      });
+      
+      // Simulate email sending delay
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      console.log('[Email API] Mock email sent successfully');
+      res.json({ 
+        success: true, 
+        message: 'Mock email sent successfully (no real email sent)',
+        data: { id: 'mock-email-' + Date.now() }
+      });
     }
-
-    res.json({ success: true, message: 'Email sent successfully', data });
   } catch (error) {
-    console.error('Failed to send email:', error);
+    console.error('[Email API] Failed to send email:', error);
     res.status(500).json({ error: 'Failed to send email' });
   }
 });

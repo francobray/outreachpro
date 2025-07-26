@@ -222,29 +222,38 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     setIsEmailModalOpen(true);
   };
 
-  const handleSendEmail = async (dm: DecisionMaker, templateId: string) => {
+  const handleSendEmail = async (dm: DecisionMaker, templateId: string, graderData?: any) => {
     const template = emailTemplates.find(t => t.id === templateId);
     if (!template || !selectedBusinessForEmail) {
       console.error('Template or business not found');
       return;
     }
 
+    // Get enriched business data
+    const enrichedBusiness = getBusinessData(selectedBusinessForEmail);
+    
+    // Get location data for city/state
+    const location = enrichedBusiness.locations?.[0];
+    const cityState = location?.address ? 
+      location.address.split(',').slice(-2).join(',').trim() : 
+      'Austin, TX'; // Default fallback
+
     const variables: { [key: string]: string } = {
       '{{LEAD_NAME}}': dm.name,
       '{{BUSINESS_NAME}}': selectedBusinessForEmail.name,
-      '{{BUSINESS_CITY_STATE}}': 'Austin, TX', // Default value, should be replaced with actual location
-      // Default values for other variables, you might want to fetch real data
-      '{{REVENUE_LOSS}}': '$5,000',
-      '{{COMPETITOR_LIST}}': 'Competitor A, Competitor B',
-      '{{HEALTH_GRADE}}': 'B+',
-      '{{SEARCH_RESULTS_SCORE}}': '85',
-      '{{SEARCH_RESULTS_GRADE}}': 'A',
-      '{{WEBSITE_EXPERIENCE_SCORE}}': '75',
-      '{{LOCAL_LISTINGS_SCORE}}': '90',
-      '{{GOOGLE_RATING}}': '4.5',
-      '{{REVIEW_COUNT}}': '150',
-      '{{BUSINESS_CATEGORY}}': 'Restaurant',
-      '{{YEARLY_REVENUE_LOSS}}': '$60,000'
+      '{{BUSINESS_CITY_STATE}}': cityState,
+      // Use grader data if available, otherwise use defaults
+      '{{REVENUE_LOSS}}': graderData?.revenueLoss || '$5,000',
+      '{{COMPETITOR_LIST}}': graderData?.competitors?.join(', ') || 'Competitor A, Competitor B',
+      '{{HEALTH_GRADE}}': graderData?.healthGrade || 'B+',
+      '{{SEARCH_RESULTS_SCORE}}': graderData?.searchResultsScore || '85',
+      '{{SEARCH_RESULTS_GRADE}}': graderData?.searchResultsGrade || 'A',
+      '{{WEBSITE_EXPERIENCE_SCORE}}': graderData?.websiteExperienceScore || '75',
+      '{{LOCAL_LISTINGS_SCORE}}': graderData?.localListingsScore || '90',
+      '{{GOOGLE_RATING}}': enrichedBusiness.rating ? `${enrichedBusiness.rating}/5` : '4.5/5',
+      '{{REVIEW_COUNT}}': enrichedBusiness.userRatingsTotal?.toString() || '150',
+      '{{BUSINESS_CATEGORY}}': enrichedBusiness.category || 'Restaurant',
+      '{{YEARLY_REVENUE_LOSS}}': graderData?.yearlyRevenueLoss || '$60,000'
     };
 
     let subject = template.subject;

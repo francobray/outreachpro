@@ -9,7 +9,7 @@ interface EmailModalProps {
   onClose: () => void;
   business: Business | null;
   emailTemplates: EmailTemplate[];
-  onSendEmail: (dm: DecisionMaker, templateId: string) => Promise<void>;
+  onSendEmail: (dm: DecisionMaker, templateId: string, graderData?: any) => Promise<void>;
 }
 
 const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emailTemplates, onSendEmail }) => {
@@ -39,7 +39,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
     }
     setSendingStates(prev => ({ ...prev, [decisionMaker.id]: true }));
     try {
-      await onSendEmail(decisionMaker, selectedTemplateId);
+      await onSendEmail(decisionMaker, selectedTemplateId, business?.graderReport);
     } finally {
       setSendingStates(prev => ({ ...prev, [decisionMaker.id]: false }));
     }
@@ -57,15 +57,30 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
     setIsSendingTest(true);
     try {
+      // Debug: Log the available decision makers and selected contact ID
+      console.log('Available decision makers:', decisionMakers);
+      console.log('Selected Apollo contact ID:', selectedApolloContact);
+      
       // Find the selected Apollo contact
-      const selectedContact = decisionMakers.find(dm => dm.id === selectedApolloContact);
+      const selectedContact = decisionMakers[parseInt(selectedApolloContact)];
+      console.log('Found selected contact:', selectedContact);
+      
       if (!selectedContact) {
         toast.error('Selected Apollo contact not found.');
         return;
       }
 
-      await onSendEmail(selectedContact, selectedTemplateId);
-      toast.success(`Test email sent to ${selectedContact.email}`);
+      // For test emails, send to the test email input, not the Apollo contact's email
+      const testEmailToSend = testEmail || 'francobreciano@gmail.com';
+      
+      // Create a temporary decision maker with the test email
+      const testDecisionMaker = {
+        ...selectedContact,
+        email: testEmailToSend
+      };
+      
+      await onSendEmail(testDecisionMaker, selectedTemplateId, business?.graderReport);
+      toast.success(`Test email sent to ${testEmailToSend}`);
     } catch (error) {
       console.error("Failed to send test email", error);
       toast.error('Failed to send test email. Check the console for details.');
@@ -83,11 +98,29 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
     const template = emailTemplates.find(t => t.id === selectedTemplateId);
     if (!template || !business) return;
 
-    // A more robust variable replacement might be needed depending on the actual variables
+    // Get location data for city/state
+    const location = business.locations?.[0];
+    const cityState = location?.address ? 
+      location.address.split(',').slice(-2).join(',').trim() : 
+      'Austin, TX'; // Default fallback
+
+    // Use the same variable replacement logic as the email sending
     const variables = {
       '{{LEAD_NAME}}': decisionMaker.name,
       '{{BUSINESS_NAME}}': business.name,
-      // Add other variables from your grader report here
+      '{{BUSINESS_CITY_STATE}}': cityState,
+      // Use grader data if available, otherwise use defaults
+      '{{REVENUE_LOSS}}': business.graderReport?.revenueLoss || '$5,000',
+      '{{COMPETITOR_LIST}}': business.graderReport?.competitors?.join(', ') || 'Competitor A, Competitor B',
+      '{{HEALTH_GRADE}}': business.graderReport?.healthGrade || 'B+',
+      '{{SEARCH_RESULTS_SCORE}}': business.graderReport?.searchResultsScore || '85',
+      '{{SEARCH_RESULTS_GRADE}}': business.graderReport?.searchResultsGrade || 'A',
+      '{{WEBSITE_EXPERIENCE_SCORE}}': business.graderReport?.websiteExperienceScore || '75',
+      '{{LOCAL_LISTINGS_SCORE}}': business.graderReport?.localListingsScore || '90',
+      '{{GOOGLE_RATING}}': business.rating ? `${business.rating}/5` : '4.5/5',
+      '{{REVIEW_COUNT}}': business.userRatingsTotal?.toString() || '150',
+      '{{BUSINESS_CATEGORY}}': business.category || 'Restaurant',
+      '{{YEARLY_REVENUE_LOSS}}': business.graderReport?.yearlyRevenueLoss || '$60,000'
     };
 
     let subject = template.subject;
@@ -102,7 +135,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
     setIsPreviewOpen(true);
   };
 
-  const decisionMakers = business.decisionMakers?.filter(dm => dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available')) || [];
+  const decisionMakers = business.decisionMakers?.filter(dm => dm.email && dm.email !== 'email_not_unlocked@domain.com' && !dm.email.includes('not_available') && dm.email.includes('@')) || [];
 
   return (
     <>
@@ -152,7 +185,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
                     placeholder="Enter email for test"
                     value={testEmail}
                     onChange={(e) => setTestEmail(e.target.value)}
-                    className="w-[85%] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-[70%] pl-3 pr-1 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
 
@@ -161,7 +194,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
                     Apollo contacts
                   </label>
                   <div className="flex items-center space-x-2">
-                    <div className="relative flex-[1.3]">
+                    <div className="relative flex-[1.6]">
                       <select
                         value={selectedApolloContact}
                         onChange={(e) => setSelectedApolloContact(e.target.value)}
@@ -169,8 +202,8 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
                         required
                       >
                         <option value="">Select Apollo Contact</option>
-                        {decisionMakers.map((dm) => (
-                          <option key={dm.id} value={dm.id}>
+                        {decisionMakers.map((dm, index) => (
+                          <option key={dm.id} value={index}>
                             {dm.name} - {dm.email}
                           </option>
                         ))}
