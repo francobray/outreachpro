@@ -232,6 +232,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     const variables: { [key: string]: string } = {
       '{{LEAD_NAME}}': dm.name,
       '{{BUSINESS_NAME}}': selectedBusinessForEmail.name,
+      '{{BUSINESS_CITY_STATE}}': 'Austin, TX', // Default value, should be replaced with actual location
       // Default values for other variables, you might want to fetch real data
       '{{REVENUE_LOSS}}': '$5,000',
       '{{COMPETITOR_LIST}}': 'Competitor A, Competitor B',

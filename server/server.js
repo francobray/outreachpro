@@ -79,8 +79,8 @@ async function checkRobotsTxt(url) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from the project root (parent directory)
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Load .env from the server directory
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 

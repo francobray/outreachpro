@@ -18,6 +18,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState({ subject: '', body: '' });
   const [testEmail, setTestEmail] = useState<string>('francobreciano@gmail.com');
+  const [selectedApolloContact, setSelectedApolloContact] = useState<string>('');
   const [isSendingTest, setIsSendingTest] = useState(false);
 
   useEffect(() => {
@@ -45,8 +46,8 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   };
 
   const handleSendTestEmail = async () => {
-    if (!testEmail || !/^\S+@\S+\.\S+$/.test(testEmail)) {
-      toast.error('Please enter a valid test email address.');
+    if (!selectedApolloContact) {
+      toast.error('Please select an Apollo contact for the test email.');
       return;
     }
     if (!selectedTemplateId) {
@@ -56,14 +57,15 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
     setIsSendingTest(true);
     try {
-      const testDecisionMaker: DecisionMaker = {
-        id: 'test-user',
-        name: 'Test User',
-        email: testEmail,
-        title: 'Test',
-      };
-      await onSendEmail(testDecisionMaker, selectedTemplateId);
-      toast.success(`Test email sent to ${testEmail}`);
+      // Find the selected Apollo contact
+      const selectedContact = decisionMakers.find(dm => dm.id === selectedApolloContact);
+      if (!selectedContact) {
+        toast.error('Selected Apollo contact not found.');
+        return;
+      }
+
+      await onSendEmail(selectedContact, selectedTemplateId);
+      toast.success(`Test email sent to ${selectedContact.email}`);
     } catch (error) {
       console.error("Failed to send test email", error);
       toast.error('Failed to send test email. Check the console for details.');
@@ -117,50 +119,74 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
           </div>
 
           <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label htmlFor="email-template" className="block text-sm font-medium text-gray-700 mb-2">
-                  Email Template
-                </label>
-                <div className="relative">
-                  <select
-                    id="email-template"
-                    value={selectedTemplateId}
-                    onChange={(e) => setSelectedTemplateId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
-                  >
-                    {emailTemplates.map((template) => (
-                      <option key={template.id} value={template.id}>
-                        {template.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div>
+                  <label htmlFor="email-template" className="block text-sm font-medium text-gray-700 mb-2">
+                    Email Template
+                  </label>
+                  <div className="relative">
+                    <select
+                      id="email-template"
+                      value={selectedTemplateId}
+                      onChange={(e) => setSelectedTemplateId(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
+                    >
+                      {emailTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+                  </div>
                 </div>
-              </div>
-              
-              <div>
+                
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                      <FlaskConical className="h-4 w-4 mr-2 text-blue-600" />
-                      Send a Test Email
+                    <FlaskConical className="h-4 w-4 mr-2 text-blue-600" />
+                    Send a Test Email
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="Enter email for test"
+                    value={testEmail}
+                    onChange={(e) => setTestEmail(e.target.value)}
+                    className="w-[85%] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Apollo contacts
                   </label>
                   <div className="flex items-center space-x-2">
-                      <input
-                          type="email"
-                          placeholder="Enter email for test"
-                          value={testEmail}
-                          onChange={(e) => setTestEmail(e.target.value)}
-                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <button
-                          onClick={handleSendTestEmail}
-                          disabled={isSendingTest || !selectedTemplateId || !testEmail}
-                          className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
+                    <div className="relative flex-[1.3]">
+                      <select
+                        value={selectedApolloContact}
+                        onChange={(e) => setSelectedApolloContact(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
+                        required
                       >
-                          {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                          <span className="ml-2">{isSendingTest ? 'Sending...' : 'Send Test'}</span>
-                      </button>
+                        <option value="">Select Apollo Contact</option>
+                        {decisionMakers.map((dm) => (
+                          <option key={dm.id} value={dm.id}>
+                            {dm.name} - {dm.email}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+                    </div>
+                    <button
+                      onClick={handleSendTestEmail}
+                      disabled={isSendingTest || !selectedTemplateId || !selectedApolloContact}
+                      className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
+                    >
+                      {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      <span className="ml-2">{isSendingTest ? 'Sending...' : 'Send Test'}</span>
+                    </button>
                   </div>
+                </div>
               </div>
             </div>
 

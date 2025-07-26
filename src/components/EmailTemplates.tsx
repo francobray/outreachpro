@@ -68,9 +68,9 @@ const EmailTemplates: React.FC = () => {
       example: 'info@templewynwood.com'
     },
     {
-      key: '{{LOCATION_NAME}}',
-      label: 'Location Name',
-      description: 'City/location where the business is located',
+      key: '{{BUSINESS_CITY_STATE}}',
+      label: 'Business City/State',
+      description: 'City and state where the business is located',
       example: 'Miami, FL'
     },
     {
@@ -173,7 +173,7 @@ const EmailTemplates: React.FC = () => {
           subject: 'Free Business Audit Report for {{BUSINESS_NAME}}',
           body: `Hi {{LEAD_NAME}},
 
-I hope this email finds you well. I recently came across {{BUSINESS_NAME}} in {{LOCATION_NAME}} and was impressed by your business.
+I hope this email finds you well. I recently came across {{BUSINESS_NAME}} in {{BUSINESS_CITY_STATE}} and was impressed by your business.
 
 I've prepared a complimentary business audit report that highlights some opportunities for growth and improvement. Based on my analysis, your business scored {{AUDIT_SCORE}}/100, which shows great potential with some strategic improvements.
 
@@ -198,7 +198,7 @@ Best regards,
           subject: 'Is {{BUSINESS_NAME}} losing {{REVENUE_LOSS}} each month?',
           body: `Hi {{LEAD_NAME}},
 
-I ran a quick digital health check for businesses in {{LOCATION_NAME}} and discovered an opportunity for you.
+I ran a quick digital health check for businesses in {{BUSINESS_CITY_STATE}} and discovered an opportunity for you.
 
 My analysis shows that {{BUSINESS_NAME}} could be losing an estimated {{REVENUE_LOSS}} in potential revenue each month due to low visibility in Google search results. This happens when customers can't find you easily, and instead find your competitors.
 
@@ -218,7 +218,7 @@ Best regards,
           subject: 'How {{BUSINESS_NAME}} can outrank local competitors',
           body: `Hi {{LEAD_NAME}},
 
-I was looking at the competitive landscape for businesses like yours in {{LOCATION_NAME}}, and I noticed something you should see.
+I was looking at the competitive landscape for businesses like yours in {{BUSINESS_CITY_STATE}}, and I noticed something you should see.
 
 Your business, {{BUSINESS_NAME}}, is currently being outranked on Google by several key competitors, including:
 {{COMPETITOR_LIST}}
@@ -395,7 +395,7 @@ Regards,
       '{{LEAD_NAME}}': 'John Doe',
       '{{BUSINESS_NAME}}': 'Temple Wynwood',
       '{{LEAD_EMAIL}}': 'info@templewynwood.com',
-      '{{LOCATION_NAME}}': 'Miami, FL',
+      '{{BUSINESS_CITY_STATE}}': 'Miami, FL',
       '{{AUDIT_SCORE}}': '53',
       '{{BUSINESS_ADDRESS}}': '151 NW 24th St #102, Miami, FL 33127, USA',
       '{{BUSINESS_WEBSITE}}': 'https://bluebottlecoffee.com',
