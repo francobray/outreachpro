@@ -7,7 +7,7 @@ import CampaignModal from './components/CampaignModal';
 import CampaignDetails from './components/CampaignDetails'; // Import CampaignDetails
 import { Search, Mail, Briefcase } from 'lucide-react';
 import { Business, Campaign } from './types';
-import { useCampaigns } from './context/CampaignContext';
+import { useCampaigns, CampaignProvider } from './context/CampaignContext';
 import packageInfo from '../package.json';
 import { Toaster } from 'react-hot-toast';
 
