@@ -1309,10 +1309,11 @@ app.post('/api/emails/:businessId', async (req, res) => {
 
 // Send outreach email
 app.post('/api/send-email', async (req, res) => {
-  const { to, from, subject, html } = req.body;
+  const { to, subject, html } = req.body;
+  const from = process.env.EMAIL_FROM;
 
   if (!to || !from || !subject || !html) {
-    return res.status(400).json({ error: 'Missing required fields: to, from, subject, html' });
+    return res.status(400).json({ error: 'Missing required fields: to, subject, html, or EMAIL_FROM not set' });
   }
 
   try {

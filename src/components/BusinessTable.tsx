@@ -264,7 +264,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         },
         body: JSON.stringify({
           to: dm.email,
-          from: 'Outreach Pro <franco@rayapp.io>', // This needs to be a verified domain in Resend
           subject: subject,
           html: htmlBody,
         }),
