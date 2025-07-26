@@ -16,7 +16,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   const [sendingStates, setSendingStates] = useState<{[key: string]: boolean}>({});
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState({ subject: '', body: '' });
-  const [testEmail, setTestEmail] = useState<string>('');
+  const [testEmail, setTestEmail] = useState<string>('francobreciano@gmail.com');
   const [isSendingTest, setIsSendingTest] = useState(false);
 
   useEffect(() => {
@@ -104,7 +104,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   return (
     <>
       <div className={`fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 ${isOpen ? '' : 'hidden'}`}>
-        <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full">
+        <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full">
           <div className="flex items-center justify-between p-6 border-b border-gray-200">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Send Email to {business.name}</h3>
