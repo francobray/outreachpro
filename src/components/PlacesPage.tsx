@@ -16,6 +16,8 @@ interface Place {
   locationNames: string[];
   enriched: boolean;
   addedAt: string;
+  decisionMakers?: any[];
+  apolloAttempted?: boolean;
 }
 
 const PlacesPage: React.FC = () => {
@@ -463,7 +465,7 @@ const PlacesPage: React.FC = () => {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
                     <div className="flex items-center">
-                      Enriched
+                      Apollo DMs
                       {sortField === 'enriched' && (
                         sortDirection === 'asc' ? <SortAsc className="w-4 h-4 ml-1" /> : <SortDesc className="w-4 h-4 ml-1" />
                       )}
@@ -492,9 +494,9 @@ const PlacesPage: React.FC = () => {
                           href={place.website}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-sm text-blue-600 hover:text-blue-800"
+                          className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
                         >
-                          {place.website.replace(/^https?:\/\//, '')}
+                          Website
                         </a>
                       ) : (
                         <span className="text-sm text-gray-400">-</span>
@@ -554,14 +556,12 @@ const PlacesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
-                        {place.enriched ? (
-                          <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">
-                            Yes
+                        {place.apolloAttempted ? (
+                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
+                            {place.decisionMakers?.length || 0}
                           </span>
                         ) : (
-                          <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-xs">
-                            No
-                          </span>
+                          <span className="text-gray-400">-</span>
                         )}
                       </div>
                     </td>

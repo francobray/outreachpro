@@ -425,14 +425,35 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     return info?.numLocations !== undefined && info.numLocations > 1;
   };
 
-  // Helper function to check if a business has enriched data from database
-  const hasEnrichedData = (business: Business): boolean => {
+  // Helper function to check if a business has enriched Google Places data from database
+  const hasEnrichedPlacesData = (business: Business): boolean => {
     const dbBusiness = databaseBusinesses[business.placeId];
     if (!dbBusiness) return false;
     
     return !!(dbBusiness.website || 
               (dbBusiness.phone && dbBusiness.phone.trim() !== '') || 
               (dbBusiness.emails && dbBusiness.emails.length > 0));
+  };
+
+  // Helper function to check if a business has enriched Apollo data from database
+  const hasEnrichedApolloData = (business: Business): boolean => {
+    const dbBusiness = databaseBusinesses[business.placeId];
+    if (!dbBusiness) return false;
+    
+    // Check if Apollo contacts (decision makers) are already found
+    // Also check if Apollo was already attempted (decisionMakers field exists, even if empty)
+    return !!(dbBusiness.decisionMakers && dbBusiness.decisionMakers.length > 0);
+  };
+
+  // Helper function to check if Apollo was already attempted (regardless of results)
+  const hasApolloBeenAttempted = (business: Business): boolean => {
+    const dbBusiness = databaseBusinesses[business.placeId];
+    if (!dbBusiness) return false;
+    
+    // Check if Apollo was explicitly attempted using the new field
+    // For existing records without this field, treat as never attempted
+    const attempted = dbBusiness.apolloAttempted === true;
+    return attempted;
   };
 
   // Add a function to toggle tooltip visibility
@@ -927,6 +948,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
               {sortedBusinesses.map((business) => {
                 const enrichedBusiness = getBusinessData(business);
                 const loading = loadingStates[business.id];
+                
+
+                
                 return (
                   <tr key={business.id} className={`hover:bg-gray-50 transition-colors ${selectedBusinesses.has(business.id) ? 'bg-blue-50' : ''}`}>
                     <td className="px-3 py-2">
@@ -951,11 +975,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                           >
                             {business.name}
                           </a>
-                          {databaseBusinesses[business.placeId] && (
-                            databaseBusinesses[business.placeId].website || 
-                            (databaseBusinesses[business.placeId].phone && databaseBusinesses[business.placeId].phone.trim() !== '') || 
-                            (databaseBusinesses[business.placeId].emails && databaseBusinesses[business.placeId].emails.length > 0)
-                          ) && (
+                          {hasEnrichedPlacesData(business) && (
                             <span 
                               className="ml-1 flex items-center justify-center w-5 h-5 bg-green-100 rounded-full text-green-600"
                               title="Enriched data available from database"
@@ -1085,47 +1105,66 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       )}
                     </td>
                     <td style={{ width: 120 }} className="px-2 py-1 text-xs">
-                      {Array.isArray(enrichedBusiness.decisionMakers) && enrichedBusiness.decisionMakers.length > 0 ? (
-                        <div className="space-y-1">
-                          {enrichedBusiness.decisionMakers.map((dm, idx) => (
-                            <div key={idx} className="space-y-0.5">
-                              <div className="flex items-center text-xs text-gray-800">
-                                <span className="truncate" title={`${dm.name} - ${dm.title}`}>{dm.name}</span>
-                                {dm.linkedin_url && (
-                                  <>
-                                    <span className="mx-1 text-gray-400">-</span>
-                                    <a
-                                      href={dm.linkedin_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-blue-600 hover:underline flex items-center"
-                                      title="View LinkedIn Profile"
-                                    >
-                                      <ExternalLink className="h-3 w-3 mr-1" />
-                                      LinkedIn
-                                    </a>
-                                  </>
-                                )}
-                                {dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available') && (
-                                  <>
-                                    <span className="mx-1 text-gray-400">-</span>
-                                    <span className="text-gray-600">{dm.email}</span>
-                                    {dm.email_status === 'verified' ? (
-                                      <ShieldCheck className="h-3 w-3 ml-1 text-green-600" />
-                                    ) : dm.email_status === 'unverified' ? (
-                                      <Shield className="h-3 w-3 ml-1 text-orange-600" />
-                                    ) : null}
-                                  </>
-                                )}
-                              </div>
+                      {(() => {
+                        // First check for Apollo contacts from database
+                        const dbBusiness = databaseBusinesses[business.placeId];
+                        const dbApolloContacts = dbBusiness?.decisionMakers || [];
+                        
+                        // Then check for current session decision makers
+                        const sessionDecisionMakers = enrichedBusiness.decisionMakers || [];
+                        
+                        // Use database contacts if available, otherwise use session data
+                        const apolloContacts = dbApolloContacts.length > 0 ? dbApolloContacts : sessionDecisionMakers;
+                        
+                        const attempted = hasApolloBeenAttempted(business);
+                        const hasData = hasEnrichedApolloData(business);
+                        
+                        console.log(`[Apollo Display Debug] ${business.name}: attempted=${attempted}, hasData=${hasData}, apolloStatus=${enrichedBusiness.apolloStatus}`);
+                        
+                        if (Array.isArray(apolloContacts) && apolloContacts.length > 0) {
+                          return (
+                            <div className="space-y-1">
+                              {apolloContacts.map((dm, idx) => (
+                                <div key={idx} className="space-y-0.5">
+                                  <div className="flex items-center text-xs text-gray-800">
+                                    <span className="truncate" title={`${dm.name} - ${dm.title}`}>{dm.name}</span>
+                                    {dm.linkedin_url && (
+                                      <>
+                                        <span className="mx-1 text-gray-400">-</span>
+                                        <a
+                                          href={dm.linkedin_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-blue-600 hover:underline flex items-center"
+                                          title="View LinkedIn Profile"
+                                        >
+                                          <ExternalLink className="h-3 w-3 mr-1" />
+                                          LinkedIn
+                                        </a>
+                                      </>
+                                    )}
+                                    {dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available') && (
+                                      <>
+                                        <span className="mx-1 text-gray-400">-</span>
+                                        <span className="text-gray-600">{dm.email}</span>
+                                        {dm.email_status === 'verified' ? (
+                                          <ShieldCheck className="h-3 w-3 ml-1 text-green-600" />
+                                        ) : dm.email_status === 'unverified' ? (
+                                          <Shield className="h-3 w-3 ml-1 text-orange-600" />
+                                        ) : null}
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      ) : enrichedBusiness.apolloStatus === 'not_found' ? (
-                        <span className="text-xs text-gray-500 italic">No DMs found in Apollo</span>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
+                          );
+                        } else if (attempted && !hasData) {
+                          return <span className="text-xs text-gray-500 italic">No DMs found in Apollo</span>;
+                        } else {
+                          return <span className="text-xs text-gray-400">-</span>;
+                        }
+                      })()}
                     </td>
                     <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
                       {enrichedBusiness.graderScore !== undefined && enrichedBusiness.graderScore !== null ? (
@@ -1156,13 +1195,13 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         {/* Google Places Enrich Button */}
                         <button
                           onClick={() => enrichPlacesData(business)}
-                          disabled={loading === 'enrich' || hasEnrichedData(business)}
+                          disabled={loading === 'enrich' || hasEnrichedPlacesData(business)}
                           className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
-                            hasEnrichedData(business) 
+                            hasEnrichedPlacesData(business) 
                               ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
                               : 'bg-blue-100 hover:bg-blue-200 text-blue-600 hover:text-blue-800'
                           } ${loading === 'enrich' ? 'opacity-50' : ''}`}
-                          title={hasEnrichedData(business) ? "Already enriched from database" : "Enrich Google Places"}
+                          title={hasEnrichedPlacesData(business) ? "Already enriched from database" : "Enrich Google Places"}
                         >
                           {loading === 'enrich' ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
@@ -1174,13 +1213,15 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         {/* Apollo Enrich Button */}
                         <button
                           onClick={() => enrichWithApollo(business)}
-                          disabled={loading === 'apollo' || hasEnrichedData(business)}
+                          disabled={loading === 'apollo' || hasApolloBeenAttempted(business)}
                           className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
-                            hasEnrichedData(business) 
+                            hasApolloBeenAttempted(business) 
                               ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
                               : 'bg-purple-100 hover:bg-purple-200 text-purple-600 hover:text-purple-800'
                           } ${loading === 'apollo' ? 'opacity-50' : ''}`}
-                          title={hasEnrichedData(business) ? "Already enriched from database" : "Enrich with Apollo"}
+                          title={hasApolloBeenAttempted(business) ? 
+                            (hasEnrichedApolloData(business) ? "Already enriched with Apollo" : "Apollo already checked - no decision makers found") : 
+                            "Enrich with Apollo"}
                         >
                           {loading === 'apollo' ? (
                             <Loader2 className="h-3 w-3 animate-spin" />

@@ -2910,13 +2910,34 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         // Update the business in database if we can find it
         if (existingBusiness) {
           existingBusiness.decisionMakers = decisionMakers;
+          existingBusiness.apolloAttempted = true;
           existingBusiness.enriched = enrichedOrg;
           await existingBusiness.save();
+          console.log('[PlaceDetails] Saved Apollo decision makers to database:', {
+            businessId: existingBusiness.id,
+            businessName: existingBusiness.name,
+            decisionMakersCount: decisionMakers.length,
+            apolloAttempted: true,
+            decisionMakers: decisionMakers.map(dm => ({ name: dm.name, title: dm.title }))
+          });
         }
-      } catch (error) {
-        console.error('[PlaceDetails] Apollo API error:', error);
+              } catch (error) {
+          console.error('[PlaceDetails] Apollo API error:', error);
+          // Even if Apollo API fails, we should still save that we attempted Apollo enrichment
+          if (existingBusiness) {
+            existingBusiness.decisionMakers = [];
+            existingBusiness.apolloAttempted = true;
+            await existingBusiness.save();
+            console.log('[PlaceDetails] Saved empty Apollo decision makers due to API error');
+          }
+        }
+      } else if (shouldUseApollo && existingBusiness) {
+        // Apollo was requested but no website available - save empty decision makers
+        existingBusiness.decisionMakers = [];
+        existingBusiness.apolloAttempted = true;
+        await existingBusiness.save();
+        console.log('[PlaceDetails] Saved empty Apollo decision makers - no website available');
       }
-    }
 
     // Normalize and deduplicate emails before returning
     const normalizedEmails = normalizeAndDeduplicateEmails(emails);

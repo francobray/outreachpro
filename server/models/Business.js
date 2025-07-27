@@ -59,6 +59,10 @@ const businessSchema = new mongoose.Schema({
     linkedin_url: String,
     email_status: String
   }],
+  apolloAttempted: {
+    type: Boolean,
+    default: false
+  },
   enriched: {
     type: mongoose.Schema.Types.Mixed,
     default: null
