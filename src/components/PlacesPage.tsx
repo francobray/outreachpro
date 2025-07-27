@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail } from 'lucide-react';
 
 interface Place {
   id: string;
@@ -41,6 +41,12 @@ const PlacesPage: React.FC = () => {
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
+  
+  // Modal state
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
+  const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
+  const [selectedLocationPlace, setSelectedLocationPlace] = useState<Place | null>(null);
 
   useEffect(() => {
     fetchPlaces();
@@ -247,6 +253,26 @@ const PlacesPage: React.FC = () => {
       place.locationNames?.forEach(location => locations.add(location));
     });
     return Array.from(locations).sort();
+  };
+
+  const openDecisionMakersModal = (place: Place) => {
+    setSelectedPlace(place);
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setSelectedPlace(null);
+  };
+
+  const openLocationsModal = (place: Place) => {
+    setSelectedLocationPlace(place);
+    setIsLocationsModalOpen(true);
+  };
+
+  const closeLocationsModal = () => {
+    setIsLocationsModalOpen(false);
+    setSelectedLocationPlace(null);
   };
 
   const paginatedPlaces = filteredPlaces.slice(
@@ -520,19 +546,24 @@ const PlacesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
-                        {place.numLocations ? (
-                          <span className="flex items-center">
-                            <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
-                              {place.numLocations}
-                            </span>
+                        {place.numLocations && place.numLocations > 1 ? (
+                          <button
+                            onClick={() => openLocationsModal(place)}
+                            className="flex items-center bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs hover:bg-blue-200 cursor-pointer transition-colors"
+                          >
+                            <span>{place.numLocations}</span>
                             {place.locationNames && place.locationNames.length > 0 && (
                               <span className="text-gray-500 ml-2 text-xs">
                                 {place.locationNames.slice(0, 2).join(', ')}
                                 {place.locationNames.length > 2 && '...'}
                               </span>
                             )}
-                          </span>
-                        ) : '-'}
+                          </button>
+                        ) : place.numLocations === 1 ? (
+                          <span className="text-gray-400">1</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -556,10 +587,13 @@ const PlacesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
-                        {place.apolloAttempted ? (
-                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
-                            {place.decisionMakers?.length || 0}
-                          </span>
+                        {place.decisionMakers && place.decisionMakers.length > 0 ? (
+                          <button
+                            onClick={() => openDecisionMakersModal(place)}
+                            className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs hover:bg-blue-200 cursor-pointer transition-colors"
+                          >
+                            {place.decisionMakers.length}
+                          </button>
                         ) : (
                           <span className="text-gray-400">-</span>
                         )}
@@ -621,6 +655,117 @@ const PlacesPage: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Decision Makers Modal */}
+        {isModalOpen && selectedPlace && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  Apollo Decision Makers - {selectedPlace.name}
+                </h2>
+                <button
+                  onClick={closeModal}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-6">
+                {selectedPlace.decisionMakers && selectedPlace.decisionMakers.length > 0 ? (
+                  <div className="space-y-4">
+                    {selectedPlace.decisionMakers.map((dm: any, index: number) => (
+                      <div key={index} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h3 className="text-lg font-medium text-gray-900">{dm.name}</h3>
+                            <p className="text-sm text-gray-600 mt-1">{dm.title}</p>
+                            
+                            {dm.email && (
+                              <div className="flex items-center mt-2">
+                                <Mail className="w-4 h-4 text-gray-400 mr-2" />
+                                <span className="text-sm text-gray-700">{dm.email}</span>
+                                {dm.email_status === 'verified' && (
+                                  <span className="ml-2 bg-green-100 text-green-800 px-2 py-1 rounded text-xs">
+                                    Verified
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            
+                            {dm.linkedin_url && (
+                              <div className="flex items-center mt-2">
+                                <ExternalLink className="w-4 h-4 text-gray-400 mr-2" />
+                                <a
+                                  href={dm.linkedin_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
+                                >
+                                  LinkedIn Profile
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <p className="text-gray-500">No decision makers found for this business.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Locations Modal */}
+        {isLocationsModalOpen && selectedLocationPlace && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  Business Locations - {selectedLocationPlace.name}
+                </h2>
+                <button
+                  onClick={closeLocationsModal}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-6">
+                {selectedLocationPlace.locationNames && selectedLocationPlace.locationNames.length > 0 ? (
+                  <div className="space-y-4">
+                    <div className="mb-4">
+                      <p className="text-sm text-gray-600">
+                        This business has <span className="font-medium">{selectedLocationPlace.numLocations}</span> location(s):
+                      </p>
+                    </div>
+                    {selectedLocationPlace.locationNames.map((location: string, index: number) => (
+                      <div key={index} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-center">
+                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs mr-3">
+                            {index + 1}
+                          </span>
+                          <span className="text-sm font-medium text-gray-900">{location}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <p className="text-gray-500">No location details available for this business.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
