@@ -9,10 +9,11 @@ interface EmailModalProps {
   onClose: () => void;
   business: Business | null;
   emailTemplates: EmailTemplate[];
-  onSendEmail: (dm: DecisionMaker, templateId: string, graderData?: any) => Promise<void>;
+  databaseBusinesses: { [key: string]: any };
+  onSendEmail: (dm: DecisionMaker, templateId: string, graderData?: any, emailType?: 'test' | 'real') => Promise<void>;
 }
 
-const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emailTemplates, onSendEmail }) => {
+const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emailTemplates, databaseBusinesses, onSendEmail }) => {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [sendingStates, setSendingStates] = useState<{[key: string]: boolean}>({});
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -79,7 +80,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
         email: testEmailToSend
       };
       
-      await onSendEmail(testDecisionMaker, selectedTemplateId, business?.graderReport);
+      await onSendEmail(testDecisionMaker, selectedTemplateId, business?.graderReport, 'test');
       toast.success(`Test email sent to ${testEmailToSend}`);
     } catch (error) {
       console.error("Failed to send test email", error);
@@ -135,7 +136,15 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
     setIsPreviewOpen(true);
   };
 
-  const decisionMakers = business.decisionMakers?.filter(dm => dm.email && dm.email !== 'email_not_unlocked@domain.com' && !dm.email.includes('not_available') && dm.email.includes('@')) || [];
+  // Get Apollo contacts using the same logic as the table
+  const dbBusiness = databaseBusinesses[business.placeId];
+  const dbApolloContacts = dbBusiness?.decisionMakers || [];
+  const sessionDecisionMakers = business.decisionMakers || [];
+  
+  // Use database contacts if available, otherwise use session data
+  const allApolloContacts = dbApolloContacts.length > 0 ? dbApolloContacts : sessionDecisionMakers;
+  
+  const decisionMakers = allApolloContacts.filter(dm => dm.email && dm.email !== 'email_not_unlocked@domain.com' && !dm.email.includes('not_available') && dm.email.includes('@')) || [];
 
   return (
     <>

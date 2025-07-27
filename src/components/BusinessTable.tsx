@@ -238,7 +238,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     setIsEmailModalOpen(true);
   };
 
-  const handleSendEmail = async (dm: DecisionMaker, templateId: string, graderData?: any) => {
+  const handleSendEmail = async (dm: DecisionMaker, templateId: string, graderData?: any, emailType: 'test' | 'real' = 'real') => {
     const template = emailTemplates.find(t => t.id === templateId);
     if (!template || !selectedBusinessForEmail) {
       console.error('Template or business not found');
@@ -292,6 +292,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           to: dm.email,
           subject: subject,
           html: htmlBody,
+          businessId: selectedBusinessForEmail.placeId,
+          businessName: selectedBusinessForEmail.name,
+          decisionMakerId: dm.id || 'unknown',
+          decisionMakerName: dm.name,
+          decisionMakerEmail: dm.email,
+          templateId: template.id,
+          templateName: template.name,
+          emailType: emailType
         }),
       });
 
@@ -1213,14 +1221,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         {/* Apollo Enrich Button */}
                         <button
                           onClick={() => enrichWithApollo(business)}
-                          disabled={loading === 'apollo' || hasApolloBeenAttempted(business)}
+                          disabled={loading === 'apollo' || hasEnrichedApolloData(business)}
                           className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
-                            hasApolloBeenAttempted(business) 
+                            hasEnrichedApolloData(business) 
                               ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
                               : 'bg-purple-100 hover:bg-purple-200 text-purple-600 hover:text-purple-800'
                           } ${loading === 'apollo' ? 'opacity-50' : ''}`}
-                          title={hasApolloBeenAttempted(business) ? 
-                            (hasEnrichedApolloData(business) ? "Already enriched with Apollo" : "Apollo already checked - no decision makers found") : 
+                          title={hasEnrichedApolloData(business) ? 
+                            "Already enriched with Apollo" : 
                             "Enrich with Apollo"}
                         >
                           {loading === 'apollo' ? (
@@ -1247,7 +1255,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                           onClick={() => openEmailModal(enrichedBusiness)}
                           className="flex items-center justify-center w-6 h-6 bg-green-100 hover:bg-green-200 rounded-full text-green-600 hover:text-green-800 transition-colors disabled:opacity-50"
                           title="Send Email"
-                          disabled={!enrichedBusiness.decisionMakers?.some(dm => dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available'))}
+                          disabled={!hasEnrichedApolloData(business)}
                         >
                           <Mail className="h-3 w-3" />
                         </button>
@@ -1265,6 +1273,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         onClose={() => setIsEmailModalOpen(false)}
         business={selectedBusinessForEmail}
         emailTemplates={emailTemplates}
+        databaseBusinesses={databaseBusinesses}
         onSendEmail={handleSendEmail}
       />
       <AlertModal

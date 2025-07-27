@@ -3,9 +3,10 @@ import SearchForm from './components/SearchForm';
 import BusinessTable from './components/BusinessTable';
 import EmailTemplates from './components/EmailTemplates';
 import PlacesPage from './components/PlacesPage';
+import EmailActivityPage from './components/EmailActivityPage';
 import CampaignModal from './components/CampaignModal';
 import AlertModal from './components/AlertModal';
-import { Search, Mail, Database } from 'lucide-react';
+import { Search, Mail, Database, BarChart3 } from 'lucide-react';
 import { Business, Campaign } from './types';
 import { useCampaigns, CampaignProvider } from './context/CampaignContext';
 import packageInfo from '../package.json';
@@ -20,7 +21,7 @@ interface EmailTemplate {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places'>('search');
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'email-activity'>('search');
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedBusinesses, setSelectedBusinesses] = useState<Business[]>([]);
@@ -137,6 +138,17 @@ function App() {
                 <Database className="inline h-5 w-5 mr-2" />
                 Places Database
               </button>
+              <button
+                onClick={() => setActiveTab('email-activity')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeTab === 'email-activity'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <BarChart3 className="inline h-5 w-5 mr-2" />
+                Email Activity
+              </button>
             </div>
           </div>
         </nav>
@@ -176,6 +188,8 @@ function App() {
             </div>
           ) : activeTab === 'places' ? (
             <PlacesPage />
+          ) : activeTab === 'email-activity' ? (
+            <EmailActivityPage onBack={() => setActiveTab('search')} />
           ) : (
             <EmailTemplates />
           )}

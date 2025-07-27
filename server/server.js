@@ -104,6 +104,7 @@ let Business = null;
 let Campaign = null;
 let ApolloContact = null;
 let EmailTemplate = null;
+let EmailActivity = null;
 
 async function connectToDatabase() {
   try {
@@ -126,11 +127,13 @@ async function connectToDatabase() {
     const { default: CampaignModel } = await import('./models/Campaign.js');
     const { default: ApolloContactModel } = await import('./models/ApolloContact.js');
     const { default: EmailTemplateModel } = await import('./models/EmailTemplate.js');
+    const { default: EmailActivityModel } = await import('./models/EmailActivity.js');
     
     Business = BusinessModel;
     Campaign = CampaignModel;
     ApolloContact = ApolloContactModel;
     EmailTemplate = EmailTemplateModel;
+    EmailActivity = EmailActivityModel;
     
     console.log('[Server] Database models loaded');
     
@@ -1395,7 +1398,19 @@ app.post('/api/send-email', async (req, res) => {
     from: process.env.EMAIL_FROM
   });
 
-  const { to, subject, html } = req.body;
+  const { 
+    to, 
+    subject, 
+    html, 
+    businessId, 
+    businessName, 
+    decisionMakerId, 
+    decisionMakerName, 
+    decisionMakerEmail, 
+    templateId, 
+    templateName, 
+    emailType = 'real' 
+  } = req.body;
   const from = process.env.EMAIL_FROM;
 
   if (!to || !from || !subject || !html) {
@@ -1420,6 +1435,33 @@ app.post('/api/send-email', async (req, res) => {
       }
 
       console.log('[Email API] Email sent successfully via Resend:', data);
+      
+      // Create email activity record
+      if (businessId && decisionMakerEmail && templateId) {
+        try {
+          const emailActivity = new EmailActivity({
+            emailId: data.id,
+            businessId,
+            businessName: businessName || 'Unknown Business',
+            decisionMakerId: decisionMakerId || 'unknown',
+            decisionMakerName: decisionMakerName || 'Unknown',
+            decisionMakerEmail,
+            subject,
+            templateId,
+            templateName: templateName || 'Unknown Template',
+            emailType,
+            status: 'sent',
+            sentAt: new Date(),
+            resendData: data
+          });
+          
+          await emailActivity.save();
+          console.log('[Email API] Email activity recorded:', { emailId: data.id, businessId, decisionMakerEmail });
+        } catch (error) {
+          console.error('[Email API] Failed to record email activity:', error);
+        }
+      }
+      
       res.json({ success: true, message: 'Email sent successfully', data });
     } else {
       console.log('[Email API] Using mock email service');
@@ -1435,6 +1477,34 @@ app.post('/api/send-email', async (req, res) => {
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       console.log('[Email API] Mock email sent successfully');
+      
+      // Create mock email activity record
+      if (businessId && decisionMakerEmail && templateId) {
+        try {
+          const mockEmailId = 'mock-email-' + Date.now();
+          const emailActivity = new EmailActivity({
+            emailId: mockEmailId,
+            businessId,
+            businessName: businessName || 'Unknown Business',
+            decisionMakerId: decisionMakerId || 'unknown',
+            decisionMakerName: decisionMakerName || 'Unknown',
+            decisionMakerEmail,
+            subject,
+            templateId,
+            templateName: templateName || 'Unknown Template',
+            emailType,
+            status: 'sent',
+            sentAt: new Date(),
+            resendData: { id: mockEmailId }
+          });
+          
+          await emailActivity.save();
+          console.log('[Email API] Mock email activity recorded:', { emailId: mockEmailId, businessId, decisionMakerEmail });
+        } catch (error) {
+          console.error('[Email API] Failed to record mock email activity:', error);
+        }
+      }
+      
       res.json({ 
         success: true, 
         message: 'Mock email sent successfully (no real email sent)',
@@ -1444,6 +1514,154 @@ app.post('/api/send-email', async (req, res) => {
   } catch (error) {
     console.error('[Email API] Failed to send email:', error);
     res.status(500).json({ error: 'Failed to send email' });
+  }
+});
+
+// Resend webhook endpoint for email events
+app.post('/api/webhooks/resend', async (req, res) => {
+  try {
+    const { type, data } = req.body;
+    console.log('[Webhook] Resend event received:', { type, data });
+
+    if (!data || !data.email_id) {
+      console.log('[Webhook] Missing email_id in webhook data');
+      return res.status(400).json({ error: 'Missing email_id' });
+    }
+
+    // Find the email activity by Resend email ID
+    const emailActivity = await EmailActivity.findOne({ emailId: data.email_id });
+    if (!emailActivity) {
+      console.log('[Webhook] Email activity not found for email_id:', data.email_id);
+      return res.status(404).json({ error: 'Email activity not found' });
+    }
+
+    // Update email activity based on event type
+    switch (type) {
+      case 'email.delivered':
+        emailActivity.status = 'delivered';
+        emailActivity.deliveredAt = new Date();
+        break;
+      
+      case 'email.opened':
+        emailActivity.status = 'opened';
+        emailActivity.openedAt = new Date();
+        emailActivity.openCount += 1;
+        emailActivity.lastOpenedAt = new Date();
+        break;
+      
+      case 'email.clicked':
+        emailActivity.status = 'clicked';
+        emailActivity.clickedAt = new Date();
+        emailActivity.clickCount += 1;
+        emailActivity.lastClickedAt = new Date();
+        break;
+      
+      case 'email.bounced':
+        emailActivity.status = 'bounced';
+        emailActivity.bouncedAt = new Date();
+        break;
+      
+      case 'email.failed':
+        emailActivity.status = 'failed';
+        emailActivity.failedAt = new Date();
+        emailActivity.errorMessage = data.reason || 'Email failed to send';
+        break;
+      
+      case 'email.complained':
+        emailActivity.status = 'complained';
+        break;
+      
+      case 'email.unsubscribed':
+        emailActivity.status = 'unsubscribed';
+        break;
+      
+      default:
+        console.log('[Webhook] Unknown event type:', type);
+        return res.status(400).json({ error: 'Unknown event type' });
+    }
+
+    await emailActivity.save();
+    console.log('[Webhook] Email activity updated:', { emailId: data.email_id, status: emailActivity.status });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Webhook] Error processing webhook:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get email activities
+app.get('/api/email-activities', async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status, emailType, businessId } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const filter = {};
+    if (status) filter.status = status;
+    if (emailType) filter.emailType = emailType;
+    if (businessId) filter.businessId = businessId;
+    
+    const activities = await EmailActivity.find(filter)
+      .sort({ sentAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await EmailActivity.countDocuments(filter);
+    
+    res.json({
+      activities,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('[EmailActivities] Error fetching activities:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get email activity statistics
+app.get('/api/email-activities/stats', async (req, res) => {
+  try {
+    const stats = await EmailActivity.aggregate([
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+          opened: { $sum: { $cond: [{ $eq: ['$status', 'opened'] }, 1, 0] } },
+          clicked: { $sum: { $cond: [{ $eq: ['$status', 'clicked'] }, 1, 0] } },
+          bounced: { $sum: { $cond: [{ $eq: ['$status', 'bounced'] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
+          totalOpens: { $sum: '$openCount' },
+          totalClicks: { $sum: '$clickCount' }
+        }
+      }
+    ]);
+    
+    const typeStats = await EmailActivity.aggregate([
+      {
+        $group: {
+          _id: '$emailType',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    res.json({
+      overall: stats[0] || {
+        total: 0, sent: 0, delivered: 0, opened: 0, clicked: 0, 
+        bounced: 0, failed: 0, totalOpens: 0, totalClicks: 0
+      },
+      byType: typeStats
+    });
+  } catch (error) {
+    console.error('[EmailActivities] Error fetching stats:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
