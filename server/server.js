@@ -79,8 +79,8 @@ async function checkRobotsTxt(url) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from the project root (parent directory)
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Load .env from the server directory
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Initialize Resend with API key, or use a mock if not available
 let resend;
@@ -98,6 +98,55 @@ const PORT = 3001;
 const DEBUG_SCRAPER = process.env.DEBUG_SCRAPER === 'true';
 console.log(`[Server] Scraper debug mode: ${DEBUG_SCRAPER ? 'ENABLED' : 'disabled'}`);
 
+// Database connection and models
+let mongoose = null;
+let Business = null;
+let Campaign = null;
+let ApolloContact = null;
+let EmailTemplate = null;
+
+async function connectToDatabase() {
+  try {
+    // Connect to MongoDB
+    const { default: mongooseModule } = await import('mongoose');
+    mongoose = mongooseModule;
+    
+    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/outreachpro';
+    console.log(`[Server] Connecting to MongoDB: ${mongoUri.replace(/\/\/.*@/, '//***@')}`);
+    
+    await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 10000, // 10 second timeout
+      socketTimeoutMS: 45000,
+    });
+    
+    console.log('[Server] MongoDB connected successfully');
+    
+    // Import models
+    const { default: BusinessModel } = await import('./models/Business.js');
+    const { default: CampaignModel } = await import('./models/Campaign.js');
+    const { default: ApolloContactModel } = await import('./models/ApolloContact.js');
+    const { default: EmailTemplateModel } = await import('./models/EmailTemplate.js');
+    
+    Business = BusinessModel;
+    Campaign = CampaignModel;
+    ApolloContact = ApolloContactModel;
+    EmailTemplate = EmailTemplateModel;
+    
+    console.log('[Server] Database models loaded');
+    
+    // Email templates are already in the database
+    
+  } catch (error) {
+    console.error('[Server] Failed to connect to MongoDB:', error.message);
+    console.error('[Server] Please ensure MongoDB is running and accessible');
+    process.exit(1);
+  }
+}
+
+// Email templates are managed via the API endpoints
+
+// Database storage only - no in-memory fallback
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -106,7 +155,9 @@ app.use(express.json());
 app.get('/api/config', (req, res) => {
   res.json({
     graderApiUrl: process.env.GRADER_API_URL || 'https://grader.rayapp.io/api/generate-report-v2',
-    usingMock: !process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key'
+    usingMock: !process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key',
+    storageMode: 'database',
+    databaseConnected: true
   });
 });
 
@@ -114,9 +165,6 @@ app.get('/api/config', (req, res) => {
 app.get('/test-grader', (req, res) => {
   res.sendFile(path.join(__dirname, 'test-grader.html'));
 });
-
-// In-memory storage for businesses
-let businesses = [];
 
 // Mock Google Places API data
 const mockPlacesData = {
@@ -1069,13 +1117,17 @@ app.post('/api/search', async (req, res) => {
     console.log('[Search] No Google Places API key found, using mock data');
     const mockBusinesses = generateMockBusinesses(keyword, location);
     
-    // Add to businesses storage if not already exists
-    mockBusinesses.forEach(business => {
-      const exists = businesses.find(b => b.placeId === business.placeId);
-      if (!exists) {
-        businesses.push(business);
+    // Save to MongoDB
+    for (const business of mockBusinesses) {
+      try {
+        const existingBusiness = await Business.findOne({ placeId: business.placeId });
+        if (!existingBusiness) {
+          await Business.create(business);
+        }
+      } catch (error) {
+        console.error('[Search] Error saving business to MongoDB:', error);
       }
-    });
+    }
     
     return res.json({ businesses: mockBusinesses });
   }
@@ -1093,13 +1145,17 @@ app.post('/api/search', async (req, res) => {
       console.log('[Search] Location not found in Google Places API, using mock data');
       const mockBusinesses = generateMockBusinesses(keyword, location);
       
-      // Add to businesses storage if not already exists
-      mockBusinesses.forEach(business => {
-        const exists = businesses.find(b => b.placeId === business.placeId);
-        if (!exists) {
-          businesses.push(business);
+      // Save to MongoDB
+      for (const business of mockBusinesses) {
+        try {
+          const existingBusiness = await Business.findOne({ placeId: business.placeId });
+          if (!existingBusiness) {
+            await Business.create(business);
+          }
+        } catch (error) {
+          console.error('[Search] Error saving business to MongoDB:', error);
         }
-      });
+      }
       
       return res.json({ businesses: mockBusinesses });
     }
@@ -1138,13 +1194,17 @@ app.post('/api/search', async (req, res) => {
 
     console.log('[Search] Mapped businesses:', businessesFound.length);
 
-    // Add to businesses storage if not already exists
-    businessesFound.forEach(business => {
-      const exists = businesses.find(b => b.placeId === business.placeId);
-      if (!exists) {
-        businesses.push(business);
+    // Save businesses to database
+    for (const business of businessesFound) {
+      try {
+        const existingBusiness = await Business.findOne({ placeId: business.placeId });
+        if (!existingBusiness) {
+          await Business.create(business);
+        }
+      } catch (error) {
+        console.error('[Search] Error saving business to MongoDB:', error);
       }
-    });
+    }
 
     res.json({ businesses: businessesFound });
   } catch (error) {
@@ -1152,50 +1212,62 @@ app.post('/api/search', async (req, res) => {
     console.log('[Search] Full error:', error);
     const mockBusinesses = generateMockBusinesses(keyword, location);
     
-    // Add to businesses storage if not already exists
-    mockBusinesses.forEach(business => {
-      const exists = businesses.find(b => b.placeId === business.placeId);
-      if (!exists) {
-        businesses.push(business);
+    // Save to MongoDB
+    for (const business of mockBusinesses) {
+      try {
+        const existingBusiness = await Business.findOne({ placeId: business.placeId });
+        if (!existingBusiness) {
+          await Business.create(business);
+        }
+      } catch (error) {
+        console.error('[Search] Error saving business to MongoDB:', error);
       }
-    });
+    }
     
     res.json({ businesses: mockBusinesses });
   }
 });
 
 // Generate audit report for a business
-app.post('/api/audit/:businessId', (req, res) => {
+app.post('/api/audit/:businessId', async (req, res) => {
   const { businessId } = req.params;
-  const business = businesses.find(b => b.id === businessId);
   
-  if (!business) {
-    return res.status(404).json({ error: 'Business not found' });
+  try {
+    const business = await Business.findOne({ id: businessId });
+    
+    if (!business) {
+      return res.status(404).json({ error: 'Business not found' });
+    }
+    
+    // Simulate API delay
+    setTimeout(async () => {
+      const auditReport = generateMockAuditReport(business.name, business.website);
+      
+      // Update business with audit report
+      business.auditReport = auditReport;
+      await business.save();
+      
+      res.json({ auditReport });
+    }, 2000);
+  } catch (error) {
+    console.error('[Audit] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
-  
-  // Simulate API delay
-  setTimeout(() => {
-    const auditReport = generateMockAuditReport(business.name, business.website);
-    
-    // Update business with audit report
-    business.auditReport = auditReport;
-    
-    res.json({ auditReport });
-  }, 2000);
 });
 
 // Find emails for a business
 app.post('/api/emails/:businessId', async (req, res) => {
   const { businessId } = req.params;
   console.log(`[Apollo] /api/emails/${businessId} endpoint hit`);
-  const business = businesses.find(b => b.id === businessId);
-
-  if (!business) {
-    console.log(`[Apollo] Business not found for id: ${businessId}`);
-    return res.status(404).json({ error: 'Business not found' });
-  }
-
+  
   try {
+    const business = await Business.findOne({ id: businessId });
+
+    if (!business) {
+      console.log(`[Apollo] Business not found for id: ${businessId}`);
+      return res.status(404).json({ error: 'Business not found' });
+    }
+
     const apolloApiKey = process.env.APOLLO_API_KEY;
     const domain = extractDomain(business.website);
     let orgId = undefined;
@@ -1309,8 +1381,8 @@ app.post('/api/emails/:businessId', async (req, res) => {
 
     res.json({ emails, decisionMakers: business.decisionMakers, enriched: business.enriched });
   } catch (error) {
-    console.error('[Apollo] Enrich/People API error:', error);
-    res.status(500).json({ error: 'Failed to fetch from Apollo Enrich/People API' });
+    console.error('[Apollo] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch from Apollo API' });
   }
 });
 
@@ -1376,15 +1448,16 @@ app.post('/api/send-email', async (req, res) => {
 });
 
 // Download audit report PDF (mocked)
-app.get('/api/reports/:reportId/download', (req, res) => {
+app.get('/api/reports/:reportId/download', async (req, res) => {
   const { reportId } = req.params;
   
-  // Find the business with this report
-  const business = businesses.find(b => b.auditReport?.id === reportId);
-  
-  if (!business) {
-    return res.status(404).json({ error: 'Report not found' });
-  }
+  try {
+    // Find the business with this report
+    const business = await Business.findOne({ 'auditReport.id': reportId });
+    
+    if (!business) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
   
   // Simulate PDF content
   const pdfContent = `
@@ -1407,17 +1480,134 @@ app.get('/api/reports/:reportId/download', (req, res) => {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${business.name.replace(/\s+/g, '_')}_audit_report.pdf"`);
   res.send(pdfContent);
+  } catch (error) {
+    console.error('[Reports] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Get all businesses in dashboard
-app.get('/api/dashboard', (req, res) => {
-  res.json({ businesses });
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const businesses = await Business.find({}).sort({ addedAt: -1 });
+    res.json({ businesses });
+  } catch (error) {
+    console.error('[Dashboard] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Clear all data (for testing)
-app.delete('/api/clear', (req, res) => {
-  businesses = [];
-  res.json({ message: 'All data cleared' });
+app.delete('/api/clear', async (req, res) => {
+  try {
+    await Business.deleteMany({});
+    await Campaign.deleteMany({});
+    await ApolloContact.deleteMany({});
+    await EmailTemplate.deleteMany({});
+    res.json({ message: 'All data cleared' });
+  } catch (error) {
+    console.error('[Clear] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Email Templates API endpoints
+app.get('/api/email-templates', async (req, res) => {
+  try {
+    const templates = await EmailTemplate.find({}).sort({ createdAt: -1 });
+    res.json(templates);
+  } catch (error) {
+    console.error('[EmailTemplates] Error fetching templates:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/email-templates', async (req, res) => {
+  try {
+    const { name, description, subject, html, text, category, variables } = req.body;
+    
+    const template = new EmailTemplate({
+      id: uuidv4(),
+      name,
+      description,
+      subject,
+      html,
+      text,
+      category,
+      variables,
+      isDefault: false
+    });
+    
+    await template.save();
+    res.json(template);
+  } catch (error) {
+    console.error('[EmailTemplates] Error creating template:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/email-templates/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, subject, html, text, category, variables } = req.body;
+    
+    const template = await EmailTemplate.findOneAndUpdate(
+      { id },
+      { name, description, subject, html, text, category, variables },
+      { new: true }
+    );
+    
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    
+    res.json(template);
+  } catch (error) {
+    console.error('[EmailTemplates] Error updating template:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/email-templates/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const template = await EmailTemplate.findOneAndDelete({ id });
+    
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    
+    res.json({ message: 'Template deleted successfully' });
+  } catch (error) {
+    console.error('[EmailTemplates] Error deleting template:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/email-templates/:id/default', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Remove default flag from all templates
+    await EmailTemplate.updateMany({}, { isDefault: false });
+    
+    // Set the specified template as default
+    const template = await EmailTemplate.findOneAndUpdate(
+      { id },
+      { isDefault: true },
+      { new: true }
+    );
+    
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    
+    res.json(template);
+  } catch (error) {
+    console.error('[EmailTemplates] Error setting default template:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Find the place-details endpoint
@@ -1429,6 +1619,17 @@ app.get('/api/place-details/:placeId', async (req, res) => {
   const noPuppeteer = disablePuppeteer === 'true';
   const debugMode = debug === 'true' || DEBUG_SCRAPER;
   
+  console.log(`[PlaceDetails] ===== ENRICHMENT REQUEST START =====`);
+  console.log(`[PlaceDetails] Request details:`, {
+    placeId,
+    enrich: shouldEnrich,
+    apollo: shouldUseApollo,
+    testUrl: testUrl || 'none',
+    debugMode,
+    noPuppeteer,
+    timestamp: new Date().toISOString()
+  });
+  
   if (debugMode) {
     console.log('[PlaceDetails] Debug mode enabled - bot detection will be logged but not trigger Puppeteer');
   }
@@ -1437,14 +1638,29 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     console.log('[PlaceDetails] Puppeteer fallback disabled for this request');
   }
   
-  console.log(`[PlaceDetails] Fetching details for place ID: ${placeId}, enrich: ${shouldEnrich}, apollo: ${shouldUseApollo}, testUrl: ${testUrl || 'none'}`);
-  
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   const apolloApiKey = process.env.APOLLO_API_KEY;
 
-  // Try to find the business in our local data first
-  const existingBusiness = businesses.find(b => b.placeId === placeId);
-  console.log('[PlaceDetails] Found existing business:', existingBusiness ? existingBusiness.name : 'Not found');
+  // Try to find the business in our database first
+  console.log(`[PlaceDetails] Looking up business in database for placeId: ${placeId}`);
+  const existingBusiness = await Business.findOne({ placeId });
+  
+  if (existingBusiness) {
+    console.log('[PlaceDetails] Found existing business in database:', {
+      id: existingBusiness.id,
+      name: existingBusiness.name,
+      placeId: existingBusiness.placeId,
+      emailsCount: existingBusiness.emails?.length || 0,
+      numLocations: existingBusiness.numLocations,
+      locationNamesCount: existingBusiness.locationNames?.length || 0,
+      website: existingBusiness.website,
+      phone: existingBusiness.phone,
+      lastUpdated: existingBusiness.lastUpdated,
+      createdAt: existingBusiness.createdAt
+    });
+  } else {
+    console.log('[PlaceDetails] No existing business found in database for placeId:', placeId);
+  }
 
   // Get detailed information directly from Google Places API
   const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
@@ -1862,6 +2078,13 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         if (businessDomain && emailsByDomain[businessDomain].length > 2) {
           console.log(`[PlaceDetails] Found ${emailsByDomain[businessDomain].length} emails for domain ${businessDomain}`);
           
+          // Skip processing if too many emails (likely spam/bots) or from known non-business domains
+          const skipDomains = ['sentry.wixpress.com', 'wixpress.com', 'wix.com', 'google.com', 'facebook.com'];
+          if (skipDomains.some(domain => businessDomain.includes(domain)) || emailsByDomain[businessDomain].length > 50) {
+            console.log(`[PlaceDetails] Skipping email-to-location extraction for domain: ${businessDomain} (too many emails or known non-business domain)`);
+            return;
+          }
+          
           // Common prefixes that are not locations
           const commonPrefixes = ['info', 'contact', 'hello', 'support', 'general', 'sales', 'marketing', 'admin', 'catering', 'events'];
           
@@ -1872,27 +2095,37 @@ app.get('/api/place-details/:placeId', async (req, res) => {
             !prefix.includes('webmaster') &&
             !prefix.includes('noreply') &&
             !prefix.includes('no-reply') &&
-            !prefix.includes('donotreply')
+            !prefix.includes('donotreply') &&
+            // Additional filters for random strings
+            !/^[a-f0-9]{8,}$/i.test(prefix) && // Skip hex strings
+            !/^\d+$/.test(prefix) && // Skip pure numbers
+            !/^[a-z0-9]{16,}$/i.test(prefix) && // Skip long random strings
+            prefix.length < 20 // Skip very long prefixes
           );
           
-          // Format location names properly
-          for (const prefix of locationPrefixes) {
-            // Convert camelCase or snake_case to spaces
-            let locationName = prefix
-              .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
-              .replace(/_/g, ' ')                   // snake_case to spaces
-              .replace(/([a-z])(\d)/g, '$1 $2')     // separate numbers from letters
-              .trim();
-            
-            // Capitalize first letter of each word
-            locationName = locationName.split(' ')
-              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-              .join(' ');
-            
-            if (locationName.length > 3) {
-              console.log(`[PlaceDetails] Found location from email: ${locationName}`);
-              locationSet.add(locationName);
+          // Only process if we have reasonable candidates
+          if (locationPrefixes.length > 0 && locationPrefixes.length < 10) {
+            // Format location names properly
+            for (const prefix of locationPrefixes) {
+              // Convert camelCase or snake_case to spaces
+              let locationName = prefix
+                .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
+                .replace(/_/g, ' ')                   // snake_case to spaces
+                .replace(/([a-z])(\d)/g, '$1 $2')     // separate numbers from letters
+                .trim();
+              
+              // Capitalize first letter of each word
+              locationName = locationName.split(' ')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join(' ');
+              
+              if (locationName.length > 3 && locationName.length < 30) {
+                console.log(`[PlaceDetails] Found location from email: ${locationName}`);
+                locationSet.add(locationName);
+              }
             }
+          } else {
+            console.log(`[PlaceDetails] Skipping email-to-location extraction: too many candidates (${locationPrefixes.length}) or no valid candidates`);
           }
         }
       } catch (err) {
@@ -2312,10 +2545,31 @@ app.get('/api/place-details/:placeId', async (req, res) => {
 
     // Apply location detection to the combined HTML from all pages
     console.log(`[PlaceDetails] Detecting locations from all pages`);
-    const locationInfo = detectLocations(combinedHtml);
+    let locationInfo;
+    try {
+      locationInfo = detectLocations(combinedHtml);
+    } catch (err) {
+      console.log(`[PlaceDetails] Error in detectLocations:`, err.message);
+      locationInfo = {
+        locationCount: 1,
+        locationNames: [],
+        hasLocationsPage: false
+      };
+    }
+    
+    // Ensure locationInfo is valid
+    if (!locationInfo || typeof locationInfo !== 'object') {
+      console.log(`[PlaceDetails] detectLocations returned invalid result, using defaults`);
+      locationInfo = {
+        locationCount: 1,
+        locationNames: [],
+        hasLocationsPage: false
+      };
+    }
+    
     numLocations = locationInfo.locationCount > 0 ? locationInfo.locationCount : 1; // Default to 1 if none found
-    locationNames = locationInfo.locationNames;
-    const hasLocationsPage = locationInfo.hasLocationsPage;
+    locationNames = locationInfo.locationNames || [];
+    const hasLocationsPage = locationInfo.hasLocationsPage || false;
     console.log(`[PlaceDetails] Detected ${numLocations} locations: ${JSON.stringify(locationNames)}`);
     if (hasLocationsPage) {
       console.log(`[PlaceDetails] Website has a dedicated locations page or menu`);
@@ -2653,10 +2907,11 @@ app.get('/api/place-details/:placeId', async (req, res) => {
           };
         }));
 
-        // Also update the business in memory if we can find it
+        // Update the business in database if we can find it
         if (existingBusiness) {
           existingBusiness.decisionMakers = decisionMakers;
           existingBusiness.enriched = enrichedOrg;
+          await existingBusiness.save();
         }
       } catch (error) {
         console.error('[PlaceDetails] Apollo API error:', error);
@@ -2666,6 +2921,52 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     // Normalize and deduplicate emails before returning
     const normalizedEmails = normalizeAndDeduplicateEmails(emails);
     console.log(`[PlaceDetails] Normalized emails: ${JSON.stringify(normalizedEmails)}`);
+    
+    // Update the business with website scraping data
+    if (existingBusiness) {
+      console.log('[PlaceDetails] Before database update - Business data:', {
+        id: existingBusiness.id,
+        name: existingBusiness.name,
+        placeId: existingBusiness.placeId,
+        currentEmails: existingBusiness.emails?.length || 0,
+        currentNumLocations: existingBusiness.numLocations,
+        currentLocationNames: existingBusiness.locationNames?.length || 0,
+        currentWebsite: existingBusiness.website,
+        currentPhone: existingBusiness.phone
+      });
+
+      // Update fields
+      existingBusiness.emails = normalizedEmails;
+      existingBusiness.numLocations = numLocations;
+      existingBusiness.locationNames = locationNames;
+      existingBusiness.website = website;
+      existingBusiness.phone = phone;
+      existingBusiness.lastUpdated = new Date();
+
+      console.log('[PlaceDetails] About to save business with updated data:', {
+        emails: normalizedEmails,
+        numLocations,
+        locationNames,
+        website,
+        phone,
+        lastUpdated: existingBusiness.lastUpdated
+      });
+
+      await existingBusiness.save();
+      
+      console.log('[PlaceDetails] Successfully updated business in database:', {
+        businessId: existingBusiness.id,
+        businessName: existingBusiness.name,
+        emailsCount: normalizedEmails.length,
+        numLocations,
+        locationNamesCount: locationNames.length,
+        website,
+        phone,
+        saveTimestamp: new Date().toISOString()
+      });
+    } else {
+      console.log('[PlaceDetails] No existing business found in database for placeId:', placeId);
+    }
     
     // Return the enriched data
     const responseData = { 
@@ -2679,10 +2980,35 @@ app.get('/api/place-details/:placeId', async (req, res) => {
       usedPuppeteer: usedPuppeteerForAnyRequest
     };
     
+    console.log(`[PlaceDetails] ===== ENRICHMENT REQUEST COMPLETE =====`);
+    console.log(`[PlaceDetails] Final response data:`, {
+      placeId,
+      businessName: existingBusiness?.name,
+      website,
+      phone,
+      emailsCount: normalizedEmails.length,
+      emails: normalizedEmails,
+      numLocations,
+      locationNamesCount: locationNames.length,
+      locationNames,
+      decisionMakersCount: decisionMakers.length,
+      usedPuppeteer: usedPuppeteerForAnyRequest,
+      databaseUpdated: !!existingBusiness,
+      responseTimestamp: new Date().toISOString()
+    });
+    
     res.json(responseData);
   } catch (error) {
+    console.log(`[PlaceDetails] ===== ENRICHMENT REQUEST FAILED =====`);
     console.log('[PlaceDetails] Error fetching place details:', error.message);
     console.log('[PlaceDetails] Full error:', error);
+    console.log('[PlaceDetails] Error details:', {
+      placeId,
+      errorType: error.constructor.name,
+      errorMessage: error.message,
+      errorStack: error.stack?.split('\n')[0],
+      timestamp: new Date().toISOString()
+    });
     res.status(500).json({ error: 'Failed to fetch place details' });
   }
 });
@@ -2874,9 +3200,24 @@ app.get('/api/grade-report/:reportId', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+// Start server with database connection
+const startServer = async () => {
+  try {
+    // Connect to database first
+    await connectToDatabase();
+    
+    // Start the server
+    app.listen(PORT, () => {
+      console.log(`[Server] Server running on http://localhost:${PORT}`);
+      console.log('[Server] Storage mode: Database');
+    });
+  } catch (error) {
+    console.error('[Server] Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 // Function to grade business quality
 async function gradeBusiness(placeId) {

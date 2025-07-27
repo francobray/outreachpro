@@ -12,7 +12,7 @@ const CampaignDetails: React.FC<CampaignDetailsProps> = ({ campaign, onBack }) =
     <div className="space-y-6">
       <button onClick={onBack} className="flex items-center text-sm text-gray-600 hover:text-gray-900">
         <ArrowLeft className="h-4 w-4 mr-2" />
-        Back to Dashboard
+        Back
       </button>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">

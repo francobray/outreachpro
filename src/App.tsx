@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import SearchForm from './components/SearchForm';
 import BusinessTable from './components/BusinessTable';
-import Dashboard from './components/Dashboard';
 import EmailTemplates from './components/EmailTemplates';
 import PlacesPage from './components/PlacesPage';
 import CampaignModal from './components/CampaignModal';
-import CampaignDetails from './components/CampaignDetails'; // Import CampaignDetails
 import AlertModal from './components/AlertModal';
-import { Search, Mail, Briefcase, Database } from 'lucide-react';
+import { Search, Mail, Database } from 'lucide-react';
 import { Business, Campaign } from './types';
 import { useCampaigns, CampaignProvider } from './context/CampaignContext';
 import packageInfo from '../package.json';
@@ -22,13 +20,12 @@ interface EmailTemplate {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'dashboard' | 'places'>('search');
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places'>('search');
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedBusinesses, setSelectedBusinesses] = useState<Business[]>([]);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>([]);
-  const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [alertModal, setAlertModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -41,7 +38,7 @@ function App() {
     type: 'info'
   });
 
-  const { campaigns, createCampaign } = useCampaigns();
+  const { createCampaign } = useCampaigns();
 
   // Load email templates from local storage
   useEffect(() => {
@@ -68,13 +65,7 @@ function App() {
     }
   };
 
-  const handleViewCampaignDetails = (campaign: Campaign) => {
-    setSelectedCampaign(campaign);
-  };
 
-  const handleBackToDashboard = () => {
-    setSelectedCampaign(null);
-  };
   
   return (
     <CampaignProvider>
@@ -134,17 +125,7 @@ function App() {
                 <Mail className="inline h-5 w-5 mr-2" />
                 Email Templates
               </button>
-              <button
-                onClick={() => setActiveTab('dashboard')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === 'dashboard'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                <Briefcase className="inline h-5 w-5 mr-2" />
-                Dashboard
-              </button>
+
               <button
                 onClick={() => setActiveTab('places')}
                 className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
@@ -193,14 +174,8 @@ function App() {
                 )}
               </div>
             </div>
-          ) : activeTab === 'dashboard' ? (
-            selectedCampaign ? (
-              <CampaignDetails campaign={selectedCampaign} onBack={handleBackToDashboard} />
-            ) : (
-              <Dashboard campaigns={campaigns} onViewDetails={handleViewCampaignDetails} />
-            )
           ) : activeTab === 'places' ? (
-            <PlacesPage onBack={() => setActiveTab('search')} />
+            <PlacesPage />
           ) : (
             <EmailTemplates />
           )}
