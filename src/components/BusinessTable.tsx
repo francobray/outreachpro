@@ -97,31 +97,35 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     message: '',
     type: 'info'
   });
+  const [databaseBusinesses, setDatabaseBusinesses] = useState<{[key: string]: any}>({});
+  const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
   const [colWidths, setColWidths] = useState({
     business: 220,
-    category: 120,
-    dm: 120,
-    pdf: 90,
-    discover: 90,
+    website: 150,
+    phone: 120,
+    emails: 200,
+    locations: 120,
+    grader: 100,
+    actions: 120
   });
+  const [sortBy, setSortBy] = useState('name');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [contactInfo, setContactInfo] = useState<{[key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, locationNames?: string[], loading: boolean, usedPuppeteer?: boolean, websiteStatus?: 'ok' | 'timeout' | 'not_found' | 'error' | 'enotfound'; } }>({});
+  const [tooltipPlaceId, setTooltipPlaceId] = useState<string | null>(null);
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizeColumn, setResizeColumn] = useState<keyof typeof colWidths | null>(null);
+
+  // Check database for enriched data when businesses are loaded
+  useEffect(() => {
+    if (businesses.length > 0 && !isLoading) {
+      checkDatabaseForBusinesses();
+    }
+  }, [businesses, isLoading]);
+
   const resizingCol = useRef<keyof typeof colWidths | null>(null);
   const startX = useRef(0);
   const startWidth = useRef(0);
   const pendingUpdates = useRef<{[key: string]: Business}>({});
-  const [sortBy, setSortBy] = useState('name');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-  const [contactInfo, setContactInfo] = useState<{ 
-    [key: string]: { 
-      website: string | null, 
-      phone: string | null, 
-      emails?: string[], 
-      numLocations?: number,
-      locationNames?: string[],
-      loading: boolean,
-      usedPuppeteer?: boolean,
-      websiteStatus?: 'ok' | 'timeout' | 'not_found' | 'error' | 'enotfound';
-    } 
-  }>({});
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
   const sortedBusinesses = getSortedBusinesses(businesses, sortBy, sortOrder, contactInfo);
@@ -421,6 +425,16 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     return info?.numLocations !== undefined && info.numLocations > 1;
   };
 
+  // Helper function to check if a business has enriched data from database
+  const hasEnrichedData = (business: Business): boolean => {
+    const dbBusiness = databaseBusinesses[business.placeId];
+    if (!dbBusiness) return false;
+    
+    return !!(dbBusiness.website || 
+              (dbBusiness.phone && dbBusiness.phone.trim() !== '') || 
+              (dbBusiness.emails && dbBusiness.emails.length > 0));
+  };
+
   // Add a function to toggle tooltip visibility
   const toggleTooltip = (placeId: string | null) => {
     setActiveTooltip(activeTooltip === placeId ? null : placeId);
@@ -447,6 +461,74 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     // Finally fall back to original business object
     console.log(`[Website Debug] Falling back to original business.website: ${business.website || 'null'}`);
     return business.website;
+  };
+
+  // Check if businesses are in the database and fetch their enriched data
+  const checkDatabaseForBusinesses = async () => {
+    if (businesses.length === 0) return;
+    
+    setIsCheckingDatabase(true);
+    try {
+      const placeIds = businesses.map(b => b.placeId).filter(Boolean);
+      if (placeIds.length === 0) return;
+
+      console.log('[BusinessTable] Checking database for businesses:', placeIds);
+      
+      const response = await fetch('/api/dashboard');
+      if (!response.ok) {
+        throw new Error('Failed to fetch database businesses');
+      }
+      
+      const data = await response.json();
+      const dbBusinesses = data.businesses || [];
+      
+      // Create a map of placeId to database business
+      const dbMap: {[key: string]: any} = {};
+      dbBusinesses.forEach((dbBusiness: any) => {
+        if (dbBusiness.placeId) {
+          dbMap[dbBusiness.placeId] = dbBusiness;
+        }
+      });
+      
+      console.log('[BusinessTable] Found database businesses:', Object.keys(dbMap));
+      setDatabaseBusinesses(dbMap);
+      
+      // Update contact info with database data for matching businesses
+      const updatedContactInfo = { ...contactInfo };
+      businesses.forEach(business => {
+        const dbBusiness = dbMap[business.placeId];
+        if (dbBusiness) {
+          console.log(`[BusinessTable] Found database data for ${business.name}:`, dbBusiness);
+          updatedContactInfo[business.placeId] = {
+            website: dbBusiness.website || null,
+            phone: dbBusiness.phone || null,
+            emails: dbBusiness.emails || [],
+            numLocations: dbBusiness.numLocations || null,
+            locationNames: dbBusiness.locationNames || [],
+            loading: false,
+            usedPuppeteer: false,
+            websiteStatus: 'ok'
+          };
+        }
+      });
+      
+      setContactInfo(updatedContactInfo);
+      
+    } catch (error) {
+      console.error('[BusinessTable] Error checking database:', error);
+    } finally {
+      setIsCheckingDatabase(false);
+    }
+  };
+
+  // Refresh database state after enrichment
+  const refreshDatabaseState = async () => {
+    try {
+      console.log('[BusinessTable] Refreshing database state after enrichment');
+      await checkDatabaseForBusinesses();
+    } catch (error) {
+      console.error('[BusinessTable] Error refreshing database state:', error);
+    }
   };
 
   // Add a function to enrich places data
@@ -507,6 +589,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
             websiteStatus: data.website_status || 'ok'
         } : loc)
       });
+
+      // Refresh database state to show updated enriched data
+      await refreshDatabaseState();
     } catch (error) {
       console.error('Failed to enrich places data:', error);
       setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: false } }));
@@ -534,6 +619,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           apolloStatus: decisionMakers.length > 0 ? 'found' : 'not_found'
         });
       }
+
+      // Refresh database state to show updated enriched data
+      await refreshDatabaseState();
     } catch (error) {
       console.error('Failed to enrich with Apollo:', error);
       updateBusinessData(business.id, { 
@@ -733,9 +821,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-900">
-              Found {businesses.length} businesses
-            </h3>
+            <div className="flex items-center space-x-3">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Found {businesses.length} businesses
+              </h3>
+              {isCheckingDatabase && (
+                <div className="flex items-center text-sm text-gray-600">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Checking database...
+                </div>
+              )}
+            </div>
             <div className="flex items-center space-x-4">
               {selectedBusinesses.size > 0 && (
                 <div className="flex items-center space-x-3">
@@ -855,6 +951,18 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                           >
                             {business.name}
                           </a>
+                          {databaseBusinesses[business.placeId] && (
+                            databaseBusinesses[business.placeId].website || 
+                            (databaseBusinesses[business.placeId].phone && databaseBusinesses[business.placeId].phone.trim() !== '') || 
+                            (databaseBusinesses[business.placeId].emails && databaseBusinesses[business.placeId].emails.length > 0)
+                          ) && (
+                            <span 
+                              className="ml-1 flex items-center justify-center w-5 h-5 bg-green-100 rounded-full text-green-600"
+                              title="Enriched data available from database"
+                            >
+                              <CheckCircle className="h-3 w-3" />
+                            </span>
+                          )}
                           <a
                             href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
                             target="_blank"
@@ -1048,9 +1156,13 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         {/* Google Places Enrich Button */}
                         <button
                           onClick={() => enrichPlacesData(business)}
-                          disabled={loading === 'enrich'}
-                          className="flex items-center justify-center w-6 h-6 bg-blue-100 hover:bg-blue-200 rounded-full text-blue-600 hover:text-blue-800 transition-colors disabled:opacity-50"
-                          title="Enrich Google Places"
+                          disabled={loading === 'enrich' || hasEnrichedData(business)}
+                          className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
+                            hasEnrichedData(business) 
+                              ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                              : 'bg-blue-100 hover:bg-blue-200 text-blue-600 hover:text-blue-800'
+                          } ${loading === 'enrich' ? 'opacity-50' : ''}`}
+                          title={hasEnrichedData(business) ? "Already enriched from database" : "Enrich Google Places"}
                         >
                           {loading === 'enrich' ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
@@ -1062,9 +1174,13 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         {/* Apollo Enrich Button */}
                         <button
                           onClick={() => enrichWithApollo(business)}
-                          disabled={loading === 'apollo'}
-                          className="flex items-center justify-center w-6 h-6 bg-purple-100 hover:bg-purple-200 rounded-full text-purple-600 hover:text-purple-800 transition-colors disabled:opacity-50"
-                          title="Enrich with Apollo"
+                          disabled={loading === 'apollo' || hasEnrichedData(business)}
+                          className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
+                            hasEnrichedData(business) 
+                              ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                              : 'bg-purple-100 hover:bg-purple-200 text-purple-600 hover:text-purple-800'
+                          } ${loading === 'apollo' ? 'opacity-50' : ''}`}
+                          title={hasEnrichedData(business) ? "Already enriched from database" : "Enrich with Apollo"}
                         >
                           {loading === 'apollo' ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
