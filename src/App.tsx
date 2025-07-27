@@ -3,9 +3,11 @@ import SearchForm from './components/SearchForm';
 import BusinessTable from './components/BusinessTable';
 import Dashboard from './components/Dashboard';
 import EmailTemplates from './components/EmailTemplates';
+import PlacesPage from './components/PlacesPage';
 import CampaignModal from './components/CampaignModal';
 import CampaignDetails from './components/CampaignDetails'; // Import CampaignDetails
-import { Search, Mail, Briefcase } from 'lucide-react';
+import AlertModal from './components/AlertModal';
+import { Search, Mail, Briefcase, Database } from 'lucide-react';
 import { Business, Campaign } from './types';
 import { useCampaigns, CampaignProvider } from './context/CampaignContext';
 import packageInfo from '../package.json';
@@ -20,13 +22,24 @@ interface EmailTemplate {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'dashboard'>('search');
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'dashboard' | 'places'>('search');
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedBusinesses, setSelectedBusinesses] = useState<Business[]>([]);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>([]);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
+  const [alertModal, setAlertModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'info' | 'warning' | 'error' | 'success' | 'confirm';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
+  });
 
   const { campaigns, createCampaign } = useCampaigns();
 
@@ -46,7 +59,12 @@ function App() {
     if (selectedBusinesses.length > 0) {
       setIsCampaignModalOpen(true);
     } else {
-      alert('Please select at least one business to create a campaign.');
+      setAlertModal({
+        isOpen: true,
+        title: 'No Businesses Selected',
+        message: 'Please select at least one business to create a campaign.',
+        type: 'warning'
+      });
     }
   };
 
@@ -127,6 +145,17 @@ function App() {
                 <Briefcase className="inline h-5 w-5 mr-2" />
                 Dashboard
               </button>
+              <button
+                onClick={() => setActiveTab('places')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeTab === 'places'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <Database className="inline h-5 w-5 mr-2" />
+                Places Database
+              </button>
             </div>
           </div>
         </nav>
@@ -170,6 +199,8 @@ function App() {
             ) : (
               <Dashboard campaigns={campaigns} onViewDetails={handleViewCampaignDetails} />
             )
+          ) : activeTab === 'places' ? (
+            <PlacesPage onBack={() => setActiveTab('search')} />
           ) : (
             <EmailTemplates />
           )}
@@ -181,6 +212,13 @@ function App() {
           selectedBusinesses={selectedBusinesses}
           emailTemplates={emailTemplates}
           onCreateCampaign={createCampaign}
+        />
+        <AlertModal
+          isOpen={alertModal.isOpen}
+          onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
+          title={alertModal.title}
+          message={alertModal.message}
+          type={alertModal.type}
         />
         <Toaster position="top-right" />
       </div>

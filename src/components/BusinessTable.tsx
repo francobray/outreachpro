@@ -23,6 +23,7 @@ import {
 
 import { Business, DecisionMaker } from '../types';
 import EmailModal from './EmailModal';
+import AlertModal from './AlertModal';
 
 interface BusinessTableProps {
   businesses: Business[];
@@ -85,6 +86,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const [isEnrichingApollo, setIsEnrichingApollo] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [selectedBusinessForEmail, setSelectedBusinessForEmail] = useState<Business | null>(null);
+  const [alertModal, setAlertModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'info' | 'warning' | 'error' | 'success' | 'confirm';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
+  });
   const [colWidths, setColWidths] = useState({
     business: 220,
     category: 120,
@@ -312,7 +324,12 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
 
   const handleExecute = async () => {
     if (selectedBusinesses.size === 0) {
-      alert("Please select at least one business.");
+      setAlertModal({
+        isOpen: true,
+        title: 'No Businesses Selected',
+        message: 'Please select at least one business.',
+        type: 'warning'
+      });
       return;
     }
     onCreateCampaign();
@@ -1092,6 +1109,13 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         business={selectedBusinessForEmail}
         emailTemplates={emailTemplates}
         onSendEmail={handleSendEmail}
+      />
+      <AlertModal
+        isOpen={alertModal.isOpen}
+        onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
+        title={alertModal.title}
+        message={alertModal.message}
+        type={alertModal.type}
       />
     </>
   );

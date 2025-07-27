@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Business, Campaign, DecisionMaker, Location } from '../types';
 import { X, Send, Loader2 } from 'lucide-react';
+import AlertModal from './AlertModal';
 
 interface CampaignModalProps {
   isOpen: boolean;
@@ -14,6 +15,17 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ isOpen, onClose, selected
   const [campaignName, setCampaignName] = useState('');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [isCreating, setIsCreating] = useState(false);
+  const [alertModal, setAlertModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'info' | 'warning' | 'error' | 'success' | 'confirm';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
+  });
 
   if (!isOpen) {
     return null;
@@ -21,7 +33,12 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ isOpen, onClose, selected
 
   const handleCreate = async () => {
     if (!campaignName || !selectedTemplateId) {
-      alert('Please provide a campaign name and select a template.');
+      setAlertModal({
+        isOpen: true,
+        title: 'Missing Information',
+        message: 'Please provide a campaign name and select a template.',
+        type: 'warning'
+      });
       return;
     }
 
@@ -42,7 +59,12 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ isOpen, onClose, selected
       onClose();
     } catch (error) {
       console.error('Failed to create campaign:', error);
-      alert('Failed to create campaign. Please try again.');
+      setAlertModal({
+        isOpen: true,
+        title: 'Creation Failed',
+        message: 'Failed to create campaign. Please try again.',
+        type: 'error'
+      });
     } finally {
       setIsCreating(false);
     }
@@ -114,6 +136,13 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ isOpen, onClose, selected
           </button>
         </div>
       </div>
+      <AlertModal
+        isOpen={alertModal.isOpen}
+        onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
+        title={alertModal.title}
+        message={alertModal.message}
+        type={alertModal.type}
+      />
     </div>
   );
 };

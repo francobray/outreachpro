@@ -12,12 +12,21 @@ import {
   Zap,
   AlertCircle
 } from 'lucide-react';
+import AlertModal from './AlertModal';
 
 interface EmailTemplate {
   id: string;
   name: string;
   subject: string;
-  body: string;
+  html: string;
+  text: string;
+  description?: string;
+  category?: string;
+  variables?: Array<{
+    name: string;
+    description: string;
+    defaultValue: string;
+  }>;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
@@ -38,13 +47,29 @@ const EmailTemplates: React.FC = () => {
   const [formData, setFormData] = useState({
     name: '',
     subject: '',
-    body: ''
+    html: '',
+    text: ''
   });
   const [showEditModal, setShowEditModal] = useState(false);
   const [createFormData, setCreateFormData] = useState({
     name: '',
     subject: '',
-    body: ''
+    html: '',
+    text: ''
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [alertModal, setAlertModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'info' | 'warning' | 'error' | 'success' | 'confirm';
+    onConfirm?: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
   });
 
   // Available variables for email templates
@@ -159,120 +184,31 @@ const EmailTemplates: React.FC = () => {
     }
   ];
 
-  // Load templates from localStorage on component mount
+  // Load templates from database on component mount
   useEffect(() => {
-    const savedTemplatesJSON = localStorage.getItem('emailTemplates');
-    const allStoredTemplates: EmailTemplate[] = savedTemplatesJSON ? JSON.parse(savedTemplatesJSON) : [];
-
-    const now = new Date().toISOString();
-    
-    const defaultTemplatesInCode: EmailTemplate[] = [
-        {
-          id: 'default-1',
-          name: 'Business Audit Outreach',
-          subject: 'Free Business Audit Report for {{BUSINESS_NAME}}',
-          body: `Hi {{LEAD_NAME}},
-
-I hope this email finds you well. I recently came across {{BUSINESS_NAME}} in {{BUSINESS_CITY_STATE}} and was impressed by your business.
-
-I've prepared a complimentary business audit report that highlights some opportunities for growth and improvement. Based on my analysis, your business scored {{AUDIT_SCORE}}/100, which shows great potential with some strategic improvements.
-
-Key findings include:
-• Website optimization opportunities
-• Local SEO improvements  
-• Customer engagement strategies
-
-I'd love to discuss how we can help you implement these recommendations to drive more customers to your business.
-
-Would you be interested in a brief 15-minute call this week to go over the findings?
-
-Best regards,
-[Your Name]`,
-          isDefault: false,
-          createdAt: now,
-          updatedAt: now
-        },
-        {
-          id: 'default-2',
-          name: 'Unlock Hidden Revenue',
-          subject: 'Is {{BUSINESS_NAME}} losing {{REVENUE_LOSS}} each month?',
-          body: `Hi {{LEAD_NAME}},
-
-I ran a quick digital health check for businesses in {{BUSINESS_CITY_STATE}} and discovered an opportunity for you.
-
-My analysis shows that {{BUSINESS_NAME}} could be losing an estimated {{REVENUE_LOSS}} in potential revenue each month due to low visibility in Google search results. This happens when customers can't find you easily, and instead find your competitors.
-
-I have a full report that pinpoints these issues. I'd be happy to walk you through it and show you how to improve your search ranking to capture that lost revenue.
-
-Are you available for a brief chat next week?
-
-Best regards,
-[Your Name]`,
-          isDefault: false,
-          createdAt: now,
-          updatedAt: now
-        },
-        {
-          id: 'default-3',
-          name: 'Competitive Search Analysis',
-          subject: 'How {{BUSINESS_NAME}} can outrank local competitors',
-          body: `Hi {{LEAD_NAME}},
-
-I was looking at the competitive landscape for businesses like yours in {{BUSINESS_CITY_STATE}}, and I noticed something you should see.
-
-Your business, {{BUSINESS_NAME}}, is currently being outranked on Google by several key competitors, including:
-{{COMPETITOR_LIST}}
-
-This means potential customers looking for your services are likely finding them first. The good news is that this is fixable.
-
-I have a report that breaks down why you're being outranked and the specific steps you can take to claim a top spot.
-
-Would you be open to a quick 15-minute call to review these insights?
-
-Regards,
-[Your Name]`,
-          isDefault: false,
-          createdAt: now,
-          updatedAt: now
-        }
-    ];
-
-    const defaultTemplateIds = new Set(defaultTemplatesInCode.map(t => t.id));
-    const customTemplates = allStoredTemplates.filter(t => !defaultTemplateIds.has(t.id));
-
-    const finalTemplates = [...defaultTemplatesInCode, ...customTemplates];
-
-    // Default selection logic:
-    // 1. Prefer a user's custom default template.
-    // 2. Fallback to default-1.
-    // 3. Fallback to the first template in the list.
-    let defaultId: string | null = null;
-    const customDefault = customTemplates.find(t => t.isDefault);
-    if (customDefault) {
-        defaultId = customDefault.id;
-    } else if (finalTemplates.find(t => t.id === 'default-1')) {
-        defaultId = 'default-1';
-    } else if (finalTemplates.length > 0) {
-        defaultId = finalTemplates[0].id;
-    }
-
-    // Apply the default flag to the selected template
-    finalTemplates.forEach(t => t.isDefault = (t.id === defaultId));
-    
-    setTemplates(finalTemplates);
-    localStorage.setItem('emailTemplates', JSON.stringify(finalTemplates));
+    fetchTemplates();
   }, []);
 
-  // Save templates to localStorage whenever templates change
-  useEffect(() => {
-    if (templates.length > 0) {
-      localStorage.setItem('emailTemplates', JSON.stringify(templates));
+  const fetchTemplates = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/email-templates');
+      if (!response.ok) {
+        throw new Error('Failed to fetch templates');
+      }
+      const data = await response.json();
+      setTemplates(Array.isArray(data) ? data : []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch templates');
+    } finally {
+      setLoading(false);
     }
-  }, [templates]);
+  };
 
   const handleCreateTemplate = () => {
     setShowCreateModal(true);
-    setCreateFormData({ name: '', subject: '', body: '' });
+    setCreateFormData({ name: '', subject: '', html: '', text: '' });
   };
 
   const handleEditTemplate = (template: EmailTemplate) => {
@@ -280,83 +216,150 @@ Regards,
     setFormData({
       name: template.name,
       subject: template.subject,
-      body: template.body
+      html: template.html,
+      text: template.text
     });
     setEditingTemplate(template);
   };
 
-  const handleSaveTemplate = () => {
-    if (!createFormData.name.trim() || !createFormData.subject.trim() || !createFormData.body.trim()) {
+  const handleSaveTemplate = async () => {
+    if (!createFormData.name.trim() || !createFormData.subject.trim() || !createFormData.html.trim()) {
       return;
     }
 
-    const now = new Date().toISOString();
+    try {
+      const response = await fetch('/api/email-templates', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: createFormData.name.trim(),
+          subject: createFormData.subject.trim(),
+          html: createFormData.html.trim(),
+          text: createFormData.text.trim(),
+          category: 'custom'
+        }),
+      });
 
-    const newTemplate: EmailTemplate = {
-      id: `template-${Date.now()}`,
-      name: createFormData.name.trim(),
-      subject: createFormData.subject.trim(),
-      body: createFormData.body.trim(),
-      isDefault: templates.length === 0,
-      createdAt: now,
-      updatedAt: now
-    };
-    setTemplates(prev => [...prev, newTemplate]);
-    handleCancelCreate();
+      if (!response.ok) {
+        throw new Error('Failed to create template');
+      }
+
+      await fetchTemplates();
+      handleCancelCreate();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create template');
+    }
   };
 
-  const handleSaveEditTemplate = () => {
-    if (!formData.name.trim() || !formData.subject.trim() || !formData.body.trim()) {
+  const handleSaveEditTemplate = async () => {
+    if (!formData.name.trim() || !formData.subject.trim() || !formData.html.trim()) {
       return;
     }
 
-    const now = new Date().toISOString();
+    if (!editingTemplate) return;
 
-    if (editingTemplate) {
-      setTemplates(prev => prev.map(t => 
-        t.id === editingTemplate.id 
-          ? { ...t, ...formData, updatedAt: now }
-          : t
-      ));
+    try {
+      const response = await fetch(`/api/email-templates/${editingTemplate.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: formData.name.trim(),
+          subject: formData.subject.trim(),
+          html: formData.html.trim(),
+          text: formData.text.trim()
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update template');
+      }
+
+      await fetchTemplates();
+      handleCancelEditTemplate();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update template');
     }
-
-    handleCancelEditTemplate();
   };
 
   const handleCancelCreate = () => {
     setShowCreateModal(false);
-    setCreateFormData({ name: '', subject: '', body: '' });
+    setCreateFormData({ name: '', subject: '', html: '', text: '' });
   };
 
   const handleCancelEditTemplate = () => {
     setShowEditModal(false);
     setEditingTemplate(null);
-    setFormData({ name: '', subject: '', body: '' });
+    setFormData({ name: '', subject: '', html: '', text: '' });
   };
 
-  const handleDeleteTemplate = (templateId: string) => {
-    if (confirm('Are you sure you want to delete this template?')) {
-      setTemplates(prev => prev.filter(t => t.id !== templateId));
+  const handleDeleteTemplate = async (templateId: string) => {
+    setAlertModal({
+      isOpen: true,
+      title: 'Delete Template',
+      message: 'Are you sure you want to delete this template?',
+      type: 'confirm',
+      onConfirm: async () => {
+        try {
+          const response = await fetch(`/api/email-templates/${templateId}`, {
+            method: 'DELETE',
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to delete template');
+          }
+
+          await fetchTemplates();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to delete template');
+        }
+      }
+    });
+  };
+
+  const handleSetDefault = async (templateId: string) => {
+    try {
+      const response = await fetch(`/api/email-templates/${templateId}/default`, {
+        method: 'PUT',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to set default template');
+      }
+
+      await fetchTemplates();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to set default template');
     }
   };
 
-  const handleSetDefault = (templateId: string) => {
-    setTemplates(prev => prev.map(t => ({
-      ...t,
-      isDefault: t.id === templateId
-    })));
-  };
+  const handleDuplicateTemplate = async (template: EmailTemplate) => {
+    try {
+      const response = await fetch('/api/email-templates', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: `${template.name} (Copy)`,
+          subject: template.subject,
+          html: template.html,
+          text: template.text,
+          category: template.category || 'custom'
+        }),
+      });
 
-  const handleDuplicateTemplate = (template: EmailTemplate) => {
-    const duplicatedTemplate: EmailTemplate = {
-      ...template,
-      id: `template-${Date.now()}`,
-      name: `${template.name} (Copy)`,
-      isDefault: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    setTemplates(prev => [...prev, duplicatedTemplate]);
+      if (!response.ok) {
+        throw new Error('Failed to duplicate template');
+      }
+
+      await fetchTemplates();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to duplicate template');
+    }
   };
 
   const insertVariable = (variable: string) => {
@@ -373,13 +376,13 @@ Regards,
       const end = textarea.selectionEnd;
       
       if (showEditModal && editingTemplate) {
-        const text = formData.body;
+        const text = formData.html;
         const newText = text.substring(0, start) + variable + text.substring(end);
-        setFormData(prev => ({ ...prev, body: newText }));
+        setFormData(prev => ({ ...prev, html: newText }));
       } else if (showCreateModal) {
-        const text = createFormData.body;
+        const text = createFormData.html;
         const newText = text.substring(0, start) + variable + text.substring(end);
-        setCreateFormData(prev => ({ ...prev, body: newText }));
+        setCreateFormData(prev => ({ ...prev, html: newText }));
       }
       
       // Restore cursor position
@@ -413,7 +416,7 @@ Regards,
     };
 
     let previewSubject = template.subject;
-    let previewBody = template.body;
+    let previewBody = template.html;
 
     Object.entries(sampleData).forEach(([variable, value]) => {
       previewSubject = previewSubject.replace(new RegExp(variable.replace(/[{}]/g, '\\$&'), 'g'), value);
@@ -422,6 +425,34 @@ Regards,
 
     return { subject: previewSubject, body: previewBody };
   };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="text-center py-8">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-2 text-gray-600">Loading email templates...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="text-center py-8">
+          <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <p className="text-red-600">Error: {error}</p>
+          <button
+            onClick={fetchTemplates}
+            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -440,94 +471,84 @@ Regards,
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {/* Templates List */}
-        <div className="md:col-span-2 space-y-4 mb-6">
-          {templates.length === 0 ? (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
-              <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No templates yet</h3>
-              <p className="text-gray-600 mb-4">Create your first email template to get started with outreach campaigns.</p>
-              <button
-                onClick={handleCreateTemplate}
-                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors mx-auto"
-              >
-                <Plus className="h-5 w-5 mr-2" />
-                Create Template
-              </button>
-            </div>
-          ) : (
-            templates.map((template) => (
-              <div key={template.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2 mb-2">
-                      <h3 className="text-lg font-semibold text-gray-900">{template.name}</h3>
-                      {template.isDefault && (
-                        <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full font-medium">
-                          Default
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-600 mb-2">
-                      <strong>Subject:</strong> {template.subject}
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      Updated {new Date(template.updatedAt).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => setPreviewTemplate(template)}
-                      className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                      title="Preview"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDuplicateTemplate(template)}
-                      className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                      title="Duplicate"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => handleEditTemplate(template)}
-                      className="p-2 text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
-                      title="Edit"
-                    >
-                      <Edit3 className="h-4 w-4" />
-                    </button>
-                    {!template.isDefault && (
-                      <button
-                        onClick={() => handleDeleteTemplate(template.id)}
-                        className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                        title="Delete"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {templates.length === 0 ? (
+          <div className="md:col-span-2 lg:col-span-3 bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+            <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No templates yet</h3>
+            <p className="text-gray-600 mb-4">Create your first email template to get started with outreach campaigns.</p>
+            <button
+              onClick={handleCreateTemplate}
+              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors mx-auto"
+            >
+              <Plus className="h-5 w-5 mr-2" />
+              Create Template
+            </button>
+          </div>
+        ) : (
+          templates.map((template) => (
+            <div key={template.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-7">
+              <div className="flex items-start justify-between mb-5">
+                <div className="flex-1">
+                  <div className="flex items-center space-x-2 mb-3">
+                    <h3 className="text-lg font-semibold text-gray-900">{template.name}</h3>
+                    {template.isDefault && (
+                      <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full font-medium">
+                        Default
+                      </span>
                     )}
                   </div>
-                </div>
-                
-                <div className="bg-gray-50 rounded-lg p-3 mb-4">
-                  <p className="text-sm text-gray-700 line-clamp-3">
-                    {template.body.substring(0, 200)}...
+                  <p className="text-sm text-gray-600 mb-3">
+                    <strong>Subject:</strong> {template.subject}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Updated {new Date(template.updatedAt).toLocaleDateString()}
                   </p>
                 </div>
-
-                {!template.isDefault && (
+                <div className="flex items-center space-x-2">
                   <button
-                    onClick={() => handleSetDefault(template.id)}
-                    className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                    onClick={() => handleDuplicateTemplate(template)}
+                    className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                    title="Duplicate"
                   >
-                    Set as Default
+                    <Copy className="h-4 w-4" />
                   </button>
-                )}
+                  <button
+                    onClick={() => handleEditTemplate(template)}
+                    className="p-2 text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+                    title="Edit"
+                  >
+                    <Edit3 className="h-4 w-4" />
+                  </button>
+                  {!template.isDefault && (
+                    <button
+                      onClick={() => handleDeleteTemplate(template.id)}
+                      className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Delete"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
               </div>
-            ))
-          )}
-        </div>
+              
+              <div className="bg-gray-50 rounded-lg p-4 mb-5">
+                <p className="text-sm text-gray-700 line-clamp-4">
+                  {template.html.substring(0, 250)}...
+                </p>
+              </div>
+
+              {!template.isDefault && (
+                <button
+                  onClick={() => handleSetDefault(template.id)}
+                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  Set as Default
+                </button>
+              )}
+            </div>
+          ))
+        )}
       </div>
 
       {/* Edit Template Modal */}
@@ -586,12 +607,12 @@ Regards,
                     <div className="relative">
                       <div 
                         className="w-full px-3 py-2 border border-transparent rounded-lg font-mono text-sm whitespace-pre-wrap pointer-events-none absolute inset-0"
-                        dangerouslySetInnerHTML={{ __html: formData.body.replace(/({{[A-Z_]+}})/g, '<span class="text-blue-600 bg-blue-100 rounded">$1</span>') + '<br/>' }}
+                        dangerouslySetInnerHTML={{ __html: formData.html.replace(/({{[A-Z_]+}})/g, '<span class="text-blue-600 bg-blue-100 rounded">$1</span>') + '<br/>' }}
                       />
                       <textarea
                         id="template-body"
-                        value={formData.body}
-                        onChange={(e) => setFormData(prev => ({ ...prev, body: e.target.value }))}
+                        value={formData.html}
+                        onChange={(e) => setFormData(prev => ({ ...prev, html: e.target.value }))}
                         placeholder="Write your email template here, including your signature. Use variables like {{LEAD_NAME}} to personalize..."
                         rows={28}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm relative bg-transparent caret-gray-800"
@@ -659,7 +680,7 @@ Regards,
               </button>
               <button
                 onClick={handleSaveEditTemplate}
-                disabled={!formData.name.trim() || !formData.subject.trim() || !formData.body.trim()}
+                disabled={!formData.name.trim() || !formData.subject.trim() || !formData.html.trim()}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
               >
                 <Save className="h-4 w-4" />
@@ -726,12 +747,12 @@ Regards,
                     <div className="relative">
                       <div
                         className="w-full px-3 py-2 border border-transparent rounded-lg font-mono text-sm whitespace-pre-wrap pointer-events-none absolute inset-0"
-                        dangerouslySetInnerHTML={{ __html: createFormData.body.replace(/({{[A-Z_]+}})/g, '<span class="text-blue-600 bg-blue-100 rounded">$1</span>') + '<br/>' }}
+                        dangerouslySetInnerHTML={{ __html: createFormData.html.replace(/({{[A-Z_]+}})/g, '<span class="text-blue-600 bg-blue-100 rounded">$1</span>') + '<br/>' }}
                       />
                       <textarea
                         id="create-template-body"
-                        value={createFormData.body}
-                        onChange={(e) => setCreateFormData(prev => ({ ...prev, body: e.target.value }))}
+                        value={createFormData.html}
+                        onChange={(e) => setCreateFormData(prev => ({ ...prev, html: e.target.value }))}
                         placeholder="Write your email template here, including your signature. Use variables like {{LEAD_NAME}} to personalize..."
                         rows={28}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm relative bg-transparent caret-gray-800"
@@ -799,7 +820,7 @@ Regards,
               </button>
               <button
                 onClick={handleSaveTemplate}
-                disabled={!createFormData.name.trim() || !createFormData.subject.trim() || !createFormData.body.trim()}
+                disabled={!createFormData.name.trim() || !createFormData.subject.trim() || !createFormData.html.trim()}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
               >
                 <Save className="h-4 w-4" />
@@ -844,6 +865,16 @@ Regards,
           </div>
         </div>
       )}
+      <AlertModal
+        isOpen={alertModal.isOpen}
+        onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
+        onConfirm={alertModal.onConfirm}
+        title={alertModal.title}
+        message={alertModal.message}
+        type={alertModal.type}
+        confirmText="Delete"
+        cancelText="Cancel"
+      />
     </div>
   );
 };
