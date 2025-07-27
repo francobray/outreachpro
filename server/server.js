@@ -1590,6 +1590,75 @@ app.post('/api/webhooks/resend', async (req, res) => {
   }
 });
 
+// Test endpoint to simulate webhook events for mock emails
+app.post('/api/test/webhook-simulation', async (req, res) => {
+  try {
+    const { emailId, eventType = 'email.opened' } = req.body;
+    
+    if (!emailId) {
+      return res.status(400).json({ error: 'Missing emailId' });
+    }
+
+    console.log('[Test Webhook] Simulating event:', { emailId, eventType });
+
+    // Find the email activity
+    const emailActivity = await EmailActivity.findOne({ emailId });
+    if (!emailActivity) {
+      console.log('[Test Webhook] Email activity not found for emailId:', emailId);
+      return res.status(404).json({ error: 'Email activity not found' });
+    }
+
+    // Simulate the webhook event
+    const webhookData = {
+      type: eventType,
+      data: {
+        email_id: emailId
+      }
+    };
+
+    // Process the webhook event
+    switch (eventType) {
+      case 'email.delivered':
+        emailActivity.status = 'delivered';
+        emailActivity.deliveredAt = new Date();
+        break;
+      
+      case 'email.opened':
+        emailActivity.status = 'opened';
+        emailActivity.openedAt = new Date();
+        emailActivity.openCount += 1;
+        emailActivity.lastOpenedAt = new Date();
+        break;
+      
+      case 'email.clicked':
+        emailActivity.status = 'clicked';
+        emailActivity.clickedAt = new Date();
+        emailActivity.clickCount += 1;
+        emailActivity.lastClickedAt = new Date();
+        break;
+      
+      default:
+        return res.status(400).json({ error: 'Unsupported event type' });
+    }
+
+    await emailActivity.save();
+    console.log('[Test Webhook] Email activity updated:', { emailId, status: emailActivity.status });
+    
+    res.json({ 
+      success: true, 
+      message: `Simulated ${eventType} for email ${emailId}`,
+      updatedActivity: {
+        status: emailActivity.status,
+        openCount: emailActivity.openCount,
+        clickCount: emailActivity.clickCount
+      }
+    });
+  } catch (error) {
+    console.error('[Test Webhook] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get email activities
 app.get('/api/email-activities', async (req, res) => {
   try {
