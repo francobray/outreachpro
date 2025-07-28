@@ -1897,6 +1897,17 @@ app.put('/api/email-templates/:id/default', async (req, res) => {
   }
 });
 
+// Apollo Contacts API endpoints
+app.get('/api/apollo-contacts', async (req, res) => {
+  try {
+    const contacts = await ApolloContactModel.find({}).sort({ createdAt: -1 });
+    res.json(contacts);
+  } catch (error) {
+    console.error('[ApolloContacts] Error fetching contacts:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Find the place-details endpoint
 app.get('/api/place-details/:placeId', async (req, res) => {
   const { placeId } = req.params;

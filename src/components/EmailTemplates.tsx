@@ -457,11 +457,7 @@ const EmailTemplates: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Email Templates</h2>
-          <p className="text-gray-600 mt-1">Create and manage email templates for your outreach campaigns</p>
-        </div>
+      <div className="flex items-center justify-end">
         <button
           onClick={handleCreateTemplate}
           className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"

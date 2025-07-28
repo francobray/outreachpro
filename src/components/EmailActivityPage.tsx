@@ -65,7 +65,7 @@ interface EmailStats {
 }
 
 interface EmailActivityPageProps {
-  onBack: () => void;
+  onBack?: () => void;
 }
 
 const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
@@ -275,16 +275,7 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="w-[90%] mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={onBack}
-              className="text-gray-600 hover:text-gray-800 transition-colors"
-            >
-              ← Back
-            </button>
-            <h1 className="text-2xl font-bold text-gray-900">Email Activity</h1>
-          </div>
+        <div className="flex items-center justify-end mb-6">
           <div className="flex items-center space-x-3">
             <button
               onClick={handleRefresh}
