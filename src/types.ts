@@ -52,5 +52,6 @@ export interface ApiCallLog {
     location?: string;
     placeId?: string;
     businessName?: string;
+    foundContacts?: string[];
   };
 } 

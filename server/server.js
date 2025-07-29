@@ -1468,7 +1468,8 @@ app.post('/api/emails/:businessId', async (req, res) => {
           endpoint: 'people_search',
           businessName: business.name,
           orgId: orgId,
-          domain: domain
+          domain: domain,
+          foundContacts: (peopleData.people || []).map(p => `${p.name} (${p.title || 'N/A'})`),
         }
       });
       console.log('[Tracking] Apollo People Search API call tracked in database.');
@@ -1510,13 +1511,15 @@ app.post('/api/emails/:businessId', async (req, res) => {
           
           // Track Apollo API call
           try {
+            const personData = enrichData.person;
             await ApiCallLog.create({
               api: 'apollo_person_match',
               timestamp: new Date(),
               details: {
                 endpoint: 'person_match',
                 personId: person.id,
-                businessName: business.name
+                businessName: business.name,
+                foundContacts: personData ? [`${personData.name} (${personData.title || 'N/A'})`] : [],
               }
             });
             console.log('[Tracking] Apollo Person Match API call tracked in database.');

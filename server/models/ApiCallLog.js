@@ -11,8 +11,14 @@ const apiCallLogSchema = new mongoose.Schema({
     default: Date.now,
     index: true
   },
-  metadata: {
-    type: mongoose.Schema.Types.Mixed
+  details: {
+    endpoint: String,
+    keyword: String,
+    location: String,
+    placeId: String,
+    businessName: String,
+    foundContacts: [String],
+    // Add other relevant details here
   }
 });
 

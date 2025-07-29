@@ -25,9 +25,20 @@ const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   API
                 </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Details
-                </th>
+                {title.toLowerCase().includes('apollo') ? (
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Found Contacts
+                  </th>
+                ) : (
+                  <>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Keyword
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Location
+                    </th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -39,16 +50,22 @@ const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {log.api || 'N/A'}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {log.details ? (
-                      <>
-                        {log.details.keyword && <span>Keyword: {log.details.keyword}</span>}
-                        {log.details.location && <span className="ml-2">Location: {log.details.location}</span>}
-                        {log.details.placeId && <span>Place ID: {log.details.placeId}</span>}
-                        {log.details.businessName && <span>Business: {log.details.businessName}</span>}
-                      </>
-                    ) : 'No details'}
-                  </td>
+                  {title.toLowerCase().includes('apollo') ? (
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {log.details?.foundContacts?.join(', ') ||
+                        (log.metadata?.response?.person && `${log.metadata.response.person.name} (${log.metadata.response.person.title || 'N/A'})`) ||
+                        'N/A'}
+                    </td>
+                  ) : (
+                    <>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {log.details?.keyword || 'N/A'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {log.details?.location || 'N/A'}
+                      </td>
+                    </>
+                  )}
                 </tr>
               ))}
             </tbody>
