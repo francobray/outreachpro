@@ -1,7 +1,7 @@
 {
-  "name": "outreachpro",
+  "name": "outreach-campaign-webapp",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.4.7",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1414,9 +1414,10 @@ app.post('/api/emails/:businessId', async (req, res) => {
         await ApiCallLog.create({
           api: 'apollo_enrich',
           timestamp: new Date(),
-          metadata: {
-            request: { domain, name: business.name },
-            response: enrichData
+          details: {
+            endpoint: 'enrich',
+            domain: domain,
+            businessName: business.name
           }
         });
         console.log('[Tracking] Apollo Enrich API call tracked in database.');
@@ -1463,9 +1464,11 @@ app.post('/api/emails/:businessId', async (req, res) => {
       await ApiCallLog.create({
         api: 'apollo_people_search',
         timestamp: new Date(),
-        metadata: {
-          request: peopleBody,
-          response: peopleData
+        details: {
+          endpoint: 'people_search',
+          businessName: business.name,
+          orgId: orgId,
+          domain: domain
         }
       });
       console.log('[Tracking] Apollo People Search API call tracked in database.');
@@ -1510,9 +1513,10 @@ app.post('/api/emails/:businessId', async (req, res) => {
             await ApiCallLog.create({
               api: 'apollo_person_match',
               timestamp: new Date(),
-              metadata: {
-                request: { api_key: apolloApiKey, id: person.id },
-                response: enrichData
+              details: {
+                endpoint: 'person_match',
+                personId: person.id,
+                businessName: business.name
               }
             });
             console.log('[Tracking] Apollo Person Match API call tracked in database.');
@@ -2395,43 +2399,30 @@ app.get('/api/place-details/:placeId', async (req, res) => {
           let orgId = undefined;
           let enrichedOrg = undefined;
   
-          // 1. Always attempt to enrich the organization to get company size and other details
-          const enrichBody = { api_key: apolloApiKey, name: businessName };
+          // 1. Enrich the organization (only if we have a valid domain)
           if (domain) {
-            enrichBody.domain = domain;
-          }
-          console.log('[PlaceDetails] Apollo Enrich API request:', enrichBody);
-          const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'no-cache',
-              'x-api-key': apolloApiKey,
-            },
-            body: JSON.stringify(enrichBody),
-          });
-
-          const enrichData = await enrichRes.json();
-          console.log('[PlaceDetails] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
-          if (enrichData.organization) {
-            enrichedOrg = enrichData.organization;
-            orgId = enrichedOrg.id;
-            // Track enrich call
-            try {
-              await ApiCallLog.create({
-                api: 'apollo_enrich',
-                timestamp: new Date(),
-                metadata: {
-                  request: { domain, name: existingBusiness.name },
-                  response: enrichData
-                }
-              });
-              console.log('[Tracking] Apollo Enrich API call tracked in database.');
-            } catch (error) {
-              console.error('[Tracking] Error saving Apollo Enrich API call to database:', error);
+            console.log('[PlaceDetails] Apollo Enrich API request:', { domain, name: businessName });
+            const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache',
+                'x-api-key': apolloApiKey,
+              },
+              body: JSON.stringify({
+                api_key: apolloApiKey,
+                domain: domain,
+                name: businessName,
+              }),
+            });
+            const enrichData = await enrichRes.json();
+            console.log('[PlaceDetails] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
+            if (enrichData.organization) {
+              enrichedOrg = enrichData.organization;
+              orgId = enrichedOrg.id;
             }
           } else {
-            console.log('[PlaceDetails] Could not enrich organization with Apollo.');
+            console.log('[PlaceDetails] Skipping Apollo organization enrichment: no domain available.');
           }
   
           // 2. Use org_id, domain, or name to search for decision makers
@@ -2455,11 +2446,8 @@ app.get('/api/place-details/:placeId', async (req, res) => {
             peopleBody['q_organization_names'] = [businessName];
           }
 
-          // Conditionally add location filtering
-          // This helps distinguish local businesses from national chains when no website is found.
-          const isLargeCompany = !!(enrichedOrg && enrichedOrg.estimated_num_employees > 50);
-          console.log(`[PlaceDetails] Company is considered large: ${isLargeCompany}`);
-          if (existingBusiness.address && !isLargeCompany) {
+          // Add location filtering if address is available
+          if (existingBusiness.address) {
             const addressParts = existingBusiness.address.split(', ');
             if (addressParts.length >= 2) {
               const city = addressParts[addressParts.length - 2];
@@ -2490,21 +2478,6 @@ app.get('/api/place-details/:placeId', async (req, res) => {
           console.log('[PlaceDetails] Apollo People API response:', JSON.stringify(peopleData, null, 2));
           console.log('[PlaceDetails] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
   
-          // Track Apollo People Search API call
-          try {
-            await ApiCallLog.create({
-              api: 'apollo_people_search',
-              timestamp: new Date(),
-              metadata: {
-                request: peopleBody,
-                response: peopleData
-              }
-            });
-            console.log('[Tracking] Apollo People Search API call tracked in database.');
-          } catch (error) {
-            console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
-          }
-  
           // Store decision makers info
           decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
             let email = person.email;
@@ -2514,7 +2487,6 @@ app.get('/api/place-details/:placeId', async (req, res) => {
               person.id
             ) {
               try {
-                const matchBody = { api_key: apolloApiKey, id: person.id };
                 const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
                   method: 'POST',
                   headers: {
@@ -2522,28 +2494,16 @@ app.get('/api/place-details/:placeId', async (req, res) => {
                     'Cache-Control': 'no-cache',
                     'x-api-key': apolloApiKey,
                   },
-                  body: JSON.stringify(matchBody),
+                  body: JSON.stringify({
+                    api_key: apolloApiKey,
+                    id: person.id,
+                  }),
                 });
                 const enrichData = await enrichRes.json();
                 if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
                   email = enrichData.person.email;
                 } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
                   email = person.personal_emails[0];
-                }
-                
-                // Track Apollo API call
-                try {
-                  await ApiCallLog.create({
-                    api: 'apollo_person_match',
-                    timestamp: new Date(),
-                    metadata: {
-                      request: matchBody,
-                      response: enrichData
-                    }
-                  });
-                  console.log('[Tracking] Apollo Person Match API call tracked in database.');
-                } catch (error) {
-                  console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
                 }
               } catch (err) {
                 console.log('[Apollo] Error enriching person:', person.id, err);

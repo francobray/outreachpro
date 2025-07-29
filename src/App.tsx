@@ -122,8 +122,8 @@ function App() {
           {/* Main Content */}
           <main className="p-6">
             {activeTab === 'search' ? (
-              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-                <div className="lg:col-span-1">
+              <div className="grid grid-cols-1 lg:grid-cols-9 gap-6">
+                <div className="lg:col-span-2">
                   <div className="sticky top-6">
                     <SearchForm 
                       onResults={setBusinesses} 
@@ -132,7 +132,7 @@ function App() {
                   </div>
                 </div>
                 
-                <div className="lg:col-span-4">
+                <div className="lg:col-span-7">
                   {(businesses.length > 0 || isLoading) ? (
                     <BusinessTable 
                       businesses={businesses} 

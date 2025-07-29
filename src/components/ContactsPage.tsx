@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, User, Building } from 'lucide-react';
 
-interface Contact {
+interface ApolloContact {
   _id: string;
   id: string;
   businessId: string;
@@ -21,8 +21,8 @@ interface Contact {
 }
 
 const ContactsPage: React.FC = () => {
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [filteredContacts, setFilteredContacts] = useState<Contact[]>([]);
+  const [contacts, setContacts] = useState<ApolloContact[]>([]);
+  const [filteredContacts, setFilteredContacts] = useState<ApolloContact[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +34,7 @@ const ContactsPage: React.FC = () => {
   const [businessFilter, setBusinessFilter] = useState('');
   
   // Sort states
-  const [sortField, setSortField] = useState<keyof Contact>('createdAt');
+  const [sortField, setSortField] = useState<keyof ApolloContact>('createdAt');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   
   // Pagination
@@ -64,7 +64,7 @@ const ContactsPage: React.FC = () => {
       const businesses = data.businesses || [];
       
       // Extract all decision makers from businesses
-      const allContacts: Contact[] = [];
+      const allContacts: ApolloContact[] = [];
       businesses.forEach(business => {
         if (business.decisionMakers && Array.isArray(business.decisionMakers)) {
           business.decisionMakers.forEach((dm: any) => {
@@ -122,7 +122,7 @@ const ContactsPage: React.FC = () => {
       const businesses = data.businesses || [];
       
       // Extract all decision makers from businesses
-      const allContacts: Contact[] = [];
+      const allContacts: ApolloContact[] = [];
       businesses.forEach(business => {
         if (business.decisionMakers && Array.isArray(business.decisionMakers)) {
           business.decisionMakers.forEach((dm: any) => {
@@ -233,7 +233,7 @@ const ContactsPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  const handleSort = (field: keyof Contact) => {
+  const handleSort = (field: keyof ApolloContact) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
@@ -266,7 +266,7 @@ const ContactsPage: React.FC = () => {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `contacts-export-${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `apollo-contacts-${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
     window.URL.revokeObjectURL(url);
   };
