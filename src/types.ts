@@ -52,6 +52,13 @@ export interface ApiCallLog {
     location?: string;
     placeId?: string;
     businessName?: string;
-    foundContacts?: string[];
+    foundContacts?: {
+      name: string;
+      title: string;
+      linkedin_url: string;
+    }[];
+    organizationName?: string;
+    organizationWebsite?: string;
   };
+  metadata?: any; // For backward compatibility with old log structure
 } 

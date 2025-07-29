@@ -17,7 +17,13 @@ const apiCallLogSchema = new mongoose.Schema({
     location: String,
     placeId: String,
     businessName: String,
-    foundContacts: [String],
+    foundContacts: [{
+      name: String,
+      title: String,
+      linkedin_url: String,
+    }],
+    organizationName: String,
+    organizationWebsite: String,
     // Add other relevant details here
   }
 });

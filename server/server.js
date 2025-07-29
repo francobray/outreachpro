@@ -1469,7 +1469,13 @@ app.post('/api/emails/:businessId', async (req, res) => {
           businessName: business.name,
           orgId: orgId,
           domain: domain,
-          foundContacts: (peopleData.people || []).map(p => `${p.name} (${p.title || 'N/A'})`),
+          foundContacts: (peopleData.people || []).map(p => ({
+            name: p.name,
+            title: p.title,
+            linkedin_url: p.linkedin_url,
+          })),
+          organizationName: (peopleData.people && peopleData.people.length > 0) ? peopleData.people[0].organization?.name : null,
+          organizationWebsite: (peopleData.people && peopleData.people.length > 0) ? peopleData.people[0].organization?.website_url : null,
         }
       });
       console.log('[Tracking] Apollo People Search API call tracked in database.');
@@ -1519,7 +1525,13 @@ app.post('/api/emails/:businessId', async (req, res) => {
                 endpoint: 'person_match',
                 personId: person.id,
                 businessName: business.name,
-                foundContacts: personData ? [`${personData.name} (${personData.title || 'N/A'})`] : [],
+                foundContacts: personData ? [{
+                  name: personData.name,
+                  title: personData.title,
+                  linkedin_url: personData.linkedin_url,
+                }] : [],
+                organizationName: personData?.organization?.name,
+                organizationWebsite: personData?.organization?.website_url,
               }
             });
             console.log('[Tracking] Apollo Person Match API call tracked in database.');
