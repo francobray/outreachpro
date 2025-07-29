@@ -83,6 +83,11 @@ businessSchema.index({ placeId: 1 }, { unique: true });
 businessSchema.index({ id: 1 }, { unique: true });
 businessSchema.index({ addedAt: -1 });
 
+// Virtual property to check if the business is enriched
+businessSchema.virtual('isEnriched').get(function() {
+  return !!this.website || this.numLocations !== null;
+});
+
 const Business = mongoose.model('Business', businessSchema);
 
 export default Business; 

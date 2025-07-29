@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ApiCallLog } from '../types';
 
 interface ApiCallLogTableProps {
@@ -10,12 +10,34 @@ const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
 
-  if (!logs || logs.length === 0) {
+  const displayItems = useMemo(() => {
+    if (!logs || logs.length === 0) {
+      return [];
+    }
+
+    const groupedByPlaceId = logs.reduce((acc, log) => {
+      const placeId = log.details?.placeId || log.metadata?.request?.placeId;
+      if (placeId && log.api === 'apollo_person_match') {
+        if (!acc[placeId]) {
+          acc[placeId] = [];
+        }
+        acc[placeId].push(log);
+      } else {
+        // Use log._id for ungrouped items to ensure unique key
+        acc[log._id] = [log];
+      }
+      return acc;
+    }, {} as Record<string, ApiCallLog[]>);
+
+    return Object.values(groupedByPlaceId);
+  }, [logs]);
+
+  if (displayItems.length === 0) {
     return null;
   }
 
-  const totalPages = Math.ceil(logs.length / pageSize);
-  const paginatedLogs = logs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const totalPages = Math.ceil(displayItems.length / pageSize);
+  const paginatedItems = displayItems.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div className="mt-8">
@@ -53,77 +75,87 @@ const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {paginatedLogs.map((log) => (
-                <tr key={log._id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(log.timestamp).toLocaleString()}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {log.api || 'N/A'}
-                  </td>
-                  {title.toLowerCase().includes('apollo') ? (
-                    <>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {(() => {
-                          const name = log.details?.organizationName || log.metadata?.response?.person?.organization?.name;
-                          const website = log.details?.organizationWebsite || log.metadata?.response?.person?.organization?.website_url;
-                          if (website) {
-                            return (
-                              <a href={website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                                {name || 'N/A'}
-                              </a>
-                            );
-                          }
-                          return name || 'N/A';
-                        })()}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {log.details?.foundContacts && log.details.foundContacts.length > 0
-                          ? log.details.foundContacts.map((contact, index) => (
-                              <div key={index}>
-                                {contact.linkedin_url ? (
-                                  <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                                    {contact.name}
-                                  </a>
-                                ) : (
-                                  contact.name
-                                )}
-                                {contact.title && ` (${contact.title})`}
-                              </div>
-                            ))
-                          : log.metadata?.response?.person ? (
-                              <div>
-                                {log.metadata.response.person.linkedin_url ? (
-                                  <a href={log.metadata.response.person.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                                    {log.metadata.response.person.name}
-                                  </a>
-                                ) : (
-                                  log.metadata.response.person.name
-                                )}
-                                {log.metadata.response.person.title && ` (${log.metadata.response.person.title})`}
-                              </div>
-                            )
-                          : 'N/A'}
-                      </td>
-                    </>
-                  ) : (
-                    <>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {log.details?.keyword || 'N/A'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {log.details?.location || 'N/A'}
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
+              {paginatedItems.map((logGroup) => {
+                const firstLog = logGroup[0];
+                const placeId = firstLog.details?.placeId || firstLog.metadata?.request?.placeId;
+                const isGrouped = logGroup.length > 1 && firstLog.api === 'apollo_person_match' && placeId;
+
+                return (
+                  <tr key={isGrouped ? placeId : firstLog._id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {new Date(firstLog.timestamp).toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {firstLog.api || 'N/A'}
+                    </td>
+                    {title.toLowerCase().includes('apollo') ? (
+                      <>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {(() => {
+                            const name = firstLog.details?.organizationName || firstLog.metadata?.response?.person?.organization?.name;
+                            const website = firstLog.details?.organizationWebsite || firstLog.metadata?.response?.person?.organization?.website_url;
+                            if (website) {
+                              return (
+                                <a href={website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                  {name || 'N/A'}
+                                </a>
+                              );
+                            }
+                            return name || 'N/A';
+                          })()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {logGroup.map((log) => (
+                            <div key={log._id}>
+                              {log.details?.foundContacts && log.details.foundContacts.length > 0
+                                ? log.details.foundContacts.map((contact, index) => (
+                                    <div key={index}>
+                                      {contact.linkedin_url ? (
+                                        <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                          {contact.name}
+                                        </a>
+                                      ) : (
+                                        contact.name
+                                      )}
+                                      {contact.title && ` (${contact.title})`}
+                                    </div>
+                                  ))
+                                : log.metadata?.response?.person ? (
+                                    <div>
+                                      {log.metadata.response.person.linkedin_url ? (
+                                        <a href={log.metadata.response.person.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                          {log.metadata.response.person.name}
+                                        </a>
+                                      ) : (
+                                        log.metadata.response.person.name
+                                      )}
+                                      {log.metadata.response.person.title && ` (${log.metadata.response.person.title})`}
+                                    </div>
+                                  )
+                                : 'N/A'}
+                            </div>
+                          ))}
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {firstLog.details?.keyword || 'N/A'}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {firstLog.details?.location || 'N/A'}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
         <div className="flex items-center justify-between p-4">
           <div className="text-sm text-gray-700">
-            Showing <span className="font-medium">{(currentPage - 1) * pageSize + 1}</span> to <span className="font-medium">{Math.min(currentPage * pageSize, logs.length)}</span> of <span className="font-medium">{logs.length}</span> results
+            Showing <span className="font-medium">{(currentPage - 1) * pageSize + 1}</span> to <span className="font-medium">{Math.min(currentPage * pageSize, displayItems.length)}</span> of <span className="font-medium">{displayItems.length}</span> results
           </div>
           <div className="flex items-center space-x-2">
             <select
