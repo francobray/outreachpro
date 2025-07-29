@@ -14,6 +14,7 @@ import { Business, Campaign } from './types';
 import { useCampaigns, CampaignProvider } from './context/CampaignContext';
 import packageInfo from '../package.json';
 import { Toaster } from 'react-hot-toast';
+import CostEstimator from './components/CostEstimator';
 
 // Define the EmailTemplate type
 interface EmailTemplate {
@@ -42,6 +43,8 @@ function App() {
     message: '',
     type: 'info'
   });
+  const [includeApollo, setIncludeApollo] = useState(true);
+  const [estimatedResults, setEstimatedResults] = useState(20);
 
   const { createCampaign } = useCampaigns();
 
@@ -55,6 +58,10 @@ function App() {
 
   const handleSelectionChange = (selected: Business[]) => {
     setSelectedBusinesses(selected);
+  };
+
+  const handleSetBusinesses = (b: Business[]) => {
+    setBusinesses(b);
   };
 
   const openCampaignModal = () => {
@@ -86,7 +93,7 @@ function App() {
         />
 
         {/* Main Content Area */}
-        <div className={`transition-all duration-300 ${isSidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
+        <div className={`transition-all duration-300 ${isSidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
           {/* Header */}
           <header className="bg-white shadow-sm border-b border-gray-200">
             <div className="px-6 py-4">
@@ -122,17 +129,25 @@ function App() {
           {/* Main Content */}
           <main className="p-6">
             {activeTab === 'search' ? (
-              <div className="grid grid-cols-1 lg:grid-cols-9 gap-6">
-                <div className="lg:col-span-2">
-                  <div className="sticky top-6">
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                <div className="lg:col-span-1">
+                  <div className="space-y-6">
                     <SearchForm 
-                      onResults={setBusinesses} 
+                      onResults={handleSetBusinesses} 
                       setIsLoading={setIsLoading}
+                      includeApollo={includeApollo}
+                      setIncludeApollo={setIncludeApollo}
+                      estimatedResults={estimatedResults}
+                      setEstimatedResults={setEstimatedResults}
+                    />
+                    <CostEstimator
+                      estimatedResults={estimatedResults}
+                      includeApollo={includeApollo}
                     />
                   </div>
                 </div>
                 
-                <div className="lg:col-span-7">
+                <div className="lg:col-span-4">
                   {(businesses.length > 0 || isLoading) ? (
                     <BusinessTable 
                       businesses={businesses} 
@@ -142,11 +157,11 @@ function App() {
                       emailTemplates={emailTemplates}
                     />
                   ) : (
-                    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
                       <div>
                         <Search className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                         <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to find businesses</h3>
-                        <p className="text-sm text-gray-600">Enter a business type and location to get started.</p>
+                        <p className="text-gray-600">Enter a business type and location to get started with your outreach campaign.</p>
                       </div>
                     </div>
                   )}

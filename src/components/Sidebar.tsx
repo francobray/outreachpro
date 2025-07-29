@@ -1,9 +1,9 @@
 import React from 'react';
-import { Search, Mail, Database, BarChart3, ChevronLeft, ChevronRight, User } from 'lucide-react';
+import { Search, Mail, Database, BarChart3, ChevronLeft, ChevronRight, User, DollarSign } from 'lucide-react';
 
 interface SidebarProps {
-  activeTab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity';
-  onTabChange: (tab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity') => void;
+  activeTab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs';
+  onTabChange: (tab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs') => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
 }
@@ -39,6 +39,12 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, 
       label: 'Email Activity',
       icon: BarChart3,
       description: 'Track email campaigns'
+    },
+    {
+      id: 'api-costs' as const,
+      label: 'API Costs',
+      icon: DollarSign,
+      description: 'Track API usage costs'
     }
   ];
 

@@ -33,17 +33,24 @@ export interface Business {
 }
 
 export interface Campaign {
-  id: string;
-  name:string;
-  targetBusinesses: Business[];
-  emailTemplateId: string;
-  status: 'draft' | 'in_progress' | 'completed' | 'archived';
+  _id: string;
+  name: string;
+  businesses: Business[];
+  emailTemplate: EmailTemplate;
+  status: 'draft' | 'running' | 'completed';
   createdAt: string;
   updatedAt: string;
-  stats: {
-    total_targets: number;
-    emails_sent: number;
-    emails_bounced: number;
-    replies_received: number;
+}
+
+export interface ApiCallLog {
+  _id: string;
+  api: string;
+  timestamp: string;
+  details: {
+    endpoint: string;
+    keyword?: string;
+    location?: string;
+    placeId?: string;
+    businessName?: string;
   };
 } 

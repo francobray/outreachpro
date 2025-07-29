@@ -1,19 +1,27 @@
 import React, { useState } from 'react';
 import { Loader2, Search } from 'lucide-react';
 import { Business, Location } from '../types';
-import CostEstimator from './CostEstimator';
 
 interface SearchFormProps {
   onResults: (businesses: Business[]) => void;
   setIsLoading: (setIsLoading: boolean) => void;
+  includeApollo: boolean;
+  setIncludeApollo: (include: boolean) => void;
+  estimatedResults: number;
+  setEstimatedResults: (count: number) => void;
 }
 
-const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
+const SearchForm: React.FC<SearchFormProps> = ({
+  onResults,
+  setIsLoading,
+  includeApollo,
+  setIncludeApollo,
+  estimatedResults,
+  setEstimatedResults,
+}) => {
   const [keyword, setKeyword] = useState('coffee shops');
   const [location, setLocation] = useState('austin');
-  const [includeApollo, setIncludeApollo] = useState(true);
-  const [estimatedResults, setEstimatedResults] = useState(20);
-  
+
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsLoading(true);
@@ -171,14 +179,6 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
             </button>
           ))}
         </div>
-      </div>
-      
-      {/* Cost Estimator - moved below quick searches */}
-      <div className="mt-6">
-        <CostEstimator 
-          estimatedResults={estimatedResults}
-          includeApollo={includeApollo}
-        />
       </div>
     </div>
   );
