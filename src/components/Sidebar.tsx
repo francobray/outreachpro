@@ -46,7 +46,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, 
     <div className={`bg-white shadow-sm border-r border-gray-200 h-screen fixed left-0 top-0 z-10 transition-all duration-300 ${
       isCollapsed ? 'w-16' : 'w-64'
     }`}>
-      <div className="p-6">
+      <div className={`transition-all duration-300 ${isCollapsed ? 'px-3 py-6' : 'p-6'}`}>
         {/* Logo and Title */}
         <div className={`flex items-center space-x-3 mb-8 ${isCollapsed ? 'justify-center' : ''}`}>
           <img
@@ -84,11 +84,15 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, 
               <button
                 key={item.id}
                 onClick={() => onTabChange(item.id)}
-                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-left transition-all duration-200 ${
+                className={`w-full flex items-center py-3 rounded-lg transition-all duration-200 ${
                   isActive
                     ? 'bg-blue-50 text-blue-700 border border-blue-200'
                     : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                } ${isCollapsed ? 'justify-center' : ''}`}
+                } ${
+                  isCollapsed
+                    ? 'justify-center'
+                    : 'px-4 space-x-3 text-left'
+                }`}
                 title={isCollapsed ? item.label : undefined}
               >
                 <Icon className={`h-5 w-5 ${isActive ? 'text-blue-600' : 'text-gray-500'}`} />

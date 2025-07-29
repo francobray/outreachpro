@@ -118,7 +118,6 @@ emailActivitySchema.pre('save', function(next) {
 });
 
 // Indexes for efficient querying
-emailActivitySchema.index({ emailId: 1 }, { unique: true });
 emailActivitySchema.index({ businessId: 1 });
 emailActivitySchema.index({ decisionMakerEmail: 1 });
 emailActivitySchema.index({ status: 1 });

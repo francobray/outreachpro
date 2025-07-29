@@ -5,6 +5,7 @@ import EmailTemplates from './components/EmailTemplates';
 import PlacesPage from './components/PlacesPage';
 import ContactsPage from './components/ContactsPage';
 import EmailActivityPage from './components/EmailActivityPage';
+import ApiCostsPage from './components/ApiCostsPage';
 import CampaignModal from './components/CampaignModal';
 import AlertModal from './components/AlertModal';
 import Sidebar from './components/Sidebar';
@@ -23,8 +24,8 @@ interface EmailTemplate {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'contacts' | 'email-activity'>('search');
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs'>('search');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedBusinesses, setSelectedBusinesses] = useState<Business[]>([]);
@@ -85,7 +86,7 @@ function App() {
         />
 
         {/* Main Content Area */}
-        <div className={`transition-all duration-300 ${isSidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        <div className={`transition-all duration-300 ${isSidebarCollapsed ? 'pl-16' : 'pl-64'}`}>
           {/* Header */}
           <header className="bg-white shadow-sm border-b border-gray-200">
             <div className="px-6 py-4">
@@ -96,6 +97,7 @@ function App() {
                     {activeTab === 'templates' && 'Email Templates'}
                     {activeTab === 'places' && 'Places Database'}
                     {activeTab === 'contacts' && 'Contacts'}
+                    {activeTab === 'api-costs' && 'API Costs'}
                     {activeTab === 'email-activity' && 'Email Activity'}
                   </h1>
                   <p className="text-sm text-gray-600">
@@ -103,6 +105,7 @@ function App() {
                     {activeTab === 'templates' && 'Create and manage email templates for your campaigns'}
                     {activeTab === 'places' && 'View and manage your saved business database'}
                     {activeTab === 'contacts' && 'View and manage Apollo contacts from your database'}
+                    {activeTab === 'api-costs' && 'Track your monthly API usage and costs'}
                     {activeTab === 'email-activity' && 'Track the performance of your email campaigns'}
                   </p>
                 </div>
@@ -119,9 +122,9 @@ function App() {
           {/* Main Content */}
           <main className="p-6">
             {activeTab === 'search' ? (
-              <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
                 <div className="lg:col-span-1">
-                  <div className="sticky top-8 max-w-[300px] mx-auto lg:mx-0">
+                  <div className="sticky top-6">
                     <SearchForm 
                       onResults={setBusinesses} 
                       setIsLoading={setIsLoading}
@@ -139,11 +142,11 @@ function App() {
                       emailTemplates={emailTemplates}
                     />
                   ) : (
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
+                    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center min-h-[400px] flex items-center justify-center">
                       <div>
                         <Search className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                         <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to find businesses</h3>
-                        <p className="text-gray-600">Enter a business type and location to get started with your outreach campaign.</p>
+                        <p className="text-sm text-gray-600">Enter a business type and location to get started.</p>
                       </div>
                     </div>
                   )}
@@ -153,6 +156,8 @@ function App() {
               <PlacesPage />
             ) : activeTab === 'contacts' ? (
               <ContactsPage />
+            ) : activeTab === 'api-costs' ? (
+              <ApiCostsPage />
             ) : activeTab === 'email-activity' ? (
               <EmailActivityPage />
             ) : (

@@ -8,6 +8,8 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import multer from 'multer';
 import { Resend } from 'resend';
+// import puppeteerExtra from 'puppeteer-extra';
+// import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 // Use dynamic imports for puppeteer packages
 let puppeteer, puppeteerExtra, StealthPlugin, robotsParser;
@@ -98,13 +100,88 @@ const PORT = 3001;
 const DEBUG_SCRAPER = process.env.DEBUG_SCRAPER === 'true';
 console.log(`[Server] Scraper debug mode: ${DEBUG_SCRAPER ? 'ENABLED' : 'disabled'}`);
 
+// Function to reset API call tracking from the database
+async function resetApiTracking() {
+  try {
+    await ApiCallLog.deleteMany({});
+    console.log('[Tracking] API call logs reset in the database');
+  } catch (error) {
+    console.error('[Tracking] Error resetting API call logs:', error);
+  }
+}
+
+// Function to get API call statistics from the database
+async function getApiTrackingStats() {
+  try {
+    const googlePlacesSearch = await ApiCallLog.countDocuments({ api: 'google_places_search' });
+    const googlePlacesDetails = await ApiCallLog.countDocuments({ api: 'google_places_details' });
+    const apolloContacts = await ApiCallLog.countDocuments({ api: { $in: ['apollo_enrich', 'apollo_people_search', 'apollo_person_match'] } });
+    return {
+      googlePlacesSearch,
+      googlePlacesDetails,
+      apolloContacts,
+      total: googlePlacesSearch + googlePlacesDetails + apolloContacts
+    };
+  } catch (error) {
+    console.error('[Tracking] Error getting API tracking stats:', error);
+    return { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0, total: 0 };
+  }
+}
+
+// Function to get monthly API call statistics from the database
+async function getMonthlyStats() {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfPreviousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+
+  try {
+    const currentMonthCalls = await ApiCallLog.aggregate([
+      { $match: { timestamp: { $gte: startOfMonth } } },
+      { $group: { _id: '$api', count: { $sum: 1 } } }
+    ]);
+
+    const previousMonthCalls = await ApiCallLog.aggregate([
+      { $match: { timestamp: { $gte: startOfPreviousMonth, $lte: endOfPreviousMonth } } },
+      { $group: { _id: '$api', count: { $sum: 1 } } }
+    ]);
+
+    const formatStats = (calls) => {
+      const stats = {
+        googlePlacesSearch: 0,
+        googlePlacesDetails: 0,
+        apolloContacts: 0
+      };
+      calls.forEach(call => {
+        if (call._id === 'google_places_search') stats.googlePlacesSearch = call.count;
+        if (call._id === 'google_places_details') stats.googlePlacesDetails = call.count;
+        if (['apollo_enrich', 'apollo_people_search', 'apollo_person_match'].includes(call._id)) {
+          stats.apolloContacts += call.count;
+        }
+      });
+      return stats;
+    };
+
+    return {
+      currentMonth: formatStats(currentMonthCalls),
+      previousMonth: formatStats(previousMonthCalls)
+    };
+  } catch (error) {
+    console.error('[Tracking] Error getting monthly stats:', error);
+    return {
+      currentMonth: { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 },
+      previousMonth: { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 }
+    };
+  }
+}
+
 // Database connection and models
 let mongoose = null;
 let Business = null;
 let Campaign = null;
-let ApolloContact = null;
 let EmailTemplate = null;
 let EmailActivity = null;
+let ApiCallLog = null;
 
 async function connectToDatabase() {
   try {
@@ -121,19 +198,34 @@ async function connectToDatabase() {
     });
     
     console.log('[Server] MongoDB connected successfully');
+
+    // --- Temporary script to drop obsolete collection ---
+    try {
+      const collections = await mongoose.connection.db.listCollections({ name: 'apollocontacts' }).toArray();
+      if (collections.length > 0) {
+        console.log('[Server] Obsolete "apollocontacts" collection found. Dropping it now...');
+        await mongoose.connection.db.dropCollection('apollocontacts');
+        console.log('[Server] Successfully dropped "apollocontacts" collection.');
+      } else {
+        console.log('[Server] Obsolete "apollocontacts" collection not found. No action needed.');
+      }
+    } catch (err) {
+      console.error('[Server] Error dropping "apollocontacts" collection:', err);
+    }
+    // --- End of temporary script ---
     
     // Import models
     const { default: BusinessModel } = await import('./models/Business.js');
     const { default: CampaignModel } = await import('./models/Campaign.js');
-    const { default: ApolloContactModel } = await import('./models/ApolloContact.js');
     const { default: EmailTemplateModel } = await import('./models/EmailTemplate.js');
     const { default: EmailActivityModel } = await import('./models/EmailActivity.js');
+    const { default: ApiCallLogModel } = await import('./models/ApiCallLog.js');
     
     Business = BusinessModel;
     Campaign = CampaignModel;
-    ApolloContact = ApolloContactModel;
     EmailTemplate = EmailTemplateModel;
     EmailActivity = EmailActivityModel;
+    ApiCallLog = ApiCallLogModel;
     
     console.log('[Server] Database models loaded');
     
@@ -931,6 +1023,9 @@ async function fetchHtmlWithFallback(url, options = {}) {
       const html = await response.text();
       console.log(`[Scraper] Regular fetch got ${html.length} bytes`);
       
+      // Log the full HTML for debugging purposes
+      console.log(`[Scraper] Full HTML content received:\n${html}\n[Scraper] End of HTML content`);
+      
       // Log a sample of the HTML to diagnose bot detection issues
       const htmlSample = html.substring(0, 500) + "... [truncated]";
       console.log(`[Scraper] HTML sample: ${htmlSample}`);
@@ -1106,7 +1201,7 @@ async function fallbackToPuppeteer(url, debugMode, noPuppeteer) {
 
 // Search businesses using Google Places API (real implementation)
 app.post('/api/search', async (req, res) => {
-  const { location, keyword } = req.body;
+  const { location, keyword, includeApollo = true } = req.body;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
 
   console.log('[Search] Request received:', { location, keyword });
@@ -1173,6 +1268,22 @@ app.post('/api/search', async (req, res) => {
     const placesData = await placesRes.json();
     console.log('[Search] Places search response status:', placesRes.status);
     console.log('[Search] Found places:', placesData.results?.length || 0);
+    
+    // Track Google Places Search API call in the database
+    try {
+      await ApiCallLog.create({
+        api: 'google_places_search',
+        timestamp: new Date(),
+        details: {
+          endpoint: 'nearbysearch',
+          keyword: keyword,
+          location: location
+        }
+      });
+      console.log('[Tracking] Google Places Search API call tracked in database.');
+    } catch (error) {
+      console.error('[Tracking] Error saving Google Places Search API call to database:', error);
+    }
 
     // Map Google results to business format without additional API calls
     const businessesFound = (placesData.results || []).map(place => {
@@ -1297,6 +1408,21 @@ app.post('/api/emails/:businessId', async (req, res) => {
       enrichedOrg = enrichData.organization;
       business.enriched = enrichedOrg;
       orgId = enrichedOrg && enrichedOrg.id;
+      
+      // Track Apollo API call
+      try {
+        await ApiCallLog.create({
+          api: 'apollo_enrich',
+          timestamp: new Date(),
+          metadata: {
+            request: { domain, name: business.name },
+            response: enrichData
+          }
+        });
+        console.log('[Tracking] Apollo Enrich API call tracked in database.');
+      } catch (error) {
+        console.error('[Tracking] Error saving Apollo Enrich API call to database:', error);
+      }
     }
 
     // 2. Use org_id or domain to search for decision makers
@@ -1331,6 +1457,21 @@ app.post('/api/emails/:businessId', async (req, res) => {
     console.log('[Apollo] People API response:', JSON.stringify(peopleData, null, 2));
     console.log('[Apollo] People API status:', peopleRes.status);
     console.log('[Apollo] People API total entries:', peopleData.pagination?.total_entries || 0);
+    
+    // Track Apollo API call
+    try {
+      await ApiCallLog.create({
+        api: 'apollo_people_search',
+        timestamp: new Date(),
+        metadata: {
+          request: peopleBody,
+          response: peopleData
+        }
+      });
+      console.log('[Tracking] Apollo People Search API call tracked in database.');
+    } catch (error) {
+      console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
+    }
 
     // Extract emails and names
     const emails = (peopleData.people || []).map(person => person.email).filter(Boolean);
@@ -1362,6 +1503,21 @@ app.post('/api/emails/:businessId', async (req, res) => {
             email = enrichData.person.email;
           } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
             email = person.personal_emails[0];
+          }
+          
+          // Track Apollo API call
+          try {
+            await ApiCallLog.create({
+              api: 'apollo_person_match',
+              timestamp: new Date(),
+              metadata: {
+                request: { api_key: apolloApiKey, id: person.id },
+                response: enrichData
+              }
+            });
+            console.log('[Tracking] Apollo Person Match API call tracked in database.');
+          } catch (error) {
+            console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
           }
         } catch (err) {
           console.log('[Apollo] Error enriching person:', person.id, err);
@@ -1692,6 +1848,216 @@ app.get('/api/email-activities', async (req, res) => {
   }
 });
 
+// Get Apollo pricing for cost estimator
+app.get('/api/apollo-pricing', async (req, res) => {
+  try {
+    const apolloCostPerCredit = parseFloat(process.env.APOLLO_COST_PER_CREDIT) || 0.00895;
+    res.json({ costPerCredit: apolloCostPerCredit });
+  } catch (error) {
+    console.error('[Apollo Pricing] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get API costs data
+// Reset API tracking counters (for testing)
+app.post('/api/costs/reset', async (req, res) => {
+  await resetApiTracking();
+  res.json({ message: 'API tracking counters reset', stats: await getApiTrackingStats() });
+});
+
+// Get current API tracking stats
+app.get('/api/costs/stats', async (req, res) => {
+  res.json({ stats: await getApiTrackingStats() });
+});
+
+// Get detailed monthly stats
+app.get('/api/costs/monthly', async (req, res) => {
+  const monthlyStats = await getMonthlyStats();
+  res.json({ 
+    monthly: monthlyStats,
+    currentMonth: monthlyStats.currentMonth,
+    previousMonth: monthlyStats.previousMonth
+  });
+});
+
+// Get detailed call history with timestamps
+app.get('/api/costs/history', async (req, res) => {
+  try {
+    const history = await ApiCallLog.find().sort({ timestamp: -1 }).limit(1000);
+    const googlePlacesSearch = history.filter(c => c.api === 'google_places_search');
+    const googlePlacesDetails = history.filter(c => c.api === 'google_places_details');
+    const apolloContacts = history.filter(c => ['apollo_enrich', 'apollo_people_search', 'apollo_person_match'].includes(c.api));
+    
+    res.json({
+      googlePlacesSearch,
+      googlePlacesDetails,
+      apolloContacts,
+      total: history.length
+    });
+  } catch (error) {
+    console.error('[History] Error fetching call history:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/costs', async (req, res) => {
+  console.log('[Costs] ===== API COSTS REQUEST START =====');
+  console.log('[Costs] Request timestamp:', new Date().toISOString());
+  
+  try {
+    console.log('[Costs] Fetching Google Places costs...');
+    const googlePlacesCosts = await getGooglePlacesCosts();
+    console.log('[Costs] Google Places costs result:', JSON.stringify(googlePlacesCosts, null, 2));
+    
+    console.log('[Costs] Fetching Apollo costs...');
+    const apolloCosts = await getApolloCosts();
+    console.log('[Costs] Apollo costs result:', JSON.stringify(apolloCosts, null, 2));
+    
+    const costsData = {
+      googlePlaces: googlePlacesCosts,
+      apollo: apolloCosts,
+      total: {
+        currentMonth: 0,
+        previousMonth: 0,
+        trend: 'stable'
+      }
+    };
+
+    // Calculate totals
+    costsData.total.currentMonth = costsData.googlePlaces.currentMonth + costsData.apollo.currentMonth;
+    costsData.total.previousMonth = costsData.googlePlaces.previousMonth + costsData.apollo.previousMonth;
+    
+    console.log('[Costs] Calculated totals:', {
+      currentMonth: costsData.total.currentMonth,
+      previousMonth: costsData.total.previousMonth
+    });
+    
+    // Determine trend
+    if (costsData.total.currentMonth > costsData.total.previousMonth * 1.05) {
+      costsData.total.trend = 'up';
+    } else if (costsData.total.currentMonth < costsData.total.previousMonth * 0.95) {
+      costsData.total.trend = 'down';
+    } else {
+      costsData.total.trend = 'stable';
+    }
+    
+    console.log('[Costs] Final trend:', costsData.total.trend);
+    console.log('[Costs] ===== API COSTS REQUEST COMPLETE =====');
+    
+    res.json(costsData);
+  } catch (error) {
+    console.error('[Costs] Error fetching costs data:', error);
+    console.log('[Costs] ===== API COSTS REQUEST FAILED =====');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Helper function to get Google Places API costs
+async function getGooglePlacesCosts() {
+  console.log('[GooglePlaces] ===== GOOGLE PLACES COSTS START =====');
+  
+  try {
+    console.log('[GooglePlaces] Calculating costs from tracked API calls...');
+    
+    // Get monthly stats
+    const monthlyStats = await getMonthlyStats();
+    const currentMonthStats = monthlyStats.currentMonth;
+    const previousMonthStats = monthlyStats.previousMonth;
+    
+    // Google Places API pricing (as of 2024)
+    const SEARCH_COST_PER_REQUEST = 0.017; // $0.017 per search request
+    const DETAILS_COST_PER_REQUEST = 0.017; // $0.017 per details request
+    
+    const currentMonthCost = (currentMonthStats.googlePlacesSearch * SEARCH_COST_PER_REQUEST) + 
+                            (currentMonthStats.googlePlacesDetails * DETAILS_COST_PER_REQUEST);
+    const previousMonthCost = (previousMonthStats.googlePlacesSearch * SEARCH_COST_PER_REQUEST) + 
+                             (previousMonthStats.googlePlacesDetails * DETAILS_COST_PER_REQUEST);
+    
+    console.log('[GooglePlaces] Calculated costs from tracked usage:');
+    console.log('[GooglePlaces] - Current month search requests:', currentMonthStats.googlePlacesSearch);
+    console.log('[GooglePlaces] - Current month details requests:', currentMonthStats.googlePlacesDetails);
+    console.log('[GooglePlaces] - Previous month search requests:', previousMonthStats.googlePlacesSearch);
+    console.log('[GooglePlaces] - Previous month details requests:', previousMonthStats.googlePlacesDetails);
+    console.log('[GooglePlaces] - Current month cost:', currentMonthCost);
+    console.log('[GooglePlaces] - Previous month cost:', previousMonthCost);
+
+    return {
+      currentMonth: currentMonthCost,
+      previousMonth: previousMonthCost,
+      trend: previousMonthCost > 0 ? ((currentMonthCost - previousMonthCost) / previousMonthCost) * 100 : 0,
+      usage: {
+        searchRequests: currentMonthStats.googlePlacesSearch,
+        detailsRequests: currentMonthStats.googlePlacesDetails
+      },
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (error) {
+    console.log('[GooglePlaces] Error calculating Google Places costs:', error.message);
+    throw error;
+  }
+
+}
+
+// Helper function to get Apollo API costs
+async function getApolloCosts() {
+  console.log('[Apollo] ===== APOLLO COSTS START =====');
+  
+  const apolloCostPerCredit = parseFloat(process.env.APOLLO_COST_PER_CREDIT) || 0.00895; // Default to your current rate
+  
+  console.log('[Apollo] Environment variables check:', {
+    costPerCredit: apolloCostPerCredit
+  });
+
+  try {
+    console.log('[Apollo] Calculating costs from tracked API calls...');
+    
+    // Get monthly stats
+    const monthlyStats = await getMonthlyStats();
+    const currentMonthStats = monthlyStats.currentMonth;
+    const previousMonthStats = monthlyStats.previousMonth;
+    
+    // Calculate costs based on tracked API calls
+    const currentMonthContactSearches = currentMonthStats.apolloContacts; // Each API call counts as one contact search
+    const previousMonthContactSearches = previousMonthStats.apolloContacts;
+    const remainingCredits = 0; // We don't track remaining credits
+    
+    // Apollo pricing: Cost per credit from environment variable
+    const currentMonthCost = currentMonthContactSearches * apolloCostPerCredit;
+    const previousMonthCost = previousMonthContactSearches * apolloCostPerCredit;
+
+    const result = {
+      currentMonth: currentMonthCost,
+      previousMonth: previousMonthCost,
+      usage: {
+        contactSearches: currentMonthContactSearches,
+        remainingCredits
+      },
+      lastUpdated: new Date().toISOString()
+    };
+    
+    console.log('[Apollo] Final result:', JSON.stringify(result, null, 2));
+    console.log('[Apollo] ===== APOLLO COSTS COMPLETE =====');
+    
+    return result;
+
+  } catch (error) {
+    console.error('[Apollo] Error calculating Apollo costs:', error);
+    console.log('[Apollo] ===== APOLLO COSTS FAILED =====');
+    // Return a structured error response instead of throwing
+    return {
+      currentMonth: 0,
+      previousMonth: 0,
+      usage: {
+        contactSearches: 0,
+        remainingCredits: 0
+      },
+      lastUpdated: new Date().toISOString(),
+      error: error.message
+    };
+  }
+}
+
 // Get email activity statistics
 app.get('/api/email-activities/stats', async (req, res) => {
   try {
@@ -1789,7 +2155,6 @@ app.delete('/api/clear', async (req, res) => {
   try {
     await Business.deleteMany({});
     await Campaign.deleteMany({});
-    await ApolloContact.deleteMany({});
     await EmailTemplate.deleteMany({});
     res.json({ message: 'All data cleared' });
   } catch (error) {
@@ -1897,16 +2262,7 @@ app.put('/api/email-templates/:id/default', async (req, res) => {
   }
 });
 
-// Apollo Contacts API endpoints
-app.get('/api/apollo-contacts', async (req, res) => {
-  try {
-    const contacts = await ApolloContactModel.find({}).sort({ createdAt: -1 });
-    res.json(contacts);
-  } catch (error) {
-    console.error('[ApolloContacts] Error fetching contacts:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+// Apollo Contacts API endpoints - REMOVED as ApolloContact is obsolete
 
 // Find the place-details endpoint
 app.get('/api/place-details/:placeId', async (req, res) => {
@@ -1917,62 +2273,86 @@ app.get('/api/place-details/:placeId', async (req, res) => {
   const noPuppeteer = disablePuppeteer === 'true';
   const debugMode = debug === 'true' || DEBUG_SCRAPER;
   
-  console.log(`[PlaceDetails] ===== ENRICHMENT REQUEST START =====`);
-  console.log(`[PlaceDetails] Request details:`, {
-    placeId,
-    enrich: shouldEnrich,
-    apollo: shouldUseApollo,
-    testUrl: testUrl || 'none',
-    debugMode,
-    noPuppeteer,
-    timestamp: new Date().toISOString()
-  });
-  
-  if (debugMode) {
-    console.log('[PlaceDetails] Debug mode enabled - bot detection will be logged but not trigger Puppeteer');
-  }
-  
-  if (noPuppeteer) {
-    console.log('[PlaceDetails] Puppeteer fallback disabled for this request');
-  }
-  
-  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-  const apolloApiKey = process.env.APOLLO_API_KEY;
-
-  // Try to find the business in our database first
-  console.log(`[PlaceDetails] Looking up business in database for placeId: ${placeId}`);
-  const existingBusiness = await Business.findOne({ placeId });
-  
-  if (existingBusiness) {
-    console.log('[PlaceDetails] Found existing business in database:', {
-      id: existingBusiness.id,
-      name: existingBusiness.name,
-      placeId: existingBusiness.placeId,
-      emailsCount: existingBusiness.emails?.length || 0,
-      numLocations: existingBusiness.numLocations,
-      locationNamesCount: existingBusiness.locationNames?.length || 0,
-      website: existingBusiness.website,
-      phone: existingBusiness.phone,
-      lastUpdated: existingBusiness.lastUpdated,
-      createdAt: existingBusiness.createdAt
-    });
-  } else {
-    console.log('[PlaceDetails] No existing business found in database for placeId:', placeId);
-  }
-
-  // Get detailed information directly from Google Places API
-  const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
-  console.log('[PlaceDetails] Google API request URL:', url.replace(apiKey, 'API_KEY_HIDDEN'));
-
   try {
-    const response = await fetch(url);
-    console.log('[PlaceDetails] Google API response status:', response.status);
-    const data = await response.json();
-    console.log('[PlaceDetails] Google API full response:', JSON.stringify(data, null, 2));
+    console.log(`[PlaceDetails] ===== ENRICHMENT REQUEST START =====`);
+    console.log(`[PlaceDetails] Request details:`, {
+      placeId,
+      enrich: shouldEnrich,
+      apollo: shouldUseApollo,
+      testUrl: testUrl || 'none',
+      debugMode,
+      noPuppeteer,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (debugMode) {
+      console.log('[PlaceDetails] Debug mode enabled - bot detection will be logged but not trigger Puppeteer');
+    }
+    
+    if (noPuppeteer) {
+      console.log('[PlaceDetails] Puppeteer fallback disabled for this request');
+    }
+    
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+    const apolloApiKey = process.env.APOLLO_API_KEY;
 
-    // Retrieve website and phone number from google places api
-    let website = data.result?.website || null;
-    const phone = data.result?.formatted_phone_number || null;
+    // Try to find the business in our database first
+    console.log(`[PlaceDetails] Looking up business in database for placeId: ${placeId}`);
+    const existingBusiness = await Business.findOne({ placeId });
+    
+    if (existingBusiness) {
+      console.log('[PlaceDetails] Found existing business in database:', {
+        id: existingBusiness.id,
+        name: existingBusiness.name,
+        placeId: existingBusiness.placeId,
+        emailsCount: existingBusiness.emails?.length || 0,
+        numLocations: existingBusiness.numLocations,
+        locationNamesCount: existingBusiness.locationNames?.length || 0,
+        website: existingBusiness.website,
+        phone: existingBusiness.phone,
+        lastUpdated: existingBusiness.lastUpdated,
+        createdAt: existingBusiness.createdAt
+      });
+    } else {
+      console.log('[PlaceDetails] No existing business found in database for placeId:', placeId);
+    }
+
+    // Get detailed information directly from Google Places API (only if not using Apollo)
+    let website = null;
+    let phone = null;
+    
+    if (!shouldUseApollo) {
+      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
+      console.log('[PlaceDetails] Google API request URL:', url.replace(apiKey, 'API_KEY_HIDDEN'));
+
+      try {
+        const response = await fetch(url);
+        console.log('[PlaceDetails] Google API response status:', response.status);
+        const data = await response.json();
+        console.log('[PlaceDetails] Google API full response:', JSON.stringify(data, null, 2));
+        
+        // Track Google Places Details API call in the database
+        try {
+          await ApiCallLog.create({
+            api: 'google_places_details',
+            timestamp: new Date(),
+            details: {
+              endpoint: 'details',
+              placeId: placeId
+            }
+          });
+          console.log('[Tracking] Google Places Details API call tracked in database.');
+        } catch (error) {
+          console.error('[Tracking] Error saving Google Places Details API call to database:', error);
+        }
+
+        // Retrieve website and phone number from google places api
+        website = data.result?.website || null;
+        phone = data.result?.formatted_phone_number || null;
+      } catch (error) {
+        console.log('[PlaceDetails] Google API error:', error.message);
+      }
+    }
 
     // If we have website from existing business but not from API, use that
     if (!website && existingBusiness && existingBusiness.website) {
@@ -2004,242 +2384,491 @@ app.get('/api/place-details/:placeId', async (req, res) => {
     let numLocations = undefined;
     let locationNames = [];
     let decisionMakers = [];
+    let usedPuppeteerForAnyRequest = false;
 
-    // 1. Scrape homepage HTML using progressive strategy
-    console.log(`[PlaceDetails] Fetching website: ${website}`);
-    const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
-    console.log(`[PlaceDetails] Successfully fetched homepage HTML: ${homepageHtml.length} bytes (Puppeteer: ${homepageUsedPuppeteer})`);
+    // Call Apollo API to find decision makers - only if explicitly requested
+    if (shouldUseApollo) {
+      if (existingBusiness && apolloApiKey) {
+        try {
+          const businessName = existingBusiness.name;
+          const domain = existingBusiness.website ? extractDomain(existingBusiness.website) : null;
+          let orgId = undefined;
+          let enrichedOrg = undefined;
+  
+          // 1. Always attempt to enrich the organization to get company size and other details
+          const enrichBody = { api_key: apolloApiKey, name: businessName };
+          if (domain) {
+            enrichBody.domain = domain;
+          }
+          console.log('[PlaceDetails] Apollo Enrich API request:', enrichBody);
+          const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'x-api-key': apolloApiKey,
+            },
+            body: JSON.stringify(enrichBody),
+          });
 
-    // Track if Puppeteer was used for any request
-    let usedPuppeteerForAnyRequest = homepageUsedPuppeteer;
+          const enrichData = await enrichRes.json();
+          console.log('[PlaceDetails] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
+          if (enrichData.organization) {
+            enrichedOrg = enrichData.organization;
+            orgId = enrichedOrg.id;
+            // Track enrich call
+            try {
+              await ApiCallLog.create({
+                api: 'apollo_enrich',
+                timestamp: new Date(),
+                metadata: {
+                  request: { domain, name: existingBusiness.name },
+                  response: enrichData
+                }
+              });
+              console.log('[Tracking] Apollo Enrich API call tracked in database.');
+            } catch (error) {
+              console.error('[Tracking] Error saving Apollo Enrich API call to database:', error);
+            }
+          } else {
+            console.log('[PlaceDetails] Could not enrich organization with Apollo.');
+          }
+  
+          // 2. Use org_id, domain, or name to search for decision makers
+          let peopleBody = {
+            api_key: apolloApiKey,
+            person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'President', 'General Manager'],
+            page: 1,
+            per_page: 5,
+            email_required: true,
+            reveal_personal_emails: true,
+            contact_email_status: ['verified', 'unverified'],
+            show_personal_emails: true,
+          };
 
-    // Detect locations from the homepage HTML
-    console.log(`[PlaceDetails] Detecting locations from homepage HTML`);
-    const detectLocations = (html) => {
-      let locationSet = new Set();
-      let hasLocationsPage = false;
-      
-      // Filter for common navigation items and menu entries to exclude
-      const commonNavItems = [
-        'find', 'search', 'view', 'all', 'more', 'about', 'contact', 
-        'home', 'menu', 'login', 'sign', 'join', 'member', 'account',
-        'help', 'support', 'faq', 'hours', 'amenities', 'class', 'schedule',
-        'pricing', 'coach', 'trainer', 'policy', 'privacy', 'terms',
-        'skip', 'content', 'directions', 'map', 'maps', 'navigate',
-        'phone', 'call', 'tel', 'email', 'mail', 'subscribe',
-        'online', 'store', 'grocery', 'story', 'www', 'http', 'https',
-        'shop', 'cart', 'checkout', 'order', 'delivery', 'pickup',
-        'blog', 'news', 'events', 'gallery', 'photos', 'careers', 'jobs'
-      ];
-      
-      const isCommonNavItem = (text) => {
-        const lowerText = text.toLowerCase();
-        
-        // Check if it's a common navigation item
-        if (commonNavItems.some(item => lowerText.includes(item))) {
-          return true;
-        }
-        
-        // Check if it's a phone number
-        if (/^\d{3}[-\s]?\d{3}[-\s]?\d{4}$/.test(lowerText.replace(/[^\d\s-]/g, '').trim())) {
-          return true;
-        }
-        
-        // Check if it's just a number
-        if (/^\d+$/.test(lowerText.replace(/[^\d]/g, ''))) {
-          return true;
-        }
-        
-        // Check if it's an email address
-        if (/@/.test(lowerText)) {
-          return true;
-        }
-        
-        // Check if it's a URL or domain
-        if (lowerText.includes('.org') || lowerText.includes('.com') || lowerText.includes('.net')) {
-          return true;
-        }
-        
-        // Check if it's too short to be a meaningful location
-        if (lowerText.length < 4) {
-          return true;
-        }
-        
-        return false;
-      };
-    
-      // Pattern 1: Look for section headings like "Our Locations"
-      const locationSectionRegex = /<(?:h\d|div)[^>]*>(?:Our\s+Locations|Find\s+a\s+Location|Locations|Our\s+Gyms|Our\s+Stores|Our\s+Centers|Find\s+Us)[^<]*<\/(?:h\d|div)>/i;
-      const hasLocationSection = locationSectionRegex.test(html);
-      if (hasLocationSection) {
-        console.log('[PlaceDetails] Found location section heading');
-        hasLocationsPage = true;
-      }
-      
-      // Pattern 2: Location selector dropdowns
-      const locationDropdownRegex = /<select[^>]*>(?:[^<]*<option[^>]*>[^<]*<\/option>)+[^<]*<\/select>/i;
-      const hasLocationDropdown = locationDropdownRegex.test(html);
-      if (hasLocationDropdown) {
-        console.log('[PlaceDetails] Found location dropdown selector');
-        hasLocationsPage = true;
-      }
-      
-      // Pattern 3: Navigation menu with "locations" or similar text
-      const locationMenuRegex = /<(?:a|li|div)[^>]*(?:href|id|class)=["'][^"']*(?:location|store|branch)s?[^"']*["'][^>]*>(?:[^<]*locations[^<]*|[^<]*stores[^<]*|[^<]*branches[^<]*)<\/(?:a|li|div)>/i;
-      const hasLocationMenu = locationMenuRegex.test(html);
-      if (hasLocationMenu) {
-        console.log('[PlaceDetails] Found locations menu item');
-        hasLocationsPage = true;
-        
-        // Try to find location sub-menu items
-        // Look for menu items near the locations menu item
-        const menuSectionRegex = /<(?:ul|div|nav)[^>]*>(?:[\s\S]*?locations[\s\S]*?)<\/(?:ul|div|nav)>/i;
-        const menuSectionMatch = html.match(menuSectionRegex);
-        
-        if (menuSectionMatch && menuSectionMatch[0]) {
-          const menuSection = menuSectionMatch[0];
-          
-          // Look for sub-menu items that might be locations
-          const subMenuItemRegex = /<(?:a|li)[^>]*>([^<]+)<\/(?:a|li)>/gi;
-          const subMenuItems = Array.from(menuSection.matchAll(subMenuItemRegex));
-          
-          for (const subMenuItem of subMenuItems) {
-            const itemText = subMenuItem[1].trim();
-            // Filter out common navigation items and only keep likely location names
-            if (itemText && 
-                itemText.length > 5 && 
-                !isCommonNavItem(itemText) && 
-                (itemText.includes(' ') || /[A-Z][a-z]+ [A-Z][a-z]+/.test(itemText))) {
-              locationSet.add(itemText);
+          if (orgId) {
+            peopleBody['organization_ids'] = [orgId];
+          } else if (domain) {
+            peopleBody['q_organization_domains'] = [domain];
+          } else {
+            console.log(`[PlaceDetails] Falling back to Apollo search by organization name: "${businessName}"`);
+            peopleBody['q_organization_names'] = [businessName];
+          }
+
+          // Conditionally add location filtering
+          // This helps distinguish local businesses from national chains when no website is found.
+          const isLargeCompany = !!(enrichedOrg && enrichedOrg.estimated_num_employees > 50);
+          console.log(`[PlaceDetails] Company is considered large: ${isLargeCompany}`);
+          if (existingBusiness.address && !isLargeCompany) {
+            const addressParts = existingBusiness.address.split(', ');
+            if (addressParts.length >= 2) {
+              const city = addressParts[addressParts.length - 2];
+              const state = addressParts[addressParts.length - 1].split(' ')[0];
+              peopleBody['person_locations'] = [`${city}, ${state}`];
+              console.log(`[PlaceDetails] Added location filter to Apollo search: ${city}, ${state}`);
             }
           }
+
+          console.log('[PlaceDetails] Apollo People API request:', peopleBody);
+          const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'x-api-key': apolloApiKey,
+            },
+            body: JSON.stringify(peopleBody),
+          });
+
+          if (!peopleRes.ok) {
+            const errorText = await peopleRes.text();
+            console.error(`[PlaceDetails] Apollo People API error: ${peopleRes.status}`, errorText);
+            throw new Error(`Apollo People API failed with status ${peopleRes.status}`);
+          }
+
+          const peopleData = await peopleRes.json();
+          console.log('[PlaceDetails] Apollo People API response:', JSON.stringify(peopleData, null, 2));
+          console.log('[PlaceDetails] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
+  
+          // Track Apollo People Search API call
+          try {
+            await ApiCallLog.create({
+              api: 'apollo_people_search',
+              timestamp: new Date(),
+              metadata: {
+                request: peopleBody,
+                response: peopleData
+              }
+            });
+            console.log('[Tracking] Apollo People Search API call tracked in database.');
+          } catch (error) {
+            console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
+          }
+  
+          // Store decision makers info
+          decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
+            let email = person.email;
+            // If email is locked, try to enrich
+            if (
+              (!email || email === 'email_not_unlocked@domain.com') &&
+              person.id
+            ) {
+              try {
+                const matchBody = { api_key: apolloApiKey, id: person.id };
+                const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Cache-Control': 'no-cache',
+                    'x-api-key': apolloApiKey,
+                  },
+                  body: JSON.stringify(matchBody),
+                });
+                const enrichData = await enrichRes.json();
+                if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
+                  email = enrichData.person.email;
+                } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
+                  email = person.personal_emails[0];
+                }
+                
+                // Track Apollo API call
+                try {
+                  await ApiCallLog.create({
+                    api: 'apollo_person_match',
+                    timestamp: new Date(),
+                    metadata: {
+                      request: matchBody,
+                      response: enrichData
+                    }
+                  });
+                  console.log('[Tracking] Apollo Person Match API call tracked in database.');
+                } catch (error) {
+                  console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
+                }
+              } catch (err) {
+                console.log('[Apollo] Error enriching person:', person.id, err);
+              }
+            } else if (
+              (!email || email === 'email_not_unlocked@domain.com') &&
+              Array.isArray(person.personal_emails) &&
+              person.personal_emails.length > 0
+            ) {
+              email = person.personal_emails[0];
+            }
+            return {
+              name: person.name,
+              title: person.title,
+              email,
+              linkedin_url: person.linkedin_url,
+              email_status: person.email_status,
+            };
+          }));
+  
+          // Update the business in the database
+          existingBusiness.decisionMakers = decisionMakers;
+          existingBusiness.apolloAttempted = true;
+          if (enrichedOrg) {
+            existingBusiness.enriched = enrichedOrg;
+          }
+          await existingBusiness.save();
+          console.log('[PlaceDetails] Saved Apollo decision makers to database:', {
+            businessId: existingBusiness.id,
+            businessName: existingBusiness.name,
+            decisionMakersCount: decisionMakers.length,
+            apolloAttempted: true,
+            decisionMakers: decisionMakers.map(dm => ({ name: dm.name, title: dm.title }))
+          });
+
+        } catch (error) {
+            console.error('[PlaceDetails] Apollo API error:', error);
+            // Even if Apollo API fails, we should still save that we attempted Apollo enrichment
+            existingBusiness.decisionMakers = [];
+            existingBusiness.apolloAttempted = true;
+            await existingBusiness.save();
+            console.log('[PlaceDetails] Saved empty Apollo decision makers due to API error');
         }
+      } else {
+        console.log('[PlaceDetails] Skipping Apollo enrichment: missing existing business data or API key.');
       }
-      
-      // Pattern 4: Location links with city/state patterns in a locations section
-      // First try to identify a locations section
-      let locationSectionHtml = '';
-      const locationDivRegex = /<(?:div|section|ul)[^>]*(?:id|class)=["'][^"']*(?:location|store|gym|center)s?[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|section|ul)>/gi;
-      const locationDivMatches = Array.from(html.matchAll(locationDivRegex));
-      
-      for (const match of locationDivMatches) {
-        if (match[1] && match[1].length > 50) { // Ensure it's a substantial section
-          locationSectionHtml += match[1];
-        }
+    } else {
+      // Standard enrichment (not Apollo)
+      if (!website) {
+        console.log('[PlaceDetails] No website available for standard enrichment, stopping.');
+        // If there's no website, we can't scrape anything.
+        // Return the data we have so far.
+        return res.json({
+          website: null,
+          formatted_phone_number: phone,
+          emails: [],
+          numLocations: existingBusiness?.numLocations || 1,
+          locationNames: existingBusiness?.locationNames || [],
+          decisionMakers: [],
+          business_name: existingBusiness?.name,
+          usedPuppeteer: false
+        });
       }
-      
-      // If we found a locations section, use that for extraction
-      const htmlToSearch = locationSectionHtml || html;
-      
-      // Extract location links from the appropriate HTML
-      const locationLinkRegex = /<a[^>]*href=["']([^"']*(?:locations|stores|gyms|centers)\/[^"']*)["'][^>]*>([^<]+)<\/a>/gi;
-      const locationLinks = Array.from(htmlToSearch.matchAll(locationLinkRegex));
-      
-      // Extract location names from links
-      for (const match of locationLinks) {
-        const locationName = match[2].trim();
-        if (locationName && 
-            locationName.length > 3 && 
-            !isCommonNavItem(locationName)) {
-          locationSet.add(locationName);
-        }
-      }
-      
-      // Pattern 5: City-state patterns in text (e.g., "Denver, CO")
-      // Focus on paragraphs and list items that might contain location information
-      const cityStateRegex = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})\b/g;
-      const cityStateMatches = Array.from(htmlToSearch.matchAll(cityStateRegex));
-      
-      for (const match of cityStateMatches) {
-        const locationName = `${match[1]}, ${match[2]}`;
-        // Filter out very common city-state combinations that might appear in footers
-        if (!isCommonNavItem(locationName)) {
-          locationSet.add(locationName);
-        }
-      }
-      
-      // Pattern 6: Look for address patterns with street numbers
-      const addressRegex = /\b\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Plaza|Plz|Square|Sq)\.?)\b,\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s+[A-Z]{2}\s+\d{5}/gi;
-      const addressMatches = Array.from(htmlToSearch.matchAll(addressRegex));
-      
-      for (const match of addressMatches) {
-        if (match[0]) {
-          locationSet.add(match[0].trim());
-        }
-      }
-      
-      // Pattern 7: Look for location tables with multiple rows
-      const tableRegex = /<table[^>]*>[\s\S]*?<\/table>/gi;
-      const tableMatches = Array.from(html.matchAll(tableRegex));
-      
-      for (const tableMatch of tableMatches) {
-        if (tableMatch[0] && tableMatch[0].toLowerCase().includes('location')) {
-          const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-          const rowMatches = Array.from(tableMatch[0].matchAll(rowRegex));
+
+      // 1. Scrape homepage HTML using progressive strategy
+      console.log(`[PlaceDetails] Fetching website: ${website}`);
+      const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
+      console.log(`[PlaceDetails] Successfully fetched homepage HTML: ${homepageHtml.length} bytes (Puppeteer: ${homepageUsedPuppeteer})`);
+  
+      // Track if Puppeteer was used for any request
+      usedPuppeteerForAnyRequest = homepageUsedPuppeteer;
+  
+      // Detect locations from the homepage HTML
+      console.log(`[PlaceDetails] Detecting locations from homepage HTML`);
+      const detectLocations = (html) => {
+        let locationSet = new Set();
+        let hasLocationsPage = false;
+        
+        // Filter for common navigation items and menu entries to exclude
+        const commonNavItems = [
+          'find', 'search', 'view', 'all', 'more', 'about', 'contact', 
+          'home', 'menu', 'login', 'sign', 'join', 'member', 'account',
+          'help', 'support', 'faq', 'hours', 'amenities', 'class', 'schedule',
+          'pricing', 'coach', 'trainer', 'policy', 'privacy', 'terms',
+          'skip', 'content', 'directions', 'map', 'maps', 'navigate',
+          'phone', 'call', 'tel', 'email', 'mail', 'subscribe',
+          'online', 'store', 'grocery', 'story', 'www', 'http', 'https',
+          'shop', 'cart', 'checkout', 'order', 'delivery', 'pickup',
+          'blog', 'news', 'events', 'gallery', 'photos', 'careers', 'jobs'
+        ];
+        
+        const isCommonNavItem = (text) => {
+          const lowerText = text.toLowerCase();
           
-          for (const rowMatch of rowMatches) {
-            const cityStateInRow = rowMatch[1].match(cityStateRegex);
-            if (cityStateInRow) {
-              for (const cityState of cityStateInRow) {
-                locationSet.add(cityState.trim());
+          // Check if it's a common navigation item
+          if (commonNavItems.some(item => lowerText.includes(item))) {
+            return true;
+          }
+          
+          // Check if it's a phone number
+          if (/^\d{3}[-\s]?\d{3}[-\s]?\d{4}$/.test(lowerText.replace(/[^\d\s-]/g, '').trim())) {
+            return true;
+          }
+          
+          // Check if it's just a number
+          if (/^\d+$/.test(lowerText.replace(/[^\d]/g, ''))) {
+            return true;
+          }
+          
+          // Check if it's an email address
+          if (/@/.test(lowerText)) {
+            return true;
+          }
+          
+          // Check if it's a URL or domain
+          if (lowerText.includes('.org') || lowerText.includes('.com') || lowerText.includes('.net')) {
+            return true;
+          }
+          
+          // Check if it's too short to be a meaningful location
+          if (lowerText.length < 4) {
+            return true;
+          }
+          
+          return false;
+        };
+      
+        // Pattern 1: Look for section headings like "Our Locations"
+        const locationSectionRegex = /<(?:h\d|div)[^>]*>(?:Our\s+Locations|Find\s+a\s+Location|Locations|Our\s+Gyms|Our\s+Stores|Our\s+Centers|Find\s+Us)[^<]*<\/(?:h\d|div)>/i;
+        const hasLocationSection = locationSectionRegex.test(html);
+        if (hasLocationSection) {
+          console.log('[PlaceDetails] Found location section heading');
+          hasLocationsPage = true;
+        }
+        
+        // Pattern 2: Location selector dropdowns
+        const locationDropdownRegex = /<select[^>]*>(?:[^<]*<option[^>]*>[^<]*<\/option>)+[^<]*<\/select>/i;
+        const hasLocationDropdown = locationDropdownRegex.test(html);
+        if (hasLocationDropdown) {
+          console.log('[PlaceDetails] Found location dropdown selector');
+          hasLocationsPage = true;
+        }
+        
+        // Pattern 3: Navigation menu with "locations" or similar text
+        const locationMenuRegex = /<(?:a|li|div)[^>]*(?:href|id|class)=["'][^"']*(?:location|store|branch)s?[^"']*["'][^>]*>(?:[^<]*locations[^<]*|[^<]*stores[^<]*|[^<]*branches[^<]*)<\/(?:a|li|div)>/i;
+        const hasLocationMenu = locationMenuRegex.test(html);
+        if (hasLocationMenu) {
+          console.log('[PlaceDetails] Found locations menu item');
+          hasLocationsPage = true;
+          
+          // Try to find location sub-menu items
+          // Look for menu items near the locations menu item
+          const menuSectionRegex = /<(?:ul|div|nav)[^>]*>(?:[\s\S]*?locations[\s\S]*?)<\/(?:ul|div|nav)>/i;
+          const menuSectionMatch = html.match(menuSectionRegex);
+          
+          if (menuSectionMatch && menuSectionMatch[0]) {
+            const menuSection = menuSectionMatch[0];
+            
+            // Look for sub-menu items that might be locations
+            const subMenuItemRegex = /<(?:a|li)[^>]*>([^<]+)<\/(?:a|li)>/gi;
+            const subMenuItems = Array.from(menuSection.matchAll(subMenuItemRegex));
+            
+            for (const subMenuItem of subMenuItems) {
+              const itemText = subMenuItem[1].trim();
+              // Filter out common navigation items and only keep likely location names
+              if (itemText && 
+                  itemText.length > 5 && 
+                  !isCommonNavItem(itemText) && 
+                  (itemText.includes(' ') || /[A-Z][a-z]+ [A-Z][a-z]+/.test(itemText))) {
+                locationSet.add(itemText);
               }
             }
           }
         }
-      }
-      
-      // Pattern 8: Menu with location sub-items
-      // This pattern specifically looks for navigation structures with location names
-      try {
-        // Find navigation elements with role="menu" or class containing "menu"
-        const navMenuRegex = /<(?:ul|nav|div)[^>]*(?:role=["']menu["']|class=["'][^"']*(?:menu|nav)[^"']*["'])[^>]*>[\s\S]*?<\/(?:ul|nav|div)>/gi;
-        const navMenuMatches = Array.from(html.matchAll(navMenuRegex));
         
-        for (const navMatch of navMenuMatches) {
-          if (navMatch[0]) {
-            const navSection = navMatch[0];
+        // Pattern 4: Location links with city/state patterns in a locations section
+        // First try to identify a locations section
+        let locationSectionHtml = '';
+        const locationDivRegex = /<(?:div|section|ul)[^>]*(?:id|class)=["'][^"']*(?:location|store|gym|center)s?[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|section|ul)>/gi;
+        const locationDivMatches = Array.from(html.matchAll(locationDivRegex));
+        
+        for (const match of locationDivMatches) {
+          if (match[1] && match[1].length > 50) { // Ensure it's a substantial section
+            locationSectionHtml += match[1];
+          }
+        }
+        
+        // If we found a locations section, use that for extraction
+        const htmlToSearch = locationSectionHtml || html;
+        
+        // Extract location links from the appropriate HTML
+        const locationLinkRegex = /<a[^>]*href=["']([^"']*(?:locations|stores|gyms|centers)\/[^"']*)["'][^>]*>([^<]+)<\/a>/gi;
+        const locationLinks = Array.from(htmlToSearch.matchAll(locationLinkRegex));
+        
+        // Extract location names from links
+        for (const match of locationLinks) {
+          const locationName = match[2].trim();
+          if (locationName && 
+              locationName.length > 3 && 
+              !isCommonNavItem(locationName)) {
+            locationSet.add(locationName);
+          }
+        }
+        
+        // Pattern 5: City-state patterns in text (e.g., "Denver, CO")
+        // Focus on paragraphs and list items that might contain location information
+        const cityStateRegex = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})\b/g;
+        const cityStateMatches = Array.from(htmlToSearch.matchAll(cityStateRegex));
+        
+        for (const match of cityStateMatches) {
+          const locationName = `${match[1]}, ${match[2]}`;
+          // Filter out very common city-state combinations that might appear in footers
+          if (!isCommonNavItem(locationName)) {
+            locationSet.add(locationName);
+          }
+        }
+        
+        // Pattern 6: Look for address patterns with street numbers
+        const addressRegex = /\b\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Plaza|Plz|Square|Sq)\.?)\b,\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s+[A-Z]{2}\s+\d{5}/gi;
+        const addressMatches = Array.from(htmlToSearch.matchAll(addressRegex));
+        
+        for (const match of addressMatches) {
+          if (match[0]) {
+            locationSet.add(match[0].trim());
+          }
+        }
+        
+        // Pattern 7: Look for location tables with multiple rows
+        const tableRegex = /<table[^>]*>[\s\S]*?<\/table>/gi;
+        const tableMatches = Array.from(html.matchAll(tableRegex));
+        
+        for (const tableMatch of tableMatches) {
+          if (tableMatch[0] && tableMatch[0].toLowerCase().includes('location')) {
+            const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+            const rowMatches = Array.from(tableMatch[0].matchAll(rowRegex));
             
-            // Look for menu items with "locations" text that have submenus
-            const locationMenuItemRegex = /<li[^>]*>[\s\S]*?(?:locations?|stores?|branches?|shops?|cafes?)[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/gi;
-            const locationMenuItems = Array.from(navSection.matchAll(locationMenuItemRegex));
-            
-            for (const menuItem of locationMenuItems) {
-              if (menuItem[1]) {
-                const submenu = menuItem[1];
-                
-                // Extract location names from submenu items
-                const submenuItemRegex = /<li[^>]*>[\s\S]*?<a[^>]*>[\s\S]*?<span[^>]*data-link-text=["']([^"']+)["'][^>]*>[\s\S]*?<\/span>/gi;
-                const submenuItems = Array.from(submenu.matchAll(submenuItemRegex));
-                
-                if (submenuItems.length > 0) {
-                  console.log(`[PlaceDetails] Found ${submenuItems.length} location submenu items`);
-                  hasLocationsPage = true;
+            for (const rowMatch of rowMatches) {
+              const cityStateInRow = rowMatch[1].match(cityStateRegex);
+              if (cityStateInRow) {
+                for (const cityState of cityStateInRow) {
+                  locationSet.add(cityState.trim());
+                }
+              }
+            }
+          }
+        }
+        
+        // Pattern 8: Menu with location sub-items
+        // This pattern specifically looks for navigation structures with location names
+        try {
+          // Find navigation elements with role="menu" or class containing "menu"
+          const navMenuRegex = /<(?:ul|nav|div)[^>]*(?:role=["']menu["']|class=["'][^"']*(?:menu|nav)[^"']*["'])[^>]*>[\s\S]*?<\/(?:ul|nav|div)>/gi;
+          const navMenuMatches = Array.from(html.matchAll(navMenuRegex));
+          
+          for (const navMatch of navMenuMatches) {
+            if (navMatch[0]) {
+              const navSection = navMatch[0];
+              
+              // Look for menu items with "locations" text that have submenus
+              const locationMenuItemRegex = /<li[^>]*>[\s\S]*?(?:locations?|stores?|branches?|shops?|cafes?)[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/gi;
+              const locationMenuItems = Array.from(navSection.matchAll(locationMenuItemRegex));
+              
+              for (const menuItem of locationMenuItems) {
+                if (menuItem[1]) {
+                  const submenu = menuItem[1];
                   
-                  for (const item of submenuItems) {
-                    if (item[1]) {
-                      const locationName = item[1].trim();
-                      if (locationName && locationName.length > 3) {
-                        locationSet.add(locationName);
+                  // Extract location names from submenu items
+                  const submenuItemRegex = /<li[^>]*>[\s\S]*?<a[^>]*>[\s\S]*?<span[^>]*data-link-text=["']([^"']+)["'][^>]*>[\s\S]*?<\/span>/gi;
+                  const submenuItems = Array.from(submenu.matchAll(submenuItemRegex));
+                  
+                  if (submenuItems.length > 0) {
+                    console.log(`[PlaceDetails] Found ${submenuItems.length} location submenu items`);
+                    hasLocationsPage = true;
+                    
+                    for (const item of submenuItems) {
+                      if (item[1]) {
+                        const locationName = item[1].trim();
+                        if (locationName && locationName.length > 3) {
+                          locationSet.add(locationName);
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Alternative pattern for submenu items
+                  if (submenuItems.length === 0) {
+                    const altSubmenuItemRegex = /<li[^>]*>[\s\S]*?<a[^>]*>[\s\S]*?<span[^>]*>(.*?)<\/span>/gi;
+                    const altSubmenuItems = Array.from(submenu.matchAll(altSubmenuItemRegex));
+                    
+                    if (altSubmenuItems.length > 0) {
+                      console.log(`[PlaceDetails] Found ${altSubmenuItems.length} alternative location submenu items`);
+                      hasLocationsPage = true;
+                      
+                      for (const item of altSubmenuItems) {
+                        if (item[1]) {
+                          // Clean up HTML tags and extract just the text
+                          const locationText = item[1].replace(/<[^>]*>/g, '').trim();
+                          if (locationText && locationText.length > 3 && !isCommonNavItem(locationText)) {
+                            locationSet.add(locationText);
+                          }
+                        }
                       }
                     }
                   }
                 }
+              }
+              
+              // If no submenu found with the specific pattern, try a more general approach
+              if (locationSet.size === 0) {
+                // Look for any menu with "locations" in it, then find all links within it
+                const locationsMenuRegex = /<(?:li|div)[^>]*>[\s\S]*?(?:locations?|stores?|branches?|shops?|cafes?)[\s\S]*?([\s\S]*?)<\/(?:li|div)>/gi;
+                const locationsMenuMatches = Array.from(navSection.matchAll(locationsMenuRegex));
                 
-                // Alternative pattern for submenu items
-                if (submenuItems.length === 0) {
-                  const altSubmenuItemRegex = /<li[^>]*>[\s\S]*?<a[^>]*>[\s\S]*?<span[^>]*>(.*?)<\/span>/gi;
-                  const altSubmenuItems = Array.from(submenu.matchAll(altSubmenuItemRegex));
-                  
-                  if (altSubmenuItems.length > 0) {
-                    console.log(`[PlaceDetails] Found ${altSubmenuItems.length} alternative location submenu items`);
-                    hasLocationsPage = true;
+                for (const locMenu of locationsMenuMatches) {
+                  if (locMenu[1]) {
+                    // Extract links that might be location pages
+                    const locationLinksRegex = /<a[^>]*href=["']([^"']*?)["'][^>]*>([\s\S]*?)<\/a>/gi;
+                    const locationLinks = Array.from(locMenu[1].matchAll(locationLinksRegex));
                     
-                    for (const item of altSubmenuItems) {
-                      if (item[1]) {
-                        // Clean up HTML tags and extract just the text
-                        const locationText = item[1].replace(/<[^>]*>/g, '').trim();
-                        if (locationText && locationText.length > 3 && !isCommonNavItem(locationText)) {
-                          locationSet.add(locationText);
+                    for (const link of locationLinks) {
+                      if (link[2]) {
+                        // Extract text from the link, removing any HTML tags
+                        const linkText = link[2].replace(/<[^>]*>/g, '').trim();
+                        if (linkText && linkText.length > 3 && !isCommonNavItem(linkText)) {
+                          locationSet.add(linkText);
                         }
                       }
                     }
@@ -2247,83 +2876,31 @@ app.get('/api/place-details/:placeId', async (req, res) => {
                 }
               }
             }
-            
-            // If no submenu found with the specific pattern, try a more general approach
-            if (locationSet.size === 0) {
-              // Look for any menu with "locations" in it, then find all links within it
-              const locationsMenuRegex = /<(?:li|div)[^>]*>[\s\S]*?(?:locations?|stores?|branches?|shops?|cafes?)[\s\S]*?([\s\S]*?)<\/(?:li|div)>/gi;
-              const locationsMenuMatches = Array.from(navSection.matchAll(locationsMenuRegex));
-              
-              for (const locMenu of locationsMenuMatches) {
-                if (locMenu[1]) {
-                  // Extract links that might be location pages
-                  const locationLinksRegex = /<a[^>]*href=["']([^"']*?)["'][^>]*>([\s\S]*?)<\/a>/gi;
-                  const locationLinks = Array.from(locMenu[1].matchAll(locationLinksRegex));
-                  
-                  for (const link of locationLinks) {
-                    if (link[2]) {
-                      // Extract text from the link, removing any HTML tags
-                      const linkText = link[2].replace(/<[^>]*>/g, '').trim();
-                      if (linkText && linkText.length > 3 && !isCommonNavItem(linkText)) {
-                        locationSet.add(linkText);
-                      }
-                    }
-                  }
-                }
-              }
-            }
           }
+        } catch (err) {
+          console.log('[PlaceDetails] Error parsing navigation menus:', err.message);
         }
-      } catch (err) {
-        console.log('[PlaceDetails] Error parsing navigation menus:', err.message);
-      }
-      
-      // Pattern 9: Dedicated locations page with list items (like Jo's Coffee)
-      try {
-        // Check if we're on a locations page
-        const isLocationsPage = html.toLowerCase().includes('locations') && 
-                               (html.toLowerCase().includes('<title') && html.toLowerCase().includes('location')) ||
-                               html.match(/\/(locations?|stores?|branches?)\/?\b/i);
         
-        if (isLocationsPage || html.toLowerCase().includes('/locations')) {
-          console.log('[PlaceDetails] Processing dedicated locations page');
-          hasLocationsPage = true;
+        // Pattern 9: Dedicated locations page with list items (like Jo's Coffee)
+        try {
+          // Check if we're on a locations page
+          const isLocationsPage = html.toLowerCase().includes('locations') && 
+                                 (html.toLowerCase().includes('<title') && html.toLowerCase().includes('location')) ||
+                                 html.match(/\/(locations?|stores?|branches?)\/?\b/i);
           
-          // Look for list items that might be locations
-          // First try to find menu items that are likely location names
-          const locationLinkRegex = /<a[^>]*href=["'][^"']*["'][^>]*>([^<]{3,50})<\/a>/gi;
-          const locationLinks = Array.from(html.matchAll(locationLinkRegex));
-          
-          // Filter for items that look like location names
-          for (const link of locationLinks) {
-            if (link[1]) {
-              const locationName = link[1].trim();
-              // Filter out common navigation items and only keep likely location names
-              if (locationName && 
-                  locationName.length > 3 && 
-                  !isCommonNavItem(locationName) &&
-                  !locationName.toLowerCase().includes('location') &&
-                  !locationName.toLowerCase().includes('contact') &&
-                  !locationName.toLowerCase().includes('about') &&
-                  !locationName.toLowerCase().includes('event') &&
-                  !locationName.toLowerCase().includes('shop') &&
-                  !locationName.toLowerCase().includes('order')) {
-                locationSet.add(locationName);
-              }
-            }
-          }
-          
-          // Special case for Jo's Coffee - look for specific location names
-          if (html.toLowerCase().includes('joscoffee.com') || html.toLowerCase().includes('jo\'s coffee')) {
-            console.log('[PlaceDetails] Trying Jo\'s Coffee specific pattern');
+          if (isLocationsPage || html.toLowerCase().includes('/locations')) {
+            console.log('[PlaceDetails] Processing dedicated locations page');
+            hasLocationsPage = true;
             
             // Look for list items that might be locations
-            const josCoffeeRegex = /<li[^>]*>([^<]{3,50})<\/li>/gi;
-            const locationItems = Array.from(html.matchAll(josCoffeeRegex));
+            // First try to find menu items that are likely location names
+            const locationLinkRegex = /<a[^>]*href=["'][^"']*["'][^>]*>([^<]{3,50})<\/a>/gi;
+            const locationLinks = Array.from(html.matchAll(locationLinkRegex));
             
-            for (const item of locationItems) {
-              if (item[1]) {
-                const locationName = item[1].trim();
+            // Filter for items that look like location names
+            for (const link of locationLinks) {
+              if (link[1]) {
+                const locationName = link[1].trim();
                 // Filter out common navigation items and only keep likely location names
                 if (locationName && 
                     locationName.length > 3 && 
@@ -2339,903 +2916,769 @@ app.get('/api/place-details/:placeId', async (req, res) => {
               }
             }
           }
-        }
-      } catch (err) {
-        console.log('[PlaceDetails] Error parsing locations page:', err.message);
-      }
-      
-      // Pattern 10: Extract locations from email addresses
-      try {
-        console.log('[PlaceDetails] Extracting locations from email addresses');
-        // Extract all emails from the HTML
-        const emailRegex = /([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
-        const emailMatches = Array.from(html.matchAll(emailRegex));
-        
-        // Create a map to group emails by domain
-        const emailsByDomain = {};
-        for (const match of emailMatches) {
-          const prefix = match[1].toLowerCase();
-          const domain = match[2].toLowerCase();
-          
-          if (!emailsByDomain[domain]) {
-            emailsByDomain[domain] = [];
-          }
-          emailsByDomain[domain].push(prefix);
+        } catch (err) {
+          console.log('[PlaceDetails] Error parsing locations page:', err.message);
         }
         
-        // Find the domain with the most emails (likely the business domain)
-        let businessDomain = '';
-        let maxEmails = 0;
-        for (const domain in emailsByDomain) {
-          if (emailsByDomain[domain].length > maxEmails) {
-            maxEmails = emailsByDomain[domain].length;
-            businessDomain = domain;
+        // Pattern 10: Extract locations from email addresses
+        try {
+          console.log('[PlaceDetails] Extracting locations from email addresses');
+          // Extract all emails from the HTML
+          const emailRegex = /([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+          const emailMatches = Array.from(html.matchAll(emailRegex));
+          
+          // Create a map to group emails by domain
+          const emailsByDomain = {};
+          for (const match of emailMatches) {
+            const prefix = match[1].toLowerCase();
+            const domain = match[2].toLowerCase();
+            
+            if (!emailsByDomain[domain]) {
+              emailsByDomain[domain] = [];
+            }
+            emailsByDomain[domain].push(prefix);
           }
+          
+          // Find the domain with the most emails (likely the business domain)
+          let businessDomain = '';
+          let maxEmails = 0;
+          for (const domain in emailsByDomain) {
+            if (emailsByDomain[domain].length > maxEmails) {
+              maxEmails = emailsByDomain[domain].length;
+              businessDomain = domain;
+            }
+          }
+          
+          if (businessDomain && emailsByDomain[businessDomain].length > 2) {
+            console.log(`[PlaceDetails] Found ${emailsByDomain[businessDomain].length} emails for domain ${businessDomain}`);
+            
+            // Skip processing if too many emails (likely spam/bots) or from known non-business domains
+            const skipDomains = ['sentry.wixpress.com', 'wixpress.com', 'wix.com', 'google.com', 'facebook.com'];
+            if (skipDomains.some(domain => businessDomain.includes(domain)) || emailsByDomain[businessDomain].length > 50) {
+              console.log(`[PlaceDetails] Skipping email-to-location extraction for domain: ${businessDomain} (too many emails or known non-business domain)`);
+              return;
+            }
+            
+            // Common prefixes that are not locations
+            const commonPrefixes = ['info', 'contact', 'hello', 'support', 'general', 'sales', 'marketing', 'admin', 'catering', 'events'];
+            
+            // Extract location names from email prefixes
+            const locationPrefixes = emailsByDomain[businessDomain].filter(prefix => 
+              !commonPrefixes.includes(prefix) && 
+              prefix.length > 3 && 
+              !prefix.includes('webmaster') &&
+              !prefix.includes('noreply') &&
+              !prefix.includes('no-reply') &&
+              !prefix.includes('donotreply') &&
+              // Additional filters for random strings
+              !/^[a-f0-9]{8,}$/i.test(prefix) && // Skip hex strings
+              !/^\d+$/.test(prefix) && // Skip pure numbers
+              !/^[a-z0-9]{16,}$/i.test(prefix) && // Skip long random strings
+              prefix.length < 20 // Skip very long prefixes
+            );
+            
+            // Only process if we have reasonable candidates
+            if (locationPrefixes.length > 0 && locationPrefixes.length < 10) {
+              // Format location names properly
+              for (const prefix of locationPrefixes) {
+                // Convert camelCase or snake_case to spaces
+                let locationName = prefix
+                  .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
+                  .replace(/_/g, ' ')                   // snake_case to spaces
+                  .replace(/([a-z])(\d)/g, '$1 $2')     // separate numbers from letters
+                  .trim();
+                
+                // Capitalize first letter of each word
+                locationName = locationName.split(' ')
+                  .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                  .join(' ');
+                
+                if (locationName.length > 3 && locationName.length < 30) {
+                  console.log(`[PlaceDetails] Found location from email: ${locationName}`);
+                  locationSet.add(locationName);
+                }
+              }
+            } else {
+              console.log(`[PlaceDetails] Skipping email-to-location extraction: too many candidates (${locationPrefixes.length}) or no valid candidates`);
+            }
+          }
+        } catch (err) {
+          console.log('[PlaceDetails] Error extracting locations from emails:', err.message);
         }
         
-        if (businessDomain && emailsByDomain[businessDomain].length > 2) {
-          console.log(`[PlaceDetails] Found ${emailsByDomain[businessDomain].length} emails for domain ${businessDomain}`);
-          
-          // Skip processing if too many emails (likely spam/bots) or from known non-business domains
-          const skipDomains = ['sentry.wixpress.com', 'wixpress.com', 'wix.com', 'google.com', 'facebook.com'];
-          if (skipDomains.some(domain => businessDomain.includes(domain)) || emailsByDomain[businessDomain].length > 50) {
-            console.log(`[PlaceDetails] Skipping email-to-location extraction for domain: ${businessDomain} (too many emails or known non-business domain)`);
-            return;
-          }
-          
-          // Common prefixes that are not locations
-          const commonPrefixes = ['info', 'contact', 'hello', 'support', 'general', 'sales', 'marketing', 'admin', 'catering', 'events'];
-          
-          // Extract location names from email prefixes
-          const locationPrefixes = emailsByDomain[businessDomain].filter(prefix => 
-            !commonPrefixes.includes(prefix) && 
-            prefix.length > 3 && 
-            !prefix.includes('webmaster') &&
-            !prefix.includes('noreply') &&
-            !prefix.includes('no-reply') &&
-            !prefix.includes('donotreply') &&
-            // Additional filters for random strings
-            !/^[a-f0-9]{8,}$/i.test(prefix) && // Skip hex strings
-            !/^\d+$/.test(prefix) && // Skip pure numbers
-            !/^[a-z0-9]{16,}$/i.test(prefix) && // Skip long random strings
-            prefix.length < 20 // Skip very long prefixes
-          );
-          
-          // Only process if we have reasonable candidates
-          if (locationPrefixes.length > 0 && locationPrefixes.length < 10) {
-            // Format location names properly
-            for (const prefix of locationPrefixes) {
-              // Convert camelCase or snake_case to spaces
-              let locationName = prefix
-                .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
-                .replace(/_/g, ' ')                   // snake_case to spaces
-                .replace(/([a-z])(\d)/g, '$1 $2')     // separate numbers from letters
-                .trim();
+        // Pattern 11: Extract location from URL path
+        try {
+      if (website) {
+            const url = new URL(website);
+            const pathParts = url.pathname.split('/').filter(part => part.length > 0);
+            
+            if (pathParts.length > 0) {
+              // Extract potential location names from URL path segments
+              for (const part of pathParts) {
+                // Skip common URL parts
+                if (['www', 'http', 'https', 'index', 'html', 'php', 'asp', 'jsp'].includes(part.toLowerCase())) {
+                  continue;
+                }
+                
+                // Convert dashes to spaces and format
+                const locationCandidate = part
+                  .replace(/-/g, ' ')
+                  .replace(/_/g, ' ')
+                  .trim();
+                
+                // Check if it's a potential location name
+                if (locationCandidate.length > 3 && 
+                    !isCommonNavItem(locationCandidate)) {
+                  
+                  // Check for location keywords
+                  const locationKeywords = ['east', 'west', 'north', 'south', 'downtown', 'uptown', 
+                                          'central', 'highland', 'heights', 'midtown', 'plaza', 
+                                          'square', 'park', 'village', 'mall', 'center', 'congress'];
+                  
+                  const hasLocationKeyword = locationKeywords.some(keyword => 
+                    locationCandidate.toLowerCase().includes(keyword));
+                  
+                  // Add if it contains a location keyword or has specific business identifiers
+                  if (hasLocationKeyword || 
+                      (url.hostname.includes('joscoffee') && locationCandidate.toLowerCase().includes('congress'))) {
+                    console.log(`[PlaceDetails] Found location from URL path: ${locationCandidate}`);
+                    
+                    // Format the location name properly
+                    const formattedLocation = locationCandidate.split(' ')
+                      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                      .join(' ');
+                    
+                    locationSet.add(formattedLocation);
+                    
+                    // For Jo's Coffee specifically, if URL contains "congress", add "South Congress" as a location
+                    if (url.hostname.includes('joscoffee') && 
+                        locationCandidate.toLowerCase().includes('congress')) {
+                      console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee');
+                      locationSet.add('South Congress');
+                    }
+                  }
+                }
+              }
               
-              // Capitalize first letter of each word
-              locationName = locationName.split(' ')
-                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                .join(' ');
-              
-              if (locationName.length > 3 && locationName.length < 30) {
-                console.log(`[PlaceDetails] Found location from email: ${locationName}`);
-                locationSet.add(locationName);
+              // Special case for Jo's Coffee - if URL contains "south-congress", ensure we add "South Congress"
+              if (url.hostname.includes('joscoffee') && 
+                  url.pathname.toLowerCase().includes('south-congress')) {
+                console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee from URL path');
+                locationSet.add('South Congress');
               }
             }
-          } else {
-            console.log(`[PlaceDetails] Skipping email-to-location extraction: too many candidates (${locationPrefixes.length}) or no valid candidates`);
           }
+        } catch (err) {
+          console.log('[PlaceDetails] Error extracting location from URL path:', err.message);
         }
-      } catch (err) {
-        console.log('[PlaceDetails] Error extracting locations from emails:', err.message);
-      }
-      
-      // Pattern 11: Extract location from URL path
-      try {
-    if (website) {
-          const url = new URL(website);
-          const pathParts = url.pathname.split('/').filter(part => part.length > 0);
-          
-          if (pathParts.length > 0) {
-            // Extract potential location names from URL path segments
-            for (const part of pathParts) {
-              // Skip common URL parts
-              if (['www', 'http', 'https', 'index', 'html', 'php', 'asp', 'jsp'].includes(part.toLowerCase())) {
-                continue;
-              }
-              
-              // Convert dashes to spaces and format
-              const locationCandidate = part
-                .replace(/-/g, ' ')
-                .replace(/_/g, ' ')
-                .trim();
-              
-              // Check if it's a potential location name
-              if (locationCandidate.length > 3 && 
-                  !isCommonNavItem(locationCandidate)) {
-                
-                // Check for location keywords
-                const locationKeywords = ['east', 'west', 'north', 'south', 'downtown', 'uptown', 
-                                        'central', 'highland', 'heights', 'midtown', 'plaza', 
-                                        'square', 'park', 'village', 'mall', 'center', 'congress'];
-                
-                const hasLocationKeyword = locationKeywords.some(keyword => 
-                  locationCandidate.toLowerCase().includes(keyword));
-                
-                // Add if it contains a location keyword or has specific business identifiers
-                if (hasLocationKeyword || 
-                    (url.hostname.includes('joscoffee') && locationCandidate.toLowerCase().includes('congress'))) {
-                  console.log(`[PlaceDetails] Found location from URL path: ${locationCandidate}`);
-                  
-                  // Format the location name properly
-                  const formattedLocation = locationCandidate.split(' ')
-                    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-                    .join(' ');
-                  
-                  locationSet.add(formattedLocation);
-                  
-                  // For Jo's Coffee specifically, if URL contains "congress", add "South Congress" as a location
-                  if (url.hostname.includes('joscoffee') && 
-                      locationCandidate.toLowerCase().includes('congress')) {
-                    console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee');
-                    locationSet.add('South Congress');
+        
+        // Pattern 12: Extract location from page title
+        try {
+          const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+          if (titleMatch && titleMatch[1]) {
+            const title = titleMatch[1].trim();
+            
+            // Look for location indicators in title
+            const locationKeywords = ['east', 'west', 'north', 'south', 'downtown', 'uptown', 
+                                     'central', 'highland', 'heights', 'midtown', 'plaza', 
+                                     'square', 'park', 'village', 'mall', 'center', 'congress'];
+            
+            // Check if title contains location keywords
+            for (const keyword of locationKeywords) {
+              if (title.toLowerCase().includes(keyword)) {
+                // Try to extract the location part from the title
+                const parts = title.split(/[-–—|&,]+/);
+                for (const part of parts) {
+                  const cleanPart = part.trim();
+                  if (cleanPart.toLowerCase().includes(keyword) && 
+                      cleanPart.length > 3 && 
+                      !isCommonNavItem(cleanPart)) {
+                    console.log(`[PlaceDetails] Found location from page title: ${cleanPart}`);
+                    locationSet.add(cleanPart);
+                    
+                    // Special case for Jo's Coffee
+                    if (website && website.includes('joscoffee') && 
+                        cleanPart.toLowerCase().includes('congress')) {
+                      console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee from title');
+                      locationSet.add('South Congress');
+                    }
                   }
                 }
               }
             }
-            
-            // Special case for Jo's Coffee - if URL contains "south-congress", ensure we add "South Congress"
-            if (url.hostname.includes('joscoffee') && 
-                url.pathname.toLowerCase().includes('south-congress')) {
-              console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee from URL path');
-              locationSet.add('South Congress');
-            }
           }
+        } catch (err) {
+          console.log('[PlaceDetails] Error extracting location from page title:', err.message);
         }
-      } catch (err) {
-        console.log('[PlaceDetails] Error extracting location from URL path:', err.message);
-      }
-      
-      // Pattern 12: Extract location from page title
-      try {
-        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-        if (titleMatch && titleMatch[1]) {
-          const title = titleMatch[1].trim();
+        
+        // Special case handling for common business patterns
+        try {
+          // Jo's Coffee - ensure South Congress is included
+          if (website && website.includes('joscoffee') && 
+              (website.toLowerCase().includes('congress') || 
+               html.toLowerCase().includes('south congress'))) {
+            console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee (special case)');
+            locationSet.add('South Congress');
+          }
+        } catch (err) {
+          console.log('[PlaceDetails] Error in special case handling:', err.message);
+        }
+        
+        // Pattern 13: Extract locations from link text with location indicators
+        try {
+          // Look for links that might contain location names
+          const linkRegex = /<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+          const linkMatches = Array.from(html.matchAll(linkRegex));
           
-          // Look for location indicators in title
-          const locationKeywords = ['east', 'west', 'north', 'south', 'downtown', 'uptown', 
-                                   'central', 'highland', 'heights', 'midtown', 'plaza', 
-                                   'square', 'park', 'village', 'mall', 'center', 'congress'];
+          // Location indicators that often appear in URLs or link text
+          const locationIndicators = [
+            'east', 'west', 'north', 'south', 'downtown', 'uptown', 
+            'central', 'highland', 'heights', 'midtown', 'plaza', 
+            'square', 'park', 'village', 'mall', 'center', 'congress'
+          ];
           
-          // Check if title contains location keywords
-          for (const keyword of locationKeywords) {
-            if (title.toLowerCase().includes(keyword)) {
-              // Try to extract the location part from the title
-              const parts = title.split(/[-–—|&,]+/);
-              for (const part of parts) {
-                const cleanPart = part.trim();
-                if (cleanPart.toLowerCase().includes(keyword) && 
-                    cleanPart.length > 3 && 
-                    !isCommonNavItem(cleanPart)) {
-                  console.log(`[PlaceDetails] Found location from page title: ${cleanPart}`);
-                  locationSet.add(cleanPart);
-                  
-                  // Special case for Jo's Coffee
-                  if (website && website.includes('joscoffee') && 
-                      cleanPart.toLowerCase().includes('congress')) {
-                    console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee from title');
-                    locationSet.add('South Congress');
-                  }
-                }
+          for (const match of linkMatches) {
+            const url = match[1];
+            let linkText = match[2].replace(/<[^>]*>/g, '').trim(); // Remove any HTML tags
+            
+            // Skip very short link text
+            if (linkText.length < 4) continue;
+            
+            // Check if the URL or link text contains location indicators
+            const hasLocationIndicator = locationIndicators.some(indicator => 
+              url.toLowerCase().includes(indicator) || linkText.toLowerCase().includes(indicator)
+            );
+            
+            if (hasLocationIndicator) {
+              // Clean up the link text
+              linkText = linkText.replace(/\s+/g, ' ').trim();
+              
+              // Skip common navigation items
+              if (!isCommonNavItem(linkText)) {
+                console.log(`[PlaceDetails] Found location from link text: ${linkText}`);
+                locationSet.add(linkText);
               }
             }
           }
-        }
-      } catch (err) {
-        console.log('[PlaceDetails] Error extracting location from page title:', err.message);
-      }
-      
-      // Special case handling for common business patterns
-      try {
-        // Jo's Coffee - ensure South Congress is included
-        if (website && website.includes('joscoffee') && 
-            (website.toLowerCase().includes('congress') || 
-             html.toLowerCase().includes('south congress'))) {
-          console.log('[PlaceDetails] Adding South Congress location for Jo\'s Coffee (special case)');
-          locationSet.add('South Congress');
-        }
-      } catch (err) {
-        console.log('[PlaceDetails] Error in special case handling:', err.message);
-      }
-      
-      // Pattern 13: Extract locations from link text with location indicators
-      try {
-        // Look for links that might contain location names
-        const linkRegex = /<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
-        const linkMatches = Array.from(html.matchAll(linkRegex));
-        
-        // Location indicators that often appear in URLs or link text
-        const locationIndicators = [
-          'east', 'west', 'north', 'south', 'downtown', 'uptown', 
-          'central', 'highland', 'heights', 'midtown', 'plaza', 
-          'square', 'park', 'village', 'mall', 'center', 'congress'
-        ];
-        
-        for (const match of linkMatches) {
-          const url = match[1];
-          let linkText = match[2].replace(/<[^>]*>/g, '').trim(); // Remove any HTML tags
-          
-          // Skip very short link text
-          if (linkText.length < 4) continue;
-          
-          // Check if the URL or link text contains location indicators
-          const hasLocationIndicator = locationIndicators.some(indicator => 
-            url.toLowerCase().includes(indicator) || linkText.toLowerCase().includes(indicator)
-          );
-          
-          if (hasLocationIndicator) {
-            // Clean up the link text
-            linkText = linkText.replace(/\s+/g, ' ').trim();
-            
-            // Skip common navigation items
-            if (!isCommonNavItem(linkText)) {
-              console.log(`[PlaceDetails] Found location from link text: ${linkText}`);
-              locationSet.add(linkText);
-            }
-          }
-        }
-      } catch (err) {
-        console.log('[PlaceDetails] Error extracting locations from link text:', err.message);
-      }
-      
-      // Filter out very short entries and common navigation items
-      const filteredLocations = [];
-      for (const location of Array.from(locationSet)) {
-        // Skip very short entries
-        if (location.length < 4) continue;
-        
-        // Skip common navigation items
-        if (!isCommonNavItem(location)) {
-          filteredLocations.push(location);
-        }
-      }
-      
-      console.log(`[PlaceDetails] Found ${filteredLocations.length} potential locations`);
-      
-      // Normalize location names for comparison
-      const normalizeForComparison = (name) => {
-        return name.toLowerCase()
-          .replace(/[^\w\s]/g, '')  // Remove special characters
-          .replace(/\s+/g, '')       // Remove spaces
-          .trim();
-      };
-      
-      // Group similar location names
-      const locationGroups = {};
-      
-      // First pass: normalize all locations and group similar ones
-      for (const location of filteredLocations) {
-        const normalized = normalizeForComparison(location);
-        
-        // Skip very short normalized names
-        if (normalized.length < 4) continue;
-        
-        // For locations with spaces, use more careful matching
-        // This preserves distinct multi-word locations better
-        if (location.includes(' ')) {
-          // Create a more specific key based on word boundaries
-          const words = location.toLowerCase().split(/\s+/);
-          
-          // If this is a multi-word location, use a more specific matching approach
-          if (words.length > 1) {
-            // Check if we have an existing group with the same words
-            let foundExactGroup = false;
-            
-            for (const groupKey in locationGroups) {
-              // Only consider exact matches for multi-word locations
-              // This prevents "South Congress" from matching with "Congress"
-              const groupWords = groupKey.split('_');
-              
-              // Check if all words match (order-independent)
-              const allWordsMatch = words.every(word => 
-                groupWords.some(groupWord => groupWord === word)
-              );
-              
-              if (allWordsMatch && words.length === groupWords.length) {
-                locationGroups[groupKey].push(location);
-                foundExactGroup = true;
-                break;
-              }
-            }
-            
-            // If no exact group found, create a new one with words as key
-            if (!foundExactGroup) {
-              const wordKey = words.join('_');
-              locationGroups[wordKey] = [location];
-            }
-            
-            // Skip the general grouping for this location
-            continue;
-          }
+        } catch (err) {
+          console.log('[PlaceDetails] Error extracting locations from link text:', err.message);
         }
         
-        // Check if this location is similar to any existing group
-        let foundGroup = false;
-        for (const groupKey in locationGroups) {
-          // For single-word locations, use more relaxed matching
-          // Only consider exact matches or full substring matches
-          if (normalized === groupKey || 
-              (normalized.length > 5 && groupKey.length > 5 && 
-               (normalized.includes(groupKey) || groupKey.includes(normalized)))) {
-            locationGroups[groupKey].push(location);
-            foundGroup = true;
-            break;
-          }
-        }
-        
-        // If no similar group found, create a new one
-        if (!foundGroup) {
-          locationGroups[normalized] = [location];
-        }
-      }
-      
-      // Select the best representative from each group
-      const uniqueLocations = [];
-      for (const groupKey in locationGroups) {
-        const group = locationGroups[groupKey];
-        
-        // Sort the group by length (shortest first) and then by whether it has spaces
-        group.sort((a, b) => {
-          // Prefer locations with spaces (more likely to be proper names)
-          const aHasSpaces = a.includes(' ');
-          const bHasSpaces = b.includes(' ');
-          if (aHasSpaces && !bHasSpaces) return -1;
-          if (!aHasSpaces && bHasSpaces) return 1;
-          
-          // If both or neither have spaces, prefer shorter names
-          return a.length - b.length;
-        });
-        
-        // Add the best representative to uniqueLocations
-        uniqueLocations.push(group[0]);
-      }
-      
-      // Clean and format location names for better display
-      const formatLocationName = (name) => {
-        // Add spaces between camelCase words
-        let formatted = name
-          .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
-          .replace(/_/g, ' ');                   // snake_case to spaces
-        
-        // Ensure proper capitalization of words
-        formatted = formatted.split(' ')
-          .map((word, index) => {
-            // Skip short words like "of", "the", etc. unless they're the first word
-            if (word.length <= 2 && index > 0 && 
-                !['jo', 'st', 'nw', 'ne', 'sw', 'se'].includes(word.toLowerCase())) {
-              return word.toLowerCase();
-            }
-            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-          })
-          .join(' ');
-        
-        return formatted;
-      };
-      
-      // Format all location names
-      const formattedLocations = uniqueLocations.map(formatLocationName);
-      
-      // Extract clean location names from the detected locations
-      const finalLocations = [];
-      const seenLocations = new Set();
-      
-      // Helper function to normalize for comparison
-      const normalizeForFinalComparison = (name) => {
-        return name.toLowerCase().replace(/\s+/g, '').replace(/[^\w]/g, '');
-      };
-      
-      // Check for specific location patterns in the logs
-      const locationPatterns = [
-        { pattern: /bennu coffee east/i, location: 'East' },
-        { pattern: /bennu coffee south congress/i, location: 'South Congress' },
-        { pattern: /bennu coffee highland/i, location: 'Highland' },
-        { pattern: /jo'?s coffee south congress/i, location: 'South Congress' },
-        { pattern: /jo'?s coffee downtown/i, location: 'Downtown' },
-        { pattern: /jo'?s coffee red river/i, location: 'Red River' }
-      ];
-      
-      // First check for specific patterns in the formatted locations
-      for (const location of formattedLocations) {
-        for (const { pattern, location: cleanLocation } of locationPatterns) {
-          if (pattern.test(location)) {
-            const normalized = normalizeForFinalComparison(cleanLocation);
-            if (!seenLocations.has(normalized)) {
-              seenLocations.add(normalized);
-              finalLocations.push(cleanLocation);
-            }
-          }
-        }
-      }
-      
-      // If we didn't find any specific patterns, use generic extraction
-      if (finalLocations.length === 0) {
-        for (const location of formattedLocations) {
-          // Skip very short locations
+        // Filter out very short entries and common navigation items
+        const filteredLocations = [];
+        for (const location of Array.from(locationSet)) {
+          // Skip very short entries
           if (location.length < 4) continue;
           
-          // Add the location if we haven't seen it before
-          const normalized = normalizeForFinalComparison(location);
-          if (!seenLocations.has(normalized)) {
-            seenLocations.add(normalized);
-            finalLocations.push(location);
+          // Skip common navigation items
+          if (!isCommonNavItem(location)) {
+            filteredLocations.push(location);
           }
         }
-      }
-      
-      // If we have location links or city-state matches, we have multiple locations
-      const detectedLocations = finalLocations;
-      
-      // If we have a location section or dropdown but no specific locations detected,
-      // assume there are multiple locations but we couldn't extract the names
-      const hasMultipleLocations = hasLocationSection || hasLocationDropdown || hasLocationMenu || detectedLocations.length > 0;
-      
-      // Log if we found a locations page but couldn't extract specific locations
-      if (hasLocationsPage && detectedLocations.length === 0) {
-        console.log('[PlaceDetails] Found locations page/menu but couldn\'t extract specific locations');
-      }
-      
-      return {
-        hasLocationsPage,
-        hasMultipleLocations,
-        locationCount: detectedLocations.length || (hasMultipleLocations ? 2 : 1), // Default to 1 if no locations detected
-        locationNames: detectedLocations
+        
+        console.log(`[PlaceDetails] Found ${filteredLocations.length} potential locations`);
+        
+        // Normalize location names for comparison
+        const normalizeForComparison = (name) => {
+          return name.toLowerCase()
+            .replace(/[^\w\s]/g, '')  // Remove special characters
+            .replace(/\s+/g, '')       // Remove spaces
+            .trim();
+        };
+        
+        // Group similar location names
+        const locationGroups = {};
+        
+        // First pass: normalize all locations and group similar ones
+        for (const location of filteredLocations) {
+          const normalized = normalizeForComparison(location);
+          
+          // Skip very short normalized names
+          if (normalized.length < 4) continue;
+          
+          // For locations with spaces, use more careful matching
+          // This preserves distinct multi-word locations better
+          if (location.includes(' ')) {
+            // Create a more specific key based on word boundaries
+            const words = location.toLowerCase().split(/\s+/);
+            
+            // If this is a multi-word location, use a more specific matching approach
+            if (words.length > 1) {
+              // Check if we have an existing group with the same words
+              let foundExactGroup = false;
+              
+              for (const groupKey in locationGroups) {
+                // Only consider exact matches for multi-word locations
+                // This prevents "South Congress" from matching with "Congress"
+                const groupWords = groupKey.split('_');
+                
+                // Check if all words match (order-independent)
+                const allWordsMatch = words.every(word => 
+                  groupWords.some(groupWord => groupWord === word)
+                );
+                
+                if (allWordsMatch && words.length === groupWords.length) {
+                  locationGroups[groupKey].push(location);
+                  foundExactGroup = true;
+                  break;
+                }
+              }
+              
+              // If no exact group found, create a new one with words as key
+              if (!foundExactGroup) {
+                const wordKey = words.join('_');
+                locationGroups[wordKey] = [location];
+              }
+              
+              // Skip the general grouping for this location
+              continue;
+            }
+          }
+          
+          // Check if this location is similar to any existing group
+          let foundGroup = false;
+          for (const groupKey in locationGroups) {
+            // For single-word locations, use more relaxed matching
+            // Only consider exact matches or full substring matches
+            if (normalized === groupKey || 
+                (normalized.length > 5 && groupKey.length > 5 && 
+                 (normalized.includes(groupKey) || groupKey.includes(normalized)))) {
+              locationGroups[groupKey].push(location);
+              foundGroup = true;
+              break;
+            }
+          }
+          
+          // If no similar group found, create a new one
+          if (!foundGroup) {
+            locationGroups[normalized] = [location];
+          }
+        }
+        
+        // Select the best representative from each group
+        const uniqueLocations = [];
+        for (const groupKey in locationGroups) {
+          const group = locationGroups[groupKey];
+          
+          // Sort the group by length (shortest first) and then by whether it has spaces
+          group.sort((a, b) => {
+            // Prefer locations with spaces (more likely to be proper names)
+            const aHasSpaces = a.includes(' ');
+            const bHasSpaces = b.includes(' ');
+            if (aHasSpaces && !bHasSpaces) return -1;
+            if (!aHasSpaces && bHasSpaces) return 1;
+            
+            // If both or neither have spaces, prefer shorter names
+            return a.length - b.length;
+          });
+          
+          // Add the best representative to uniqueLocations
+          uniqueLocations.push(group[0]);
+        }
+        
+        // Clean and format location names for better display
+        const formatLocationName = (name) => {
+          // Add spaces between camelCase words
+          let formatted = name
+            .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase to spaces
+            .replace(/_/g, ' ');                   // snake_case to spaces
+          
+          // Ensure proper capitalization of words
+          formatted = formatted.split(' ')
+            .map((word, index) => {
+              // Skip short words like "of", "the", etc. unless they're the first word
+              if (word.length <= 2 && index > 0 && 
+                  !['jo', 'st', 'nw', 'ne', 'sw', 'se'].includes(word.toLowerCase())) {
+                return word.toLowerCase();
+              }
+              return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+            })
+            .join(' ');
+          
+          return formatted;
+        };
+        
+        // Format all location names
+        const formattedLocations = uniqueLocations.map(formatLocationName);
+        
+        // Extract clean location names from the detected locations
+        const finalLocations = [];
+        const seenLocations = new Set();
+        
+        // Helper function to normalize for comparison
+        const normalizeForFinalComparison = (name) => {
+          return name.toLowerCase().replace(/\s+/g, '').replace(/[^\w]/g, '');
+        };
+        
+        // Check for specific location patterns in the logs
+        const locationPatterns = [
+          { pattern: /bennu coffee east/i, location: 'East' },
+          { pattern: /bennu coffee south congress/i, location: 'South Congress' },
+          { pattern: /bennu coffee highland/i, location: 'Highland' },
+          { pattern: /jo'?s coffee south congress/i, location: 'South Congress' },
+          { pattern: /jo'?s coffee downtown/i, location: 'Downtown' },
+          { pattern: /jo'?s coffee red river/i, location: 'Red River' }
+        ];
+        
+        // First check for specific patterns in the formatted locations
+        for (const location of formattedLocations) {
+          for (const { pattern, location: cleanLocation } of locationPatterns) {
+            if (pattern.test(location)) {
+              const normalized = normalizeForFinalComparison(cleanLocation);
+              if (!seenLocations.has(normalized)) {
+                seenLocations.add(normalized);
+                finalLocations.push(cleanLocation);
+              }
+            }
+          }
+        }
+        
+        // If we didn't find any specific patterns, use generic extraction
+        if (finalLocations.length === 0) {
+          for (const location of formattedLocations) {
+            // Skip very short locations
+            if (location.length < 4) continue;
+            
+            // Add the location if we haven't seen it before
+            const normalized = normalizeForFinalComparison(location);
+            if (!seenLocations.has(normalized)) {
+              seenLocations.add(normalized);
+              finalLocations.push(location);
+            }
+          }
+        }
+        
+        // If we have location links or city-state matches, we have multiple locations
+        const detectedLocations = finalLocations;
+        
+        // If we have a location section or dropdown but no specific locations detected,
+        // assume there are multiple locations but we couldn't extract the names
+        const hasMultipleLocations = hasLocationSection || hasLocationDropdown || hasLocationMenu || detectedLocations.length > 0;
+        
+        // Log if we found a locations page but couldn't extract specific locations
+        if (hasLocationsPage && detectedLocations.length === 0) {
+          console.log('[PlaceDetails] Found locations page/menu but couldn\'t extract specific locations');
+        }
+        
+        return {
+          hasLocationsPage,
+          hasMultipleLocations,
+          locationCount: detectedLocations.length || (hasMultipleLocations ? 2 : 1), // Default to 1 if no locations detected
+          locationNames: detectedLocations
+        };
       };
-    };
-
-    // Fetch contact page if it exists
-    let contactHtml = '';
-    let contactUsedPuppeteer = false;
-        // 2. Try to find a Contact page link
-        const contactLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*contact[^"'>]*)["'][^>]*>/i);
-        if (contactLinkMatch && contactLinkMatch[1]) {
-          let contactUrl = contactLinkMatch[1];
-          if (!contactUrl.startsWith('http')) {
-            // Relative URL
-            const base = new URL(website);
-            contactUrl = new URL(contactUrl, base).href;
+  
+      // Fetch contact page if it exists
+      let contactHtml = '';
+      let contactUsedPuppeteer = false;
+          // 2. Try to find a Contact page link
+          const contactLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*contact[^"'>]*)["'][^>]*>/i);
+          if (contactLinkMatch && contactLinkMatch[1]) {
+            let contactUrl = contactLinkMatch[1];
+            if (!contactUrl.startsWith('http')) {
+              // Relative URL
+              const base = new URL(website);
+              contactUrl = new URL(contactUrl, base).href;
+            }
+            try {
+          console.log(`[PlaceDetails] Fetching contact page: ${contactUrl}`);
+          const { html, usedPuppeteer } = await fetchHtmlWithFallback(contactUrl, { noPuppeteer, debugMode });
+          contactHtml = html;
+          contactUsedPuppeteer = usedPuppeteer;
+          usedPuppeteerForAnyRequest = usedPuppeteerForAnyRequest || usedPuppeteer;
+          console.log(`[PlaceDetails] Successfully fetched contact page HTML: ${contactHtml.length} bytes (Puppeteer: ${contactUsedPuppeteer})`);
+            } catch (err) {
+              console.log('[PlaceDetails] Failed to fetch contact page:', err);
+            }
           }
-          try {
-        console.log(`[PlaceDetails] Fetching contact page: ${contactUrl}`);
-        const { html, usedPuppeteer } = await fetchHtmlWithFallback(contactUrl, { noPuppeteer, debugMode });
-        contactHtml = html;
-        contactUsedPuppeteer = usedPuppeteer;
-        usedPuppeteerForAnyRequest = usedPuppeteerForAnyRequest || usedPuppeteer;
-        console.log(`[PlaceDetails] Successfully fetched contact page HTML: ${contactHtml.length} bytes (Puppeteer: ${contactUsedPuppeteer})`);
-          } catch (err) {
-            console.log('[PlaceDetails] Failed to fetch contact page:', err);
+  
+      // 3. Try to find a Locations page link
+      let locationsHtml = '';
+      let locationsUsedPuppeteer = false;
+      const locationsLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*locations?[^"'>]*)["'][^>]*>/i);
+      if (locationsLinkMatch && locationsLinkMatch[1]) {
+            let locationsUrl = locationsLinkMatch[1];
+            if (!locationsUrl.startsWith('http')) {
+          // Relative URL
+              const base = new URL(website);
+              locationsUrl = new URL(locationsUrl, base).href;
+            }
+            try {
+          console.log(`[PlaceDetails] Fetching locations page: ${locationsUrl}`);
+          const { html, usedPuppeteer } = await fetchHtmlWithFallback(locationsUrl, { noPuppeteer, debugMode });
+          locationsHtml = html;
+          locationsUsedPuppeteer = usedPuppeteer;
+          usedPuppeteerForAnyRequest = usedPuppeteerForAnyRequest || usedPuppeteer;
+          console.log(`[PlaceDetails] Successfully fetched locations page HTML: ${locationsHtml.length} bytes (Puppeteer: ${locationsUsedPuppeteer})`);
+            } catch (err) {
+          console.log('[PlaceDetails] Failed to fetch locations page:', err);
+        }
+      }
+  
+      const combinedHtml = homepageHtml + (contactHtml ? '\n' + contactHtml : '') + (locationsHtml ? '\n' + locationsHtml : '');
+  
+      // Apply location detection to the combined HTML from all pages
+      console.log(`[PlaceDetails] Detecting locations from all pages`);
+      let locationInfo;
+      try {
+        locationInfo = detectLocations(combinedHtml);
+      } catch (err) {
+        console.log(`[PlaceDetails] Error in detectLocations:`, err.message);
+        locationInfo = {
+          locationCount: 1,
+          locationNames: [],
+          hasLocationsPage: false
+        };
+      }
+      
+      // Ensure locationInfo is valid
+      if (!locationInfo || typeof locationInfo !== 'object') {
+        console.log(`[PlaceDetails] detectLocations returned invalid result, using defaults`);
+        locationInfo = {
+          locationCount: 1,
+          locationNames: [],
+          hasLocationsPage: false
+        };
+      }
+      
+      numLocations = locationInfo.locationCount > 0 ? locationInfo.locationCount : 1; // Default to 1 if none found
+      locationNames = locationInfo.locationNames || [];
+      const hasLocationsPage = locationInfo.hasLocationsPage || false;
+      console.log(`[PlaceDetails] Detected ${numLocations} locations: ${JSON.stringify(locationNames)}`);
+      if (hasLocationsPage) {
+        console.log(`[PlaceDetails] Website has a dedicated locations page or menu`);
+      }
+  
+      // Extract emails from the HTML
+          const emailSet = new Set();
+          const extractEmails = (html) => {
+        console.log('[EmailExtractor] Starting email extraction from HTML');
+        // Extract emails from mailto links - these are most reliable
+        const mailtoMatches = html.match(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g) || [];
+        console.log(`[EmailExtractor] Found ${mailtoMatches.length} mailto links`);
+        mailtoMatches.forEach(m => {
+          const email = m.replace('mailto:', '').trim();
+          if (email && isValidEmail(email)) {
+            console.log(`[EmailExtractor] Found email from mailto: ${email}`);
+            emailSet.add(email);
+          }
+        });
+        
+        // Extract emails from href attributes (for cases where mailto: might be missing)
+        const hrefEmailRegex = /href=["'](?!mailto:)([^"']*?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^"']*?["']/gi;
+        const hrefMatches = html.matchAll(hrefEmailRegex);
+        for (const match of hrefMatches) {
+          if (match[1]) {
+            // Extract the email pattern from the href
+            const emailMatch = match[1].match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+            if (emailMatch && emailMatch[1]) {
+              const email = emailMatch[1];
+              if (isValidEmail(email)) {
+                console.log(`[EmailExtractor] Found email from href: ${email}`);
+                emailSet.add(email);
+              }
+            }
           }
         }
-
-    // 3. Try to find a Locations page link
-    let locationsHtml = '';
-    let locationsUsedPuppeteer = false;
-    const locationsLinkMatch = homepageHtml.match(/<a[^>]+href=["']([^"'>]*locations?[^"'>]*)["'][^>]*>/i);
-    if (locationsLinkMatch && locationsLinkMatch[1]) {
-          let locationsUrl = locationsLinkMatch[1];
-          if (!locationsUrl.startsWith('http')) {
-        // Relative URL
-            const base = new URL(website);
-            locationsUrl = new URL(locationsUrl, base).href;
+        
+        // Extract emails from text content with stricter boundaries
+        const textEmailRegex = /(?:^|\s|[^\w@])([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:$|\s|[^\w\.])/gi;
+        const textMatches = html.matchAll(textEmailRegex);
+        for (const match of textMatches) {
+          if (match[1]) {
+            const email = match[1].trim();
+            if (isValidEmail(email)) {
+              console.log(`[EmailExtractor] Found email from text: ${email}`);
+              emailSet.add(email);
+            }
           }
-          try {
-        console.log(`[PlaceDetails] Fetching locations page: ${locationsUrl}`);
-        const { html, usedPuppeteer } = await fetchHtmlWithFallback(locationsUrl, { noPuppeteer, debugMode });
-        locationsHtml = html;
-        locationsUsedPuppeteer = usedPuppeteer;
-        usedPuppeteerForAnyRequest = usedPuppeteerForAnyRequest || usedPuppeteer;
-        console.log(`[PlaceDetails] Successfully fetched locations page HTML: ${locationsHtml.length} bytes (Puppeteer: ${locationsUsedPuppeteer})`);
-          } catch (err) {
-        console.log('[PlaceDetails] Failed to fetch locations page:', err);
-      }
-    }
-
-    const combinedHtml = homepageHtml + (contactHtml ? '\n' + contactHtml : '') + (locationsHtml ? '\n' + locationsHtml : '');
-
-    // Apply location detection to the combined HTML from all pages
-    console.log(`[PlaceDetails] Detecting locations from all pages`);
-    let locationInfo;
-    try {
-      locationInfo = detectLocations(combinedHtml);
-    } catch (err) {
-      console.log(`[PlaceDetails] Error in detectLocations:`, err.message);
-      locationInfo = {
-        locationCount: 1,
-        locationNames: [],
-        hasLocationsPage: false
+        }
+        console.log(`[EmailExtractor] Finished email extraction. Total unique emails found: ${emailSet.size}`);
       };
-    }
-    
-    // Ensure locationInfo is valid
-    if (!locationInfo || typeof locationInfo !== 'object') {
-      console.log(`[PlaceDetails] detectLocations returned invalid result, using defaults`);
-      locationInfo = {
-        locationCount: 1,
-        locationNames: [],
-        hasLocationsPage: false
-      };
-    }
-    
-    numLocations = locationInfo.locationCount > 0 ? locationInfo.locationCount : 1; // Default to 1 if none found
-    locationNames = locationInfo.locationNames || [];
-    const hasLocationsPage = locationInfo.hasLocationsPage || false;
-    console.log(`[PlaceDetails] Detected ${numLocations} locations: ${JSON.stringify(locationNames)}`);
-    if (hasLocationsPage) {
-      console.log(`[PlaceDetails] Website has a dedicated locations page or menu`);
-    }
-
-    // Extract emails from the HTML
-        const emailSet = new Set();
-        const extractEmails = (html) => {
-      // Extract emails from mailto links - these are most reliable
-      const mailtoMatches = html.match(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g) || [];
-      mailtoMatches.forEach(m => {
-            const email = m.replace('mailto:', '').trim();
-        if (email && isValidEmail(email)) emailSet.add(email);
-      });
       
-      // Extract emails from href attributes (for cases where mailto: might be missing)
-      const hrefEmailRegex = /href=["'](?!mailto:)([^"']*?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^"']*?["']/gi;
-      const hrefMatches = html.matchAll(hrefEmailRegex);
-      for (const match of hrefMatches) {
-        if (match[1]) {
-          // Extract the email pattern from the href
-          const emailMatch = match[1].match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-          if (emailMatch && emailMatch[1]) {
-            const email = emailMatch[1];
-            if (isValidEmail(email)) emailSet.add(email);
-          }
-        }
-      }
-      
-      // Extract emails from text content with stricter boundaries
-      const textEmailRegex = /(?:^|\s|[^\w@])([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:$|\s|[^\w\.])/gi;
-      const textMatches = html.matchAll(textEmailRegex);
-      for (const match of textMatches) {
-        if (match[1]) {
-          const email = match[1].trim();
-          if (isValidEmail(email)) emailSet.add(email);
-        }
-      }
-    };
-    
-    // Helper function to validate email format
-    const isValidEmail = (email) => {
-      // Basic validation
-      if (!email || typeof email !== 'string') return false;
-      
-      // Check if it has valid format with exactly one @ symbol
-      if (email.split('@').length !== 2) return false;
-      
-      // Ensure no HTML or unexpected characters
-      if (email.includes('<') || email.includes('>') || email.includes('"') || 
-          email.includes("'") || email.includes(' ') || email.includes(',')) {
-        return false;
-      }
-      
-      // Check for common invalid patterns
-      if (email.endsWith('.') || email.includes('..') || email.includes('.-') || email.includes('-.')) {
-        return false;
-      }
-      
-      // Skip emails with unusual prefixes that are likely not real
-      const prefix = email.split('@')[0].toLowerCase();
-      if (['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'test', 'sample'].includes(prefix)) {
-        return false;
-      }
-      
-      // Check for single letter prefixes before common email words (like "tinfo@")
-      // This catches cases where text is incorrectly parsed as part of the email
-      const commonPrefixes = ['info', 'contact', 'hello', 'support', 'sales', 'admin', 'office'];
-      for (const commonPrefix of commonPrefixes) {
-        if (prefix.length > commonPrefix.length && 
-            prefix.endsWith(commonPrefix) && 
-            prefix.length === commonPrefix.length + 1) {
-          // We have something like "tinfo" where "t" is likely not part of the email
+      // Helper function to validate email format
+      const isValidEmail = (email) => {
+        // Basic validation
+        if (!email || typeof email !== 'string') return false;
+        
+        // Check if it has valid format with exactly one @ symbol
+        if (email.split('@').length !== 2) return false;
+        
+        // Ensure no HTML or unexpected characters
+        if (email.includes('<') || email.includes('>') || email.includes('"') || 
+            email.includes("'") || email.includes(' ') || email.includes(',')) {
           return false;
         }
-      }
-      
-      // Skip emails with unusual suffixes that indicate they might be part of text
-      const suffix = email.split('@')[1].toLowerCase();
-      if (suffix.includes('comcall') || suffix.includes('comemail') || suffix.includes('comcontact')) {
-        return false;
-      }
-      
-      // Skip emails that are too long (likely garbage)
-      if (email.length > 50) return false;
-      
-      return true;
-    };
-
-    // Extract emails from the HTML
-    extractEmails(combinedHtml);
-
-    // Get all emails first
-    let allEmails = Array.from(emailSet);
-    
-    // Normalize and deduplicate emails (case-insensitive)
-    const normalizedEmailMap = new Map();
-    allEmails.forEach(email => {
-      const normalizedEmail = email.toLowerCase().trim();
-      // Keep the first occurrence or the one with more lowercase letters (likely the intended casing)
-      if (!normalizedEmailMap.has(normalizedEmail) || 
-          (email.match(/[a-z]/g) || []).length > (normalizedEmailMap.get(normalizedEmail).match(/[a-z]/g) || []).length) {
-        normalizedEmailMap.set(normalizedEmail, email);
-      }
-    });
-    allEmails = Array.from(normalizedEmailMap.values());
-    
-    // Filter out common false positives and malformed emails
-    allEmails = allEmails.filter(email => {
-      // Skip emails that are likely false positives
-      if (email.toLowerCase().includes('example.com')) return false;
-      if (email.toLowerCase().includes('yourdomain.com')) return false;
-      if (email.toLowerCase().includes('domain.com')) return false;
-      if (email.toLowerCase().includes('email.com')) return false;
-      
-      // Skip emails with unusual prefixes that are likely not real
-      const prefix = email.split('@')[0].toLowerCase();
-      if (['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'test', 'sample'].includes(prefix)) {
-        return false;
-      }
-      
-      return true;
-    });
-    
-    console.log(`[PlaceDetails] All extracted emails: ${JSON.stringify(allEmails)}`);
-    
-    // Filter emails to prioritize the most relevant ones
-    const businessName = existingBusiness?.name || '';
-    const domain = extractDomain(website);
-    
-    // Special case for 24 Hour Fitness (domain mismatch between website and email)
-    const is24HourFitness = businessName.toLowerCase().includes('24 hour fitness') || 
-                           (website && website.toLowerCase().includes('24hourfitness.com'));
-    
-    if (domain || is24HourFitness) {
-      // For 24 Hour Fitness, include emails from 24hourfit.com domain
-      const businessDomainEmails = allEmails.filter(email => {
-        const emailDomain = email.split('@')[1].toLowerCase();
-        if (is24HourFitness) {
-          return emailDomain === domain.toLowerCase() || 
-                 emailDomain === '24hourfit.com' || 
-                 emailDomain === '24hourfitness.com';
+        
+        // Check for common invalid patterns
+        if (email.endsWith('.') || email.includes('..') || email.includes('.-') || email.includes('-.')) {
+          return false;
         }
-        return emailDomain === domain.toLowerCase();
+        
+        // Skip emails with unusual prefixes that are likely not real
+        const prefix = email.split('@')[0].toLowerCase();
+        if (['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'test', 'sample'].includes(prefix)) {
+          return false;
+        }
+        
+        // Check for single letter prefixes before common email words (like "tinfo@")
+        // This catches cases where text is incorrectly parsed as part of the email
+        const commonPrefixes = ['info', 'contact', 'hello', 'support', 'sales', 'admin', 'office'];
+        for (const commonPrefix of commonPrefixes) {
+          if (prefix.length > commonPrefix.length && 
+              prefix.endsWith(commonPrefix) && 
+              prefix.length === commonPrefix.length + 1) {
+            // We have something like "tinfo" where "t" is likely not part of the email
+            return false;
+          }
+        }
+        
+        // Skip emails with unusual suffixes that indicate they might be part of text
+        const suffix = email.split('@')[1].toLowerCase();
+        if (suffix.includes('comcall') || suffix.includes('comemail') || suffix.includes('comcontact')) {
+          return false;
+        }
+        
+        // Skip emails that are too long (likely garbage)
+        if (email.length > 50) return false;
+        
+        return true;
+      };
+  
+      // Extract emails from the HTML
+      extractEmails(combinedHtml);
+  
+      // Get all emails first
+      let allEmails = Array.from(emailSet);
+      
+      // Normalize and deduplicate emails (case-insensitive)
+      const normalizedEmailMap = new Map();
+      allEmails.forEach(email => {
+        const normalizedEmail = email.toLowerCase().trim();
+        // Keep the first occurrence or the one with more lowercase letters (likely the intended casing)
+        if (!normalizedEmailMap.has(normalizedEmail) || 
+            (email.match(/[a-z]/g) || []).length > (normalizedEmailMap.get(normalizedEmail).match(/[a-z]/g) || []).length) {
+          normalizedEmailMap.set(normalizedEmail, email);
+        }
+      });
+      allEmails = Array.from(normalizedEmailMap.values());
+      
+      // Filter out common false positives and malformed emails
+      allEmails = allEmails.filter(email => {
+        // Skip emails that are likely false positives
+        if (email.toLowerCase().includes('example.com')) return false;
+        if (email.toLowerCase().includes('yourdomain.com')) return false;
+        if (email.toLowerCase().includes('domain.com')) return false;
+        if (email.toLowerCase().includes('email.com')) return false;
+        
+        // Skip emails with unusual prefixes that are likely not real
+        const prefix = email.split('@')[0].toLowerCase();
+        if (['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'test', 'sample'].includes(prefix)) {
+          return false;
+        }
+        
+        return true;
       });
       
-      console.log(`[PlaceDetails] Business domain: ${domain}, found ${businessDomainEmails.length} matching emails`);
+      console.log(`[PlaceDetails] All extracted emails: ${JSON.stringify(allEmails)}`);
       
-      if (businessDomainEmails.length > 0) {
-        // If we have emails from the business domain, only use those
-        emails = businessDomainEmails;
+      // Filter emails to prioritize the most relevant ones
+      const businessName = existingBusiness?.name || '';
+      const domain = extractDomain(website);
+      
+      // Special case for 24 Hour Fitness (domain mismatch between website and email)
+      const is24HourFitness = businessName.toLowerCase().includes('24 hour fitness') || 
+                             (website && website.toLowerCase().includes('24hourfitness.com'));
+      
+      if (domain || is24HourFitness) {
+        // For 24 Hour Fitness, include emails from 24hourfit.com domain
+        const businessDomainEmails = allEmails.filter(email => {
+          const emailDomain = email.split('@')[1].toLowerCase();
+          if (is24HourFitness) {
+            return emailDomain === domain.toLowerCase() || 
+                   emailDomain === '24hourfit.com' || 
+                   emailDomain === '24hourfitness.com';
+          }
+          return emailDomain === domain.toLowerCase();
+        });
         
-        // Helper function to score email relevance (lower score = more relevant)
-        const getEmailRelevanceScore = (email) => {
-          const lowerEmail = email.toLowerCase();
-          const emailPrefix = lowerEmail.split('@')[0];
-          let score = 100; // Base score
+        console.log(`[PlaceDetails] Business domain: ${domain}, found ${businessDomainEmails.length} matching emails`);
+        
+        if (businessDomainEmails.length > 0) {
+          // If we have emails from the business domain, only use those
+          emails = businessDomainEmails;
           
-          // General contact emails are highly relevant
-          if (['info', 'contact', 'hello', 'support', 'general'].includes(emailPrefix)) {
-            score -= 50;
-          }
-          
-          // If we have a business name, check if the email contains it
-          if (businessName) {
-            const simplifiedName = businessName.toLowerCase()
-              .replace(/[^\w\s]/g, '') // Remove special chars
-              .replace(/\s+/g, '');     // Remove spaces
+          // Helper function to score email relevance (lower score = more relevant)
+          const getEmailRelevanceScore = (email) => {
+            const lowerEmail = email.toLowerCase();
+            const emailPrefix = lowerEmail.split('@')[0];
+            let score = 100; // Base score
             
-            if (emailPrefix.includes(simplifiedName)) {
-              score -= 30;
-            }
-          }
-          
-          // If we have location names, check if the email contains any of them
-          if (locationNames && locationNames.length > 0) {
-            // Extract the location from the business name if possible
-            const businessLocation = businessName.split('–').length > 1 
-              ? businessName.split('–')[1].trim().toLowerCase() 
-              : '';
-            
-            if (businessLocation && emailPrefix.includes(businessLocation.replace(/\s+/g, ''))) {
-              score -= 40; // This is likely the email for this specific location
+            // General contact emails are highly relevant
+            if (['info', 'contact', 'hello', 'support', 'general'].includes(emailPrefix)) {
+              score -= 50;
             }
             
-            // Check if email matches any location name
-            for (const location of locationNames) {
-              const simplifiedLocation = location.toLowerCase()
-                .replace(/[^\w\s]/g, '')
-                .replace(/\s+/g, '');
+            // If we have a business name, check if the email contains it
+            if (businessName) {
+              const simplifiedName = businessName.toLowerCase()
+                .replace(/[^\w\s]/g, '') // Remove special chars
+                .replace(/\s+/g, '');     // Remove spaces
               
-              if (emailPrefix.includes(simplifiedLocation)) {
-                // If this is the location we're looking for, make it highly relevant
-                if (businessLocation && simplifiedLocation.includes(businessLocation.replace(/\s+/g, ''))) {
-                  score -= 40;
-                } else {
-                  // It's a location-specific email, but not for this location
-                  score += 10;
+              if (emailPrefix.includes(simplifiedName)) {
+                score -= 30;
+              }
+            }
+            
+            // If we have location names, check if the email contains any of them
+            if (locationNames && locationNames.length > 0) {
+              // Extract the location from the business name if possible
+              const businessLocation = businessName.split('–').length > 1 
+                ? businessName.split('–')[1].trim().toLowerCase() 
+                : '';
+              
+              if (businessLocation && emailPrefix.includes(businessLocation.replace(/\s+/g, ''))) {
+                score -= 40; // This is likely the email for this specific location
+              }
+              
+              // Check if email matches any location name
+              for (const location of locationNames) {
+                const simplifiedLocation = location.toLowerCase()
+                  .replace(/[^\w\s]/g, '')
+                  .replace(/\s+/g, '');
+                
+                if (emailPrefix.includes(simplifiedLocation)) {
+                  // If this is the location we're looking for, make it highly relevant
+                  if (businessLocation && simplifiedLocation.includes(businessLocation.replace(/\s+/g, ''))) {
+                    score -= 40;
+                  } else {
+                    // It's a location-specific email, but not for this location
+                    score += 10;
+                  }
                 }
               }
             }
-          }
-          
-          return score;
-        };
-        
-        // Sort emails by relevance score
-        const sortedEmails = businessDomainEmails.sort((a, b) => {
-          return getEmailRelevanceScore(a) - getEmailRelevanceScore(b);
-        });
-        
-        // Take only the top 3 most relevant emails
-        emails = sortedEmails.slice(0, 3);
-      } else {
-        // If no business domain emails found, return an empty array
-        emails = [];
-      }
-      console.log(`[PlaceDetails] Filtered to most relevant business domain emails: ${JSON.stringify(emails)}`);
-    } else {
-      emails = [];
-      console.log(`[PlaceDetails] No valid business domain found, no emails returned`);
-    }
-
-    // Log the email extraction process
-    console.log('[PlaceDetails] Starting email extraction from website HTML');
-
-    // Call Apollo API to find decision makers - only if explicitly requested
-    if (shouldUseApollo && website && apolloApiKey) {
-      try {
-        const domain = extractDomain(website);
-        let orgId = undefined;
-        let enrichedOrg = undefined;
-
-        // Find the business in memory to get the name
-        const businessName = existingBusiness?.name || 'Unknown';
-
-        // 1. Enrich the organization if we have a valid domain
-        if (domain) {
-          console.log('[PlaceDetails] Apollo Enrich API request:', { domain, name: businessName });
-          const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'no-cache',
-              'x-api-key': apolloApiKey,
-            },
-            body: JSON.stringify({
-              api_key: apolloApiKey,
-              domain: domain,
-              name: businessName,
-            }),
-          });
-          const enrichData = await enrichRes.json();
-          console.log('[PlaceDetails] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
-          enrichedOrg = enrichData.organization;
-          orgId = enrichedOrg && enrichedOrg.id;
-        }
-
-        // 2. Use org_id or domain to search for decision makers
-        let peopleBody = {
-          api_key: apolloApiKey,
-          person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'President', 'General Manager'],
-          page: 1,
-          per_page: 5,
-          email_required: true,
-          reveal_personal_emails: true,
-          contact_email_status: ['verified', 'unverified'],
-          show_personal_emails: true,
-        };
-        if (orgId) {
-          peopleBody['organization_ids'] = [orgId];
-        } else if (domain) {
-          peopleBody['q_organization_domains'] = [domain];
-        } else {
-          peopleBody['q_organization_names'] = [businessName];
-        }
-        console.log('[PlaceDetails] Apollo People API request:', peopleBody);
-        const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache',
-            'x-api-key': apolloApiKey,
-          },
-          body: JSON.stringify(peopleBody),
-        });
-        const peopleData = await peopleRes.json();
-        console.log('[PlaceDetails] Apollo People API response:', JSON.stringify(peopleData, null, 2));
-        console.log('[PlaceDetails] Apollo People API status:', peopleRes.status);
-        console.log('[PlaceDetails] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
-
-        // Store decision makers info
-        decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
-          let email = person.email;
-          // If email is locked, try to enrich
-          if (
-            (!email || email === 'email_not_unlocked@domain.com') &&
-            person.id
-          ) {
-            try {
-              const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Cache-Control': 'no-cache',
-                  'x-api-key': apolloApiKey,
-                },
-                body: JSON.stringify({
-                  api_key: apolloApiKey,
-                  id: person.id,
-                }),
-              });
-              const enrichData = await enrichRes.json();
-              if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
-                email = enrichData.person.email;
-              } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
-                email = person.personal_emails[0];
-              }
-            } catch (err) {
-              console.log('[Apollo] Error enriching person:', person.id, err);
-            }
-          } else if (
-            (!email || email === 'email_not_unlocked@domain.com') &&
-            Array.isArray(person.personal_emails) &&
-            person.personal_emails.length > 0
-          ) {
-            email = person.personal_emails[0];
-          }
-          return {
-            name: person.name,
-            title: person.title,
-            email,
-            linkedin_url: person.linkedin_url,
-            email_status: person.email_status,
+            
+            return score;
           };
-        }));
-
-        // Update the business in database if we can find it
-        if (existingBusiness) {
-          existingBusiness.decisionMakers = decisionMakers;
-          existingBusiness.apolloAttempted = true;
-          existingBusiness.enriched = enrichedOrg;
-          await existingBusiness.save();
-          console.log('[PlaceDetails] Saved Apollo decision makers to database:', {
-            businessId: existingBusiness.id,
-            businessName: existingBusiness.name,
-            decisionMakersCount: decisionMakers.length,
-            apolloAttempted: true,
-            decisionMakers: decisionMakers.map(dm => ({ name: dm.name, title: dm.title }))
+          
+          // Sort emails by relevance score
+          const sortedEmails = businessDomainEmails.sort((a, b) => {
+            return getEmailRelevanceScore(a) - getEmailRelevanceScore(b);
           });
+          
+          // Take only the top 3 most relevant emails
+          emails = sortedEmails.slice(0, 3);
+        } else {
+          // If no business domain emails found, return an empty array
+          emails = [];
         }
-              } catch (error) {
-          console.error('[PlaceDetails] Apollo API error:', error);
-          // Even if Apollo API fails, we should still save that we attempted Apollo enrichment
-          if (existingBusiness) {
-            existingBusiness.decisionMakers = [];
-            existingBusiness.apolloAttempted = true;
-            await existingBusiness.save();
-            console.log('[PlaceDetails] Saved empty Apollo decision makers due to API error');
-          }
-        }
-      } else if (shouldUseApollo && existingBusiness) {
-        // Apollo was requested but no website available - save empty decision makers
-        existingBusiness.decisionMakers = [];
-        existingBusiness.apolloAttempted = true;
-        await existingBusiness.save();
-        console.log('[PlaceDetails] Saved empty Apollo decision makers - no website available');
+        console.log(`[PlaceDetails] Filtered to most relevant business domain emails: ${JSON.stringify(emails)}`);
+      } else {
+        emails = [];
+        console.log(`[PlaceDetails] No valid business domain found, no emails returned`);
       }
+    }
 
     // Normalize and deduplicate emails before returning
     const normalizedEmails = normalizeAndDeduplicateEmails(emails);
@@ -3254,12 +3697,14 @@ app.get('/api/place-details/:placeId', async (req, res) => {
         currentPhone: existingBusiness.phone
       });
 
-      // Update fields
-      existingBusiness.emails = normalizedEmails;
-      existingBusiness.numLocations = numLocations;
-      existingBusiness.locationNames = locationNames;
-      existingBusiness.website = website;
-      existingBusiness.phone = phone;
+      // Update fields only if not using Apollo
+      if (!shouldUseApollo) {
+        existingBusiness.emails = normalizedEmails;
+        existingBusiness.numLocations = numLocations;
+        existingBusiness.locationNames = locationNames;
+        existingBusiness.website = website;
+        existingBusiness.phone = phone;
+      }
       existingBusiness.lastUpdated = new Date();
 
       console.log('[PlaceDetails] About to save business with updated data:', {

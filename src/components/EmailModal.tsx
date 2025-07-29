@@ -18,8 +18,8 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   const [sendingStates, setSendingStates] = useState<{[key: string]: boolean}>({});
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState({ subject: '', body: '' });
-  const [testEmail, setTestEmail] = useState<string>('francobreciano@gmail.com');
-  const [selectedApolloContact, setSelectedApolloContact] = useState<string>('');
+  const [testEmail, setTestEmail] = useState<string>('franbreciano@gmail.com');
+  const [selectedContactIndex, setSelectedContactIndex] = useState<string>('');
   const [isSendingTest, setIsSendingTest] = useState(false);
 
   useEffect(() => {
@@ -47,8 +47,8 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
   };
 
   const handleSendTestEmail = async () => {
-    if (!selectedApolloContact) {
-      toast.error('Please select an Apollo contact for the test email.');
+    if (!selectedContactIndex) {
+      toast.error('Please select a contact for the test email.');
       return;
     }
     if (!selectedTemplateId) {
@@ -60,14 +60,14 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
     try {
       // Debug: Log the available decision makers and selected contact ID
       console.log('Available decision makers:', decisionMakers);
-      console.log('Selected Apollo contact ID:', selectedApolloContact);
+      console.log('Selected contact index:', selectedContactIndex);
       
       // Find the selected Apollo contact
-      const selectedContact = decisionMakers[parseInt(selectedApolloContact)];
+      const selectedContact = decisionMakers[parseInt(selectedContactIndex)];
       console.log('Found selected contact:', selectedContact);
       
       if (!selectedContact) {
-        toast.error('Selected Apollo contact not found.');
+        toast.error('Selected contact not found.');
         return;
       }
 
@@ -138,13 +138,13 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
   // Get Apollo contacts using the same logic as the table
   const dbBusiness = databaseBusinesses[business.placeId];
-  const dbApolloContacts = dbBusiness?.decisionMakers || [];
+  const dbContacts = dbBusiness?.decisionMakers || [];
   const sessionDecisionMakers = business.decisionMakers || [];
   
   // Use database contacts if available, otherwise use session data
-  const allApolloContacts = dbApolloContacts.length > 0 ? dbApolloContacts : sessionDecisionMakers;
+  const allContacts = dbContacts.length > 0 ? dbContacts : sessionDecisionMakers;
   
-  const decisionMakers = allApolloContacts.filter(dm => dm.email && dm.email !== 'email_not_unlocked@domain.com' && !dm.email.includes('not_available') && dm.email.includes('@')) || [];
+  const decisionMakers = allContacts.filter(dm => dm.email && dm.email !== 'email_not_unlocked@domain.com' && !dm.email.includes('not_available') && dm.email.includes('@')) || [];
 
   return (
     <>
@@ -200,17 +200,17 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Apollo contacts
+                    Contacts
                   </label>
                   <div className="flex items-center space-x-2">
                     <div className="relative flex-[1.6]">
                       <select
-                        value={selectedApolloContact}
-                        onChange={(e) => setSelectedApolloContact(e.target.value)}
+                        value={selectedContactIndex}
+                        onChange={(e) => setSelectedContactIndex(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
                         required
                       >
-                        <option value="">Select Apollo Contact</option>
+                        <option value="">Select a Contact</option>
                         {decisionMakers.map((dm, index) => (
                           <option key={dm.id} value={index}>
                             {dm.name} - {dm.email}
@@ -221,7 +221,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
                     </div>
                     <button
                       onClick={handleSendTestEmail}
-                      disabled={isSendingTest || !selectedTemplateId || !selectedApolloContact}
+                      disabled={isSendingTest || !selectedTemplateId || !selectedContactIndex}
                       className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
                     >
                       {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -233,7 +233,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
             </div>
 
             <div className="space-y-3">
-              <h4 className="text-sm font-medium text-gray-700">Apollo Contacts</h4>
+              <h4 className="text-sm font-medium text-gray-700">Contacts</h4>
               {decisionMakers.length > 0 ? (
                 decisionMakers.map(dm => (
                 <div key={dm.id} className="bg-gray-50 p-3 rounded-lg flex items-center justify-between">
@@ -268,7 +268,7 @@ const EmailModal: React.FC<EmailModalProps> = ({ isOpen, onClose, business, emai
                 </div>
                 ))
               ) : (
-                <p className="text-sm text-gray-500">No Apollo contacts with valid emails found for this business.</p>
+                <p className="text-sm text-gray-500">No contacts with valid emails found for this business.</p>
               )}
             </div>
           </div>

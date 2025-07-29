@@ -1116,23 +1116,23 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       {(() => {
                         // First check for Apollo contacts from database
                         const dbBusiness = databaseBusinesses[business.placeId];
-                        const dbApolloContacts = dbBusiness?.decisionMakers || [];
+                        const dbContacts = dbBusiness?.decisionMakers || [];
                         
                         // Then check for current session decision makers
                         const sessionDecisionMakers = enrichedBusiness.decisionMakers || [];
                         
                         // Use database contacts if available, otherwise use session data
-                        const apolloContacts = dbApolloContacts.length > 0 ? dbApolloContacts : sessionDecisionMakers;
+                        const contacts = dbContacts.length > 0 ? dbContacts : sessionDecisionMakers;
                         
                         const attempted = hasApolloBeenAttempted(business);
                         const hasData = hasEnrichedApolloData(business);
                         
                         console.log(`[Apollo Display Debug] ${business.name}: attempted=${attempted}, hasData=${hasData}, apolloStatus=${enrichedBusiness.apolloStatus}`);
                         
-                        if (Array.isArray(apolloContacts) && apolloContacts.length > 0) {
+                        if (Array.isArray(contacts) && contacts.length > 0) {
                           return (
                             <div className="space-y-1">
-                              {apolloContacts.map((dm, idx) => (
+                              {contacts.map((dm, idx) => (
                                 <div key={idx} className="space-y-0.5">
                                   <div className="flex items-center text-xs text-gray-800">
                                     <span className="truncate" title={`${dm.name} - ${dm.title}`}>{dm.name}</span>

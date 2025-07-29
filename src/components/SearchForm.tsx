@@ -1,15 +1,18 @@
 import React, { useState } from 'react';
 import { Loader2, Search } from 'lucide-react';
 import { Business, Location } from '../types';
+import CostEstimator from './CostEstimator';
 
 interface SearchFormProps {
   onResults: (businesses: Business[]) => void;
-  setIsLoading: (isLoading: boolean) => void;
+  setIsLoading: (setIsLoading: boolean) => void;
 }
 
 const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
   const [keyword, setKeyword] = useState('coffee shops');
   const [location, setLocation] = useState('austin');
+  const [includeApollo, setIncludeApollo] = useState(true);
+  const [estimatedResults, setEstimatedResults] = useState(20);
   
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -20,7 +23,7 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ keyword, location }),
+        body: JSON.stringify({ keyword, location, includeApollo }),
       });
       const data = await response.json();
 
@@ -104,6 +107,42 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
             />
           </div>
         </div>
+        
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
+            <input
+              id="include-apollo"
+              type="checkbox"
+              checked={includeApollo}
+              onChange={(e) => setIncludeApollo(e.target.checked)}
+              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+            />
+            <label htmlFor="include-apollo" className="text-sm text-gray-700">
+              Include Apollo contact lookup
+            </label>
+          </div>
+        </div>
+        
+        <div>
+          <label htmlFor="estimated-results" className="block text-sm font-medium text-gray-700 mb-1">
+            Estimated Results ({estimatedResults} businesses)
+          </label>
+          <input
+            id="estimated-results"
+            type="range"
+            min="5"
+            max="100"
+            value={estimatedResults}
+            onChange={(e) => setEstimatedResults(Number(e.target.value))}
+            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>5</span>
+            <span>50</span>
+            <span>100</span>
+          </div>
+        </div>
+        
         <button
           type="submit"
           disabled={!keyword || !location}
@@ -113,6 +152,7 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
           Search Businesses
         </button>
       </form>
+      
       <div className="mt-4">
         <button onClick={() => onResults([])} className="w-full text-center py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
           Clear Results
@@ -131,6 +171,14 @@ const SearchForm: React.FC<SearchFormProps> = ({ onResults, setIsLoading }) => {
             </button>
           ))}
         </div>
+      </div>
+      
+      {/* Cost Estimator - moved below quick searches */}
+      <div className="mt-6">
+        <CostEstimator 
+          estimatedResults={estimatedResults}
+          includeApollo={includeApollo}
+        />
       </div>
     </div>
   );
