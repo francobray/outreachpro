@@ -564,65 +564,52 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const enrichPlacesData = async (business: Business) => {
     updateLoadingState(business.id, 'enrich');
     try {
-      // Get the website from the business data or fetch it if not available
-      let website = business.website;
-      if (!website) {
-        const url = `/api/place-details/${business.placeId}`;
-        console.log(`[Places Enrich] Fetching website for ${business.placeId} from:`, url);
-        const res = await fetch(url);
-        const placeData = await res.json();
-        website = placeData.website;
-        console.log(`[Places Enrich] Received website for ${business.placeId}:`, website);
-      }
+      // Use the new dedicated business enrichment endpoint
+      const url = `/api/business/enrich/${business.placeId}`;
+      console.log(`[Business Enrich] Enriching data for ${business.placeId} from:`, url);
       
-      if (!website) {
-        console.log(`[Places Enrich] No website found for ${business.placeId}`);
-        setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: false } }));
-        return;
-      }
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
       
-      // Enrich with website data
-      const url = `/api/place-details/${business.placeId}?enrich=true&website=${encodeURIComponent(website)}`;
-      console.log(`[Places Enrich] Enriching data for ${business.placeId} from:`, url);
-      const res = await fetch(url);
       const data = await res.json();
-      console.log(`[Places Enrich] Received enriched data for ${business.placeId}:`, data);
+      console.log(`[Business Enrich] Received enriched data for ${business.placeId}:`, data);
       
-      // If the website from the enriched data is different, use that
-      if (data.website && data.website !== website) {
-        website = data.website;
-        console.log(`[Places Enrich] Using website from business data for ${business.placeId}:`, website);
+      if (!data.success) {
+        throw new Error(data.message || 'Enrichment failed');
       }
       
-      // Update contact info with Google Places data
+      // Update contact info with enriched data
       setContactInfo(prev => ({
         ...prev,
         [business.placeId]: {
-          website: website,
-          phone: data.formatted_phone_number || null,
-          emails: data.emails || [],
-          numLocations: data.numLocations,
-          locationNames: data.locationNames || [],
+          website: data.business.website || null,
+          phone: null, // Phone is not returned by the new endpoint
+          emails: data.business.emails || [],
+          numLocations: data.business.numLocations,
+          locationNames: data.business.locationNames || [],
           loading: false,
-          usedPuppeteer: data.usedPuppeteer || false,
-          websiteStatus: data.website_status || 'ok'
+          usedPuppeteer: false, // Not returned by the new endpoint
+          websiteStatus: 'ok'
         }
       }));
       
       // Also update the business data
       updateBusinessData(business.id, {
-        locations: business.locations.map(loc => loc.id === business.placeId ? {
-            ...loc,
-            website: website || loc.website,
-            emails: data.emails || [],
-            websiteStatus: data.website_status || 'ok'
-        } : loc)
+        website: data.business.website,
+        emails: data.business.emails || [],
+        numLocations: data.business.numLocations,
+        locationNames: data.business.locationNames || [],
+        enrichedAt: data.business.enrichedAt
       });
 
       // Refresh database state to show updated enriched data
       await refreshDatabaseState();
     } catch (error) {
-      console.error('Failed to enrich places data:', error);
+      console.error('Failed to enrich business data:', error);
       setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: false } }));
     } finally {
       updateLoadingState(business.id, '');
@@ -646,6 +633,10 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       
       const data = await res.json();
       console.log(`[Apollo Enrich] Received data for ${business.placeId}:`, data);
+      
+      if (!data.success) {
+        throw new Error(data.message || 'Apollo enrichment failed');
+      }
       
       // Update business data with Apollo enrichment results without affecting contact info display
       if (business) {
@@ -1154,11 +1145,11 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                                           title="View LinkedIn Profile"
                                         >
                                           <ExternalLink className="h-3 w-3 mr-1" />
-                                          LinkedIn
+                                          LI
                                         </a>
                                       </>
                                     )}
-                                    {dm.email && !dm.email.includes('email_not_unlocked') && !dm.email.includes('not_available') && (
+                                    {dm.email && (
                                       <>
                                         <span className="mx-1 text-gray-400">-</span>
                                         <span className="text-gray-600">{dm.email}</span>

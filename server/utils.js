@@ -78,7 +78,7 @@ export async function getApiTrackingStats() {
   try {
     const googlePlacesSearch = await ApiCallLog.countDocuments({ api: 'google_places_search' });
     const googlePlacesDetails = await ApiCallLog.countDocuments({ api: 'google_places_details' });
-    const apolloContacts = await ApiCallLog.countDocuments({ api: { $in: ['apollo_enrich', 'apollo_people_search', 'apollo_person_match'] } });
+    const apolloContacts = await ApiCallLog.countDocuments({ api: { $in: ['apollo_organization_enrich', 'apollo_people_search', 'apollo_person_match'] } });
     return {
       googlePlacesSearch,
       googlePlacesDetails,
@@ -116,7 +116,7 @@ export async function getMonthlyStats(months = 2) {
       calls.forEach(call => {
         if (call._id === 'google_places_search') stats.googlePlacesSearch = call.count;
         if (call._id === 'google_places_details') stats.googlePlacesDetails = call.count;
-        if (['apollo_enrich', 'apollo_people_search', 'apollo_person_match'].includes(call._id)) {
+        if (['apollo_organization_enrich', 'apollo_people_search', 'apollo_person_match'].includes(call._id)) {
           stats.apolloContacts += call.count;
         }
       });

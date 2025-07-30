@@ -76,7 +76,7 @@ async function enrichBusinessData(placeId, options = {}) {
   }
   
   let emails = [];
-  let numLocations = undefined;
+  let numLocations = 1; // Default to 1 location for any business
   let locationNames = [];
   let decisionMakers = [];
 
@@ -93,7 +93,10 @@ async function enrichBusinessData(placeId, options = {}) {
       usedPuppeteer: detectLocationsUsedPuppeteer 
     } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode });
     
-    numLocations = detectedNumLocations;
+    // Use detected locations if available, otherwise keep default of 1
+    if (detectedNumLocations && detectedNumLocations > 0) {
+      numLocations = detectedNumLocations;
+    }
     locationNames = detectedLocationNames;
 
     // Normalize and format location names
@@ -305,6 +308,19 @@ async function enrichBusinessData(placeId, options = {}) {
         }),
       });
       const enrichData = await enrichRes.json();
+      try {
+        await ApiCallLog.create({
+          api: 'apollo_organization_enrich',
+          timestamp: new Date(),
+          details: {
+            endpoint: 'organizations/enrich',
+            domain: domain,
+            businessName: businessName,
+          }
+        });
+      } catch (error) {
+        console.error('[Tracking] Error saving Apollo Organization Enrich API call to database:', error);
+      }
           console.log('[Enrichment] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
           if (enrichData.organization) {
       enrichedOrg = enrichData.organization;
@@ -351,10 +367,21 @@ async function enrichBusinessData(placeId, options = {}) {
                   console.log(`[Enrichment] Could not determine country for major brand, searching without location filter.`);
               }
           } else if (addressParts.length >= 2) {
+              // Extract city and state, ensuring proper "City, State" format
               const city = addressParts[addressParts.length - 2].trim();
-              const state = addressParts[addressParts.length - 1].trim().split(' ')[0];
-              peopleBody['person_locations'] = [`${city}, ${state}`];
-              console.log(`[Enrichment] Added location filter to Apollo search: ${city}, ${state}`);
+              const statePart = addressParts[addressParts.length - 1].trim();
+              // Extract state (first part before any additional info like ZIP)
+              const state = statePart.split(' ')[0];
+              
+              // Ensure we have valid city and state
+              if (city && state && city.length > 0 && state.length > 0) {
+                  peopleBody['person_locations'] = [`${city}, ${state}`];
+                  console.log(`[Enrichment] Added location filter to Apollo search: ${city}, ${state}`);
+              } else {
+                  console.log(`[Enrichment] Could not parse valid city/state from address: ${existingBusiness.address}`);
+              }
+          } else {
+              console.log(`[Enrichment] Address format not suitable for location filtering: ${existingBusiness.address}`);
           }
         }
 
@@ -376,6 +403,20 @@ async function enrichBusinessData(placeId, options = {}) {
         }
 
         const peopleData = await peopleRes.json();
+        try {
+          await ApiCallLog.create({
+            api: 'apollo_people_search',
+            timestamp: new Date(),
+            details: {
+              endpoint: 'people/search',
+              businessName: existingBusiness.name,
+              placeId: existingBusiness.placeId,
+              foundContactsCount: peopleData.people?.length || 0
+            }
+          });
+        } catch (error) {
+          console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
+        }
         console.log('[Enrichment] Apollo People API response:', JSON.stringify(peopleData, null, 2));
         console.log('[Enrichment] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
 
@@ -480,32 +521,30 @@ async function enrichBusinessData(placeId, options = {}) {
     const hasNewContacts = emails.length > 0 || decisionMakers.length > 0;
     const hasNewLocationInfo = numLocations !== undefined && numLocations > 0;
 
-    // Only save if we found new, meaningful data
-    if (hasNewContacts || hasNewLocationInfo) {
-      existingBusiness.website = website;
-      existingBusiness.emails = emails;
-      existingBusiness.numLocations = numLocations;
-      existingBusiness.locationNames = locationNames;
-      existingBusiness.decisionMakers = decisionMakers;
-      
-      // Final save to capture all updates
-      existingBusiness.enrichedAt = new Date();
-      await existingBusiness.save();
-      
-      console.log('[Enrichment] Saved enriched data to database:', {
-        businessId: existingBusiness.id,
-        businessName: existingBusiness.name,
-        website: existingBusiness.website,
-        phone: existingBusiness.phone,
-        emailsCount: existingBusiness.emails.length,
-        numLocations: existingBusiness.numLocations,
-        locationNamesCount: existingBusiness.locationNames.length,
-        decisionMakersCount: decisionMakers.length,
-        enrichedAt: existingBusiness.enrichedAt
-      });
-    } else {
-      console.log('[Enrichment] No new meaningful data found. Skipping save to avoid bumping timestamp.');
-    }
+    // Always update basic fields and set enrichedAt timestamp when enrichment is performed
+    existingBusiness.website = website;
+    existingBusiness.emails = emails;
+    existingBusiness.numLocations = numLocations;
+    existingBusiness.locationNames = locationNames;
+    existingBusiness.decisionMakers = decisionMakers;
+    
+    // Always set enrichedAt timestamp when enrichment is performed
+    existingBusiness.enrichedAt = new Date();
+    await existingBusiness.save();
+    
+    console.log('[Enrichment] Saved enriched data to database:', {
+      businessId: existingBusiness.id,
+      businessName: existingBusiness.name,
+      website: existingBusiness.website,
+      phone: existingBusiness.phone,
+      emailsCount: existingBusiness.emails.length,
+      numLocations: existingBusiness.numLocations,
+      locationNamesCount: existingBusiness.locationNames.length,
+      decisionMakersCount: decisionMakers.length,
+      enrichedAt: existingBusiness.enrichedAt,
+      hasNewContacts: hasNewContacts,
+      hasNewLocationInfo: hasNewLocationInfo
+    });
   }
 
   console.log('[Enrichment] Process complete.');
@@ -647,59 +686,146 @@ router.post('/search', async (req, res) => {
   }
 });
 
+// Business enrichment endpoint - called by the business enrichment button
+router.post('/business/enrich/:placeId', async (req, res) => {
+  const { placeId } = req.params;
+  
+  try {
+    console.log(`[Business Enrich] Starting enrichment for placeId: ${placeId}`);
+    
+    // Call the enrichment method with apollo disabled
+    const enrichedBusiness = await enrichBusinessData(placeId, { 
+      enrich: true, 
+      apollo: false 
+    });
+    
+    // The enrichBusinessData function already updates enrichedAt timestamp
+    console.log(`[Business Enrich] Enrichment completed for placeId: ${placeId}`);
+    
+    res.json({
+      success: true,
+      message: 'Business enriched successfully',
+      business: {
+        id: enrichedBusiness.id,
+        name: enrichedBusiness.name,
+        website: enrichedBusiness.website,
+        emails: enrichedBusiness.emails,
+        numLocations: enrichedBusiness.numLocations,
+        locationNames: enrichedBusiness.locationNames,
+        enrichedAt: enrichedBusiness.enrichedAt
+      }
+    });
+  } catch (error) {
+    console.error(`[Business Enrich] Error for placeId ${placeId}:`, error);
+    res.status(500).json({ 
+      error: 'Failed to enrich business',
+      message: error.message 
+    });
+  }
+});
+
 // Apollo-only enrichment for finding contacts
 router.post('/apollo/enrich/:placeId', async (req, res) => {
   const { placeId } = req.params;
   const apolloApiKey = process.env.APOLLO_API_KEY;
-  const googleApiKey = process.env.GOOGLE_PLACES_API_KEY;
 
   try {
-    const business = await Business.findOne({ placeId });
+    let business = await Business.findOne({ placeId });
     if (!business) {
       return res.status(404).json({ error: 'Business not found' });
     }
     
-    // Step 1: Ensure we have a website. If not, fetch from Google Places Details.
-    if (!business.website && googleApiKey) {
-      console.log(`[Apollo Enrich] Website not found for "${business.name}". Fetching from Google Places...`);
-      const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=website&key=${googleApiKey}`;
+    console.log(`[Apollo Enrich] Starting Apollo enrichment for "${business.name}" (placeId: ${placeId})`);
+    console.log(`[Apollo Enrich] Business enrichedAt:`, business.enrichedAt);
+    console.log(`[Apollo Enrich] Business enrichedAt type:`, typeof business.enrichedAt);
+    console.log(`[Apollo Enrich] Business enrichedAt instanceof Date:`, business.enrichedAt instanceof Date);
+    
+    // Step 1: Check if business is already enriched
+    if (!business.enrichedAt) {
+      console.log(`[Apollo Enrich] Business "${business.name}" is not enriched. Running enrichment first...`);
       try {
-        const detailsRes = await fetch(detailsUrl);
-        const detailsData = await detailsRes.json();
-        if (detailsData.result && detailsData.result.website) {
-          business.website = detailsData.result.website;
-          await business.save(); // Save website before proceeding
-          console.log(`[Apollo Enrich] Found and saved website: ${business.website}`);
-        } else {
-          console.log(`[Apollo Enrich] No website found in Google Places Details for "${business.name}".`);
+        // Call the enrichment method to get website and other data
+        await enrichBusinessData(placeId, { enrich: true, apollo: false });
+        
+        // Refresh business data after enrichment
+        const refreshedBusiness = await Business.findOne({ placeId });
+        if (refreshedBusiness) {
+          business = refreshedBusiness;
         }
-      } catch (error) {
-        console.error(`[Apollo Enrich] Error fetching Google Places Details:`, error);
+        console.log(`[Apollo Enrich] Enrichment completed for "${business.name}". Website: ${business.website}`);
+      } catch (enrichError) {
+        console.error(`[Apollo Enrich] Error during enrichment:`, enrichError);
+        return res.status(500).json({ 
+          error: 'Failed to enrich business before Apollo search',
+          message: enrichError.message 
+        });
       }
+    } else {
+      console.log(`[Apollo Enrich] Business "${business.name}" is already enriched. Proceeding with Apollo search.`);
     }
     
-    // Step 2: Call Apollo API to find decision makers
+    // Step 2: Call Apollo organization endpoint
     const businessName = business.name;
     const domain = business.website ? extractDomain(business.website) : null;
+    console.log('[Apollo Enrich] Using website from enriched business data:', { 
+      website: business.website, 
+      domain: domain,
+      businessName: businessName 
+    });
     let orgId = undefined;
 
     if (domain) {
+      console.log('[Apollo Enrich] Calling Apollo organization enrich API using website domain:', { 
+        domain: domain, 
+        name: businessName,
+        website: business.website 
+      });
       const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloApiKey },
-        body: JSON.stringify({ api_key: apolloApiKey, domain, name: businessName }),
+        body: JSON.stringify({
+          api_key: apolloApiKey,
+          domain: domain,
+          name: businessName,
+        }),
       });
+      
+      console.log('[Apollo Enrich] Apollo Organization Enrich API response status:', enrichRes.status);
       const enrichData = await enrichRes.json();
+      
+      if (!enrichRes.ok) {
+        console.error('[Apollo Enrich] Apollo Organization Enrich API error:', enrichRes.status, enrichData);
+      }
+      try {
+        await ApiCallLog.create({
+          api: 'apollo_organization_enrich',
+          timestamp: new Date(),
+          details: {
+            endpoint: 'organizations/enrich',
+            domain: domain,
+            businessName: businessName,
+          }
+        });
+      } catch (error) {
+        console.error('[Tracking] Error saving Apollo Organization Enrich API call to database:', error);
+      }
+      console.log('[Apollo Enrich] Apollo Organization Enrich API response:', JSON.stringify(enrichData, null, 2));
       if (enrichData.organization) {
         orgId = enrichData.organization.id;
       }
+    } else {
+      console.log('[Apollo Enrich] Skipping Apollo organization enrichment: no domain available.');
     }
 
+    // Step 3: Call Apollo people endpoint
     let peopleBody = {
       api_key: apolloApiKey,
       person_titles: ['Owner', 'Founder', 'Co-Founder', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'Chef Executive Officer', 'General Manager'],
       page: 1,
       per_page: 5,
+      reveal_personal_emails: true,
+      contact_email_status: ['verified', 'unverified'],
+      show_personal_emails: true,
     };
 
     if (orgId) {
@@ -707,8 +833,46 @@ router.post('/apollo/enrich/:placeId', async (req, res) => {
     } else if (domain) {
       peopleBody['q_organization_domains'] = [domain];
     } else {
+      console.log(`[Apollo Enrich] Falling back to Apollo search by organization name: "${businessName}"`);
       peopleBody['q_organization_names'] = [businessName];
     }
+
+    // Add location filtering only if we don't have a specific organization ID
+    if (!orgId && business.address) {
+      let addressParts = business.address.split(', ');
+      
+      let country = null;
+      if (addressParts.length > 1 && /USA|United States/i.test(addressParts[addressParts.length - 1])) {
+          country = addressParts.pop().trim();
+      }
+
+      if (isMajorBrand(business.name)) {
+          if (country) {
+              peopleBody['person_locations'] = [country];
+              console.log(`[Apollo Enrich] Added location filter for major brand: ${country}`);
+          } else {
+              console.log(`[Apollo Enrich] Could not determine country for major brand, searching without location filter.`);
+          }
+      } else if (addressParts.length >= 2) {
+          // Extract city and state, ensuring proper "City, State" format
+          const city = addressParts[addressParts.length - 2].trim();
+          const statePart = addressParts[addressParts.length - 1].trim();
+          // Extract state (first part before any additional info like ZIP)
+          const state = statePart.split(' ')[0];
+          
+          // Ensure we have valid city and state
+          if (city && state && city.length > 0 && state.length > 0) {
+              peopleBody['person_locations'] = [`${city}, ${state}`];
+              console.log(`[Apollo Enrich] Added location filter to Apollo search: ${city}, ${state}`);
+          } else {
+              console.log(`[Apollo Enrich] Could not parse valid city/state from address: ${business.address}`);
+          }
+      } else {
+          console.log(`[Apollo Enrich] Address format not suitable for location filtering: ${business.address}`);
+      }
+    }
+
+    console.log('[Apollo Enrich] Calling Apollo people search API:', peopleBody);
 
     const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
       method: 'POST',
@@ -719,6 +883,9 @@ router.post('/apollo/enrich/:placeId', async (req, res) => {
     if (!peopleRes.ok) throw new Error(`Apollo People API failed with status ${peopleRes.status}`);
 
     const peopleData = await peopleRes.json();
+    
+    console.log('[Apollo Enrich] Apollo People API response:', JSON.stringify(peopleData, null, 2));
+    console.log('[Apollo Enrich] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
     
     // Log the people search API call
     try {
@@ -736,45 +903,98 @@ router.post('/apollo/enrich/:placeId', async (req, res) => {
       console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
     }
     
-    business.decisionMakers = peopleData.people || [];
+    // Process decision makers and handle locked emails
+    const decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
+      let email = person.email;
+      // If email is locked, try to enrich
+      if (
+        (!email || email === 'email_not_unlocked@domain.com') &&
+        person.id
+      ) {
+        try {
+          const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'x-api-key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              api_key: apolloApiKey,
+              id: person.id,
+            }),
+          });
+          const enrichData = await enrichRes.json();
+          if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
+            email = enrichData.person.email;
+          } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
+            email = person.personal_emails[0];
+          }
+          try {
+            const personData = enrichData.person;
+            await ApiCallLog.create({
+              api: 'apollo_person_match',
+              timestamp: new Date(),
+              details: {
+                endpoint: 'person_match',
+                personId: person.id,
+                businessName: business.name,
+                placeId: business.placeId,
+                foundContacts: personData ? [{
+                  name: personData.name,
+                  title: personData.title,
+                  linkedin_url: personData.linkedin_url,
+                }] : [],
+                organizationName: personData?.organization?.name,
+                organizationWebsite: personData?.organization?.website_url,
+              }
+            });
+            console.log('[Tracking] Apollo Person Match API call tracked in database.');
+          } catch (error) {
+            console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
+          }
+        } catch (err) {
+          console.log('[Apollo] Error enriching person:', person.id, err);
+        }
+      } else if (
+        (!email || email === 'email_not_unlocked@domain.com') &&
+        Array.isArray(person.personal_emails) &&
+        person.personal_emails.length > 0
+      ) {
+        email = person.personal_emails[0];
+      }
+      return {
+        name: person.name,
+        title: person.title,
+        email,
+        linkedin_url: person.linkedin_url,
+        email_status: person.email_status,
+      };
+    }));
+    
+    // Update business with Apollo results
+    business.decisionMakers = decisionMakers;
     business.apolloAttempted = true;
     await business.save();
 
+    console.log(`[Apollo Enrich] Apollo enrichment completed for "${business.name}". Found ${decisionMakers.length} decision makers.`);
+
     res.json({
-      emails: business.emails,
+      success: true,
+      message: 'Apollo enrichment completed successfully',
       decisionMakers: business.decisionMakers
     });
 
   } catch (error) {
     console.error(`[Apollo Enrich] Error for placeId ${placeId}:`, error);
-    res.status(500).json({ error: 'Failed to fetch from Apollo API' });
-  }
-});
-
-// Find emails for a business
-router.post('/emails/:businessId', async (req, res) => {
-  const { businessId } = req.params;
-  console.log(`[Apollo] /api/emails/${businessId} endpoint hit`);
-  
-  try {
-    const business = await Business.findOne({ placeId: businessId });
-    if (!business) {
-      console.log(`[Apollo] Business not found for id: ${businessId}`);
-      return res.status(404).json({ error: 'Business not found' });
-    }
-
-    const enrichedBusiness = await enrichBusinessData(business.placeId, { enrich: false, apollo: true });
-
-    res.json({ 
-      emails: enrichedBusiness.emails, 
-      decisionMakers: enrichedBusiness.decisionMakers, 
-      enriched: enrichedBusiness.enriched 
+    res.status(500).json({ 
+      error: 'Failed to fetch from Apollo API',
+      message: error.message 
     });
-  } catch (error) {
-    console.error('[Apollo] Error:', error);
-    res.status(500).json({ error: 'Failed to fetch from Apollo API' });
   }
 });
+
+
 
 // Send outreach email
 router.post('/send-email', async (req, res) => {
@@ -1119,7 +1339,7 @@ router.get('/email-activities', async (req, res) => {
       const history = await ApiCallLog.find().sort({ timestamp: -1 }).limit(1000);
       const googlePlacesSearch = history.filter(c => c.api === 'google_places_search');
       const googlePlacesDetails = history.filter(c => c.api === 'google_places_details');
-      const apolloContacts = history.filter(c => ['apollo_enrich', 'apollo_people_search', 'apollo_person_match'].includes(c.api));
+      const apolloContacts = history.filter(c => ['apollo_organization_enrich', 'apollo_people_search', 'apollo_person_match'].includes(c.api));
       
       res.json({
         googlePlacesSearch,
