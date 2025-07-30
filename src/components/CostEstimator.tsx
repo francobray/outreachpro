@@ -4,6 +4,7 @@ import { DollarSign, Info, TrendingUp, HelpCircle } from 'lucide-react';
 interface CostEstimatorProps {
   estimatedResults: number;
   includeApollo: boolean;
+  setEstimatedResults: (count: number) => void;
 }
 
 interface APICost {
@@ -14,7 +15,7 @@ interface APICost {
   tooltip: string;
 }
 
-const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, includeApollo }) => {
+const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, includeApollo, setEstimatedResults }) => {
   // API pricing estimates (based on typical rates)
   const GOOGLE_PLACES_SEARCH_COST = 0.017; // per search request
   const GOOGLE_PLACES_DETAILS_COST = 0.017; // per details request
@@ -95,30 +96,52 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
         </div>
       </div>
       
-      <div className="space-y-2 mb-3">
-        {costs.map((cost, index) => (
-          <div key={index} className="flex items-center justify-between text-sm group relative">
-            <div className="flex items-center space-x-2">
-              <span className={`px-2 py-1 rounded text-xs font-medium ${cost.color}`}>
-                {cost.name}
-              </span>
-              <div className="relative">
-                <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
-                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
-                  {cost.tooltip}
-                  <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
+      <div className="space-y-4">
+        <div>
+          <label htmlFor="estimated-results" className="block text-sm font-medium text-gray-700 mb-1">
+            Estimated Results ({estimatedResults} businesses)
+          </label>
+          <input
+            id="estimated-results"
+            type="range"
+            min="5"
+            max="100"
+            value={estimatedResults}
+            onChange={(e) => setEstimatedResults(Number(e.target.value))}
+            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>5</span>
+            <span>50</span>
+            <span>100</span>
+          </div>
+        </div>
+        
+        <div className="space-y-2">
+          {costs.map((cost, index) => (
+            <div key={index} className="flex items-center justify-between text-sm group relative">
+              <div className="flex items-center space-x-2">
+                <span className={`px-2 py-1 rounded text-xs font-medium ${cost.color}`}>
+                  {cost.name}
+                </span>
+                <div className="relative">
+                  <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
+                  <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
+                    {cost.tooltip}
+                    <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
+                  </div>
                 </div>
               </div>
+              <div className="text-right">
+                <div className="font-medium">{formatCost(cost.cost)}</div>
+                <div className="text-xs text-gray-500">{cost.description}</div>
+              </div>
             </div>
-            <div className="text-right">
-              <div className="font-medium">{formatCost(cost.cost)}</div>
-              <div className="text-xs text-gray-500">{cost.description}</div>
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
       
-      <div className="border-t border-gray-200 pt-3">
+      <div className="border-t border-gray-200 pt-3 mt-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <TrendingUp className="h-4 w-4 text-gray-600" />

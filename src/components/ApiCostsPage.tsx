@@ -1,32 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { DollarSign, TrendingUp, TrendingDown, RefreshCw, AlertCircle, CheckCircle, Clock, BarChart2 } from 'lucide-react';
+import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Bar } from 'recharts';
 import { ApiCallLog } from '../types';
 import ApiCallLogTable from './ApiCallLogTable';
 
+interface MonthlyCost {
+  month: string;
+  totalCost: number;
+  googleCost: number;
+  apolloCost: number;
+  usage: {
+    googlePlacesSearch: number;
+    googlePlacesDetails: number;
+    apolloContacts: number;
+  };
+}
+
 interface ApiCostsData {
-  googlePlaces: {
-    currentMonth: number;
-    previousMonth: number;
-    usage: {
-      searchRequests: number;
-      detailsRequests: number;
-    };
-    lastUpdated: string;
-  };
-  apollo: {
-    currentMonth: number;
-    previousMonth: number;
-    usage: {
-      contactSearches: number;
-      remainingCredits: number;
-    };
-    lastUpdated: string;
-  };
   total: {
     currentMonth: number;
     previousMonth: number;
     trend: 'up' | 'down' | 'stable';
   };
+  history: MonthlyCost[];
 }
 
 const ApiCostsPage: React.FC = () => {
@@ -161,34 +157,27 @@ const ApiCostsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Total Costs Card */}
+      {/* Monthly Cost History Chart */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Total Monthly Costs</h2>
-          {costsData && getTrendIcon(costsData.total.trend)}
+          <h2 className="text-lg font-semibold text-gray-900">Monthly Cost History</h2>
+          <BarChart2 className="h-5 w-5 text-gray-400" />
         </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="text-center">
-            <div className="text-2xl font-bold text-gray-900">
-              {costsData ? formatCurrency(costsData.total.currentMonth) : '$0.00'}
-            </div>
-            <div className="text-sm text-gray-500">Current Month</div>
-          </div>
-          
-          <div className="text-center">
-            <div className="text-xl font-semibold text-gray-700">
-              {costsData ? formatCurrency(costsData.total.previousMonth) : '$0.00'}
-            </div>
-            <div className="text-sm text-gray-500">Previous Month</div>
-          </div>
-          
-          <div className="text-center">
-            <div className={`text-lg font-semibold ${costsData ? getStatusColor(costsData.total.currentMonth) : 'text-gray-700'}`}>
-              {costsData ? `${costsData.total.currentMonth > costsData.total.previousMonth ? '+' : ''}${formatCurrency(costsData.total.currentMonth - costsData.total.previousMonth)}` : '$0.00'}
-            </div>
-            <div className="text-sm text-gray-500">Difference</div>
-          </div>
+        <div style={{ width: '100%', height: 300 }}>
+          <ResponsiveContainer>
+            <BarChart
+              data={costsData?.history}
+              margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis tickFormatter={(value) => formatCurrency(value as number)} />
+              <Tooltip formatter={(value) => formatCurrency(value as number)} />
+              <Legend />
+              <Bar dataKey="googleCost" stackId="a" fill="#4285F4" name="Google" />
+              <Bar dataKey="apolloCost" stackId="a" fill="#7c3aed" name="Apollo" />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
@@ -205,15 +194,15 @@ const ApiCostsPage: React.FC = () => {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Current Month:</span>
-                <span className={`font-semibold ${costsData ? getStatusColor(costsData.googlePlaces.currentMonth) : 'text-gray-900'}`}>
-                  {costsData ? formatCurrency(costsData.googlePlaces.currentMonth) : '$0.00'}
+                <span className={`font-semibold ${costsData ? getStatusColor(costsData.total.currentMonth) : 'text-gray-900'}`}>
+                  {costsData ? formatCurrency(costsData.total.currentMonth) : '$0.00'}
                 </span>
               </div>
               
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Previous Month:</span>
                 <span className="font-semibold text-gray-900">
-                  {costsData ? formatCurrency(costsData.googlePlaces.previousMonth) : '$0.00'}
+                  {costsData ? formatCurrency(costsData.total.previousMonth) : '$0.00'}
                 </span>
               </div>
               
@@ -222,20 +211,15 @@ const ApiCostsPage: React.FC = () => {
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Search Requests:</span>
-                    <span className="font-medium">{costsData ? formatNumber(costsData.googlePlaces.usage.searchRequests) : '0'}</span>
+                    <span className="font-medium">{costsData?.history.at(-1)?.usage.googlePlacesSearch ?? '0'}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Details Requests:</span>
-                    <span className="font-medium">{costsData ? formatNumber(costsData.googlePlaces.usage.detailsRequests) : '0'}</span>
+                    <span className="font-medium">{costsData?.history.at(-1)?.usage.googlePlacesDetails ?? '0'}</span>
                   </div>
                 </div>
               </div>
               
-              {costsData && (
-                <div className="text-xs text-gray-500">
-                  Last updated: {new Date(costsData.googlePlaces.lastUpdated).toLocaleString()}
-                </div>
-              )}
             </div>
           </div>
           <ApiCallLogTable title="Google Places API Calls" logs={logs.google} />
@@ -252,15 +236,15 @@ const ApiCostsPage: React.FC = () => {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Current Month:</span>
-                <span className={`font-semibold ${costsData ? getStatusColor(costsData.apollo.currentMonth) : 'text-gray-900'}`}>
-                  {costsData ? formatCurrency(costsData.apollo.currentMonth) : '$0.00'}
+                <span className={`font-semibold ${costsData ? getStatusColor(costsData.total.currentMonth) : 'text-gray-900'}`}>
+                  {costsData ? formatCurrency(costsData.total.currentMonth) : '$0.00'}
                 </span>
               </div>
               
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Previous Month:</span>
                 <span className="font-semibold text-gray-900">
-                  {costsData ? formatCurrency(costsData.apollo.previousMonth) : '$0.00'}
+                  {costsData ? formatCurrency(costsData.total.previousMonth) : '$0.00'}
                 </span>
               </div>
               
@@ -269,20 +253,15 @@ const ApiCostsPage: React.FC = () => {
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Contact Searches:</span>
-                    <span className="font-medium">{costsData ? formatNumber(costsData.apollo.usage.contactSearches) : '0'}</span>
+                    <span className="font-medium">{costsData?.history.at(-1)?.usage.apolloContacts ?? '0'}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Remaining Credits:</span>
-                    <span className="font-medium">{costsData ? formatNumber(costsData.apollo.usage.remainingCredits) : '0'}</span>
+                    <span className="font-medium">0</span>
                   </div>
                 </div>
               </div>
               
-              {costsData && (
-                <div className="text-xs text-gray-500">
-                  Last updated: {new Date(costsData.apollo.lastUpdated).toLocaleString()}
-                </div>
-              )}
             </div>
           </div>
           <ApiCallLogTable title="Apollo API Calls" logs={logs.apollo} />

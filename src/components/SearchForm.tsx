@@ -7,8 +7,6 @@ interface SearchFormProps {
   setIsLoading: (setIsLoading: boolean) => void;
   includeApollo: boolean;
   setIncludeApollo: (include: boolean) => void;
-  estimatedResults: number;
-  setEstimatedResults: (count: number) => void;
 }
 
 const SearchForm: React.FC<SearchFormProps> = ({
@@ -16,8 +14,6 @@ const SearchForm: React.FC<SearchFormProps> = ({
   setIsLoading,
   includeApollo,
   setIncludeApollo,
-  estimatedResults,
-  setEstimatedResults,
 }) => {
   const [keyword, setKeyword] = useState('coffee shops');
   const [location, setLocation] = useState('austin');
@@ -128,26 +124,6 @@ const SearchForm: React.FC<SearchFormProps> = ({
             <label htmlFor="include-apollo" className="text-sm text-gray-700">
               Include Apollo contact lookup
             </label>
-          </div>
-        </div>
-        
-        <div>
-          <label htmlFor="estimated-results" className="block text-sm font-medium text-gray-700 mb-1">
-            Estimated Results ({estimatedResults} businesses)
-          </label>
-          <input
-            id="estimated-results"
-            type="range"
-            min="5"
-            max="100"
-            value={estimatedResults}
-            onChange={(e) => setEstimatedResults(Number(e.target.value))}
-            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
-          />
-          <div className="flex justify-between text-xs text-gray-500 mt-1">
-            <span>5</span>
-            <span>50</span>
-            <span>100</span>
           </div>
         </div>
         

@@ -63,8 +63,8 @@ const businessSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  enriched: {
-    type: mongoose.Schema.Types.Mixed,
+  enrichedAt: {
+    type: Date,
     default: null
   },
   numLocations: {
@@ -85,7 +85,7 @@ businessSchema.index({ addedAt: -1 });
 
 // Virtual property to check if the business is enriched
 businessSchema.virtual('isEnriched').get(function() {
-  return !!this.website || this.numLocations !== null;
+  return !!this.enrichedAt || !!this.website || this.numLocations !== null;
 });
 
 const Business = mongoose.model('Business', businessSchema);

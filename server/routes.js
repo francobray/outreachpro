@@ -26,6 +26,502 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
+async function enrichBusinessData(placeId, options = {}) {
+  const { enrich = true, apollo = true, testUrl = '', disablePuppeteer = false, debug = false } = options;
+  const noPuppeteer = disablePuppeteer;
+  const debugMode = debug || process.env.DEBUG_SCRAPER === 'true';
+
+  console.log(`[Enrichment] Starting for placeId: ${placeId}`);
+  const existingBusiness = await Business.findOne({ placeId });
+
+  if (!existingBusiness) {
+    // This can happen if a business is deleted but an action is still triggered from the UI
+    console.log(`[Enrichment] Business with placeId ${placeId} not found in database. Aborting enrichment.`);
+    throw new Error('Business not found');
+  }
+  
+  console.log(`[Enrichment] Found business. enrichedAt: ${existingBusiness.enrichedAt}`);
+
+  // If business was recently enriched, return cached data
+  if (existingBusiness.enrichedAt && enrich) {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    if (new Date(existingBusiness.enrichedAt) > thirtyDaysAgo) {
+      console.log('[Enrichment] Business recently enriched. Returning cached data.');
+      return existingBusiness;
+    }
+  }
+
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  const apolloApiKey = process.env.APOLLO_API_KEY;
+
+  // Always fetch from Google Places to get formatted_address and other details
+  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
+  try {
+    const response = await fetch(detailsUrl);
+    const data = await response.json();
+    if (data.result) {
+      existingBusiness.website = data.result.website || existingBusiness.website;
+      existingBusiness.phone = data.result.formatted_phone_number || existingBusiness.phone;
+      existingBusiness.address = data.result.formatted_address || existingBusiness.address;
+    }
+    // TODO: Log API call
+  } catch (e) {
+    console.log('[Enrichment] Google API error:', e.message);
+  }
+
+  let website = existingBusiness.website;
+  if (testUrl) {
+    website = testUrl;
+  }
+  
+  let emails = [];
+  let numLocations = undefined;
+  let locationNames = [];
+  let decisionMakers = [];
+
+  if (enrich && website) {
+    // 1. Scrape homepage HTML using progressive strategy
+    console.log(`[Enrichment] Fetching website: ${website}`);
+    const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
+
+    // Detect locations from the homepage HTML
+    console.log(`[Enrichment] Detecting locations from homepage HTML`);
+    const { 
+      numLocations: detectedNumLocations, 
+      locationNames: detectedLocationNames, 
+      usedPuppeteer: detectLocationsUsedPuppeteer 
+    } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode });
+    
+    numLocations = detectedNumLocations;
+    locationNames = detectedLocationNames;
+
+    // Normalize and format location names
+    if (locationNames.length > 0) {
+      console.log(`[Enrichment] Raw location names found:`, locationNames);
+      
+      // Further refinement of location names to remove noise and duplicates
+      const normalizeForComparison = (name) => {
+        return name.toLowerCase()
+          .replace(/<[^>]+>/g, '') // Remove HTML tags
+          .replace(/[^\w\s]/g, '') // Remove punctuation
+          .replace(/\s+/g, ' ') // Normalize whitespace
+          .trim();
+      };
+      
+      const uniqueNormalizedLocations = new Map();
+      locationNames.forEach(name => {
+        const normalized = normalizeForComparison(name);
+        if (normalized && !uniqueNormalizedLocations.has(normalized)) {
+          uniqueNormalizedLocations.set(normalized, name);
+        }
+      });
+      
+      // Format location names for better readability
+      const formatLocationName = (name) => {
+        return name
+          .replace(/<[^>]+>/g, '') // Remove HTML tags
+          .replace(/\s+/g, ' ') // Normalize whitespace
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(' ')
+          .trim();
+      };
+      
+      const formattedLocationNames = Array.from(uniqueNormalizedLocations.values()).map(formatLocationName);
+      
+      // Remove duplicates again after formatting
+      const normalizeForFinalComparison = (name) => {
+        return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      };
+      
+      const finalUniqueLocations = new Map();
+      formattedLocationNames.forEach(name => {
+        const normalized = normalizeForFinalComparison(name);
+        if (normalized && !finalUniqueLocations.has(normalized)) {
+          finalUniqueLocations.set(normalized, name);
+        }
+      });
+      
+      locationNames = Array.from(finalUniqueLocations.values());
+      numLocations = locationNames.length;
+      
+      console.log(`[Enrichment] Refined location names:`, locationNames);
+    } else {
+      console.log('[Enrichment] No distinct locations detected on homepage.');
+    }
+
+    // 2. Extract emails
+    const allEmails = [];
+    const scrapedPages = new Set([website]); // Keep track of scraped pages
+
+    // Find contact/about pages
+    const findContactPages = (html) => {
+      const contactPageRegex = /<a\s+(?:[^>]*?\s+)?href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
+      const links = Array.from(html.matchAll(contactPageRegex));
+      const contactKeywords = ['contact', 'about', 'team', 'staff', 'connect'];
+      const contactPageUrls = new Set();
+
+      for (const link of links) {
+        const href = link[2];
+        const text = link[3].toLowerCase();
+
+        if (contactKeywords.some(keyword => text.includes(keyword) || href.includes(keyword))) {
+          try {
+            const absoluteUrl = new URL(href, website).href;
+            contactPageUrls.add(absoluteUrl);
+      } catch (error) {
+            console.log(`[Enrichment] Invalid URL found: ${href}`);
+          }
+        }
+      }
+      return Array.from(contactPageUrls).slice(0, 3); // Limit to 3 pages to avoid excessive scraping
+    };
+
+    const extractEmails = (html) => {
+      const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+      const foundEmails = html.match(emailRegex) || [];
+      return foundEmails.filter(email => !email.endsWith('.png') && !email.endsWith('.gif') && !email.endsWith('.jpg'));
+    };
+    
+    // Scrape emails from homepage
+    allEmails.push(...extractEmails(homepageHtml));
+    
+    // Scrape emails from contact/about pages
+    const contactPages = findContactPages(homepageHtml);
+    if (contactPages.length > 0) {
+      console.log(`[Enrichment] Found contact/about pages to scrape:`, contactPages);
+      for (const pageUrl of contactPages) {
+        if (!scrapedPages.has(pageUrl)) {
+          try {
+            console.log(`[Enrichment] Scraping for emails on: ${pageUrl}`);
+            const { html: pageHtml, usedPuppeteer: pageUsedPuppeteer } = await fetchHtmlWithFallback(pageUrl, { noPuppeteer, debugMode });
+            allEmails.push(...extractEmails(pageHtml));
+            scrapedPages.add(pageUrl);
+  } catch (error) {
+            console.error(`[Enrichment] Error scraping page ${pageUrl}:`, error.message);
+          }
+        }
+      }
+    } else {
+      console.log('[Enrichment] No valid contact/about pages found to scrape for emails.');
+    }
+    
+    // Normalize and filter emails
+    const isValidEmail = (email) => {
+        // Basic email validation
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return false;
+
+        // More robust domain validation
+        const domainPart = email.split('@')[1];
+        if (!domainPart || !domainPart.includes('.')) return false;
+        const tld = domainPart.split('.').pop();
+        if (tld.length < 2 || !/^[a-z]+$/i.test(tld)) return false;
+
+        // Filter out common dummy/example emails
+        if (['example.com', 'yourdomain.com', 'domain.com', 'email.com', 'mysite.com'].some(domain => email.endsWith(domain))) return false;
+        
+        // Filter out image file extensions
+        if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].some(ext => email.toLowerCase().endsWith(ext))) return false;
+        
+        // Filter out package-like emails (e.g., core-js@3.2.1)
+        if (/@[0-9]+\.[0-9]+\.[0-9]+$/.test(email)) return false;
+
+        return true;
+    };
+
+    const normalizedEmails = normalizeAndDeduplicateEmails(allEmails.filter(isValidEmail));
+    
+    // Score emails based on relevance
+    if (normalizedEmails.length > 0) {
+        const domain = extractDomain(website);
+      
+        const getEmailRelevanceScore = (email) => {
+        const lowerEmail = email.toLowerCase();
+        let score = 0;
+        
+        // High score for matching domain
+        if (domain && lowerEmail.endsWith(`@${domain}`)) {
+          score += 100;
+        }
+        
+        // High score for generic business-related prefixes
+        const highValuePrefixes = ['info', 'contact', 'hello', 'support', 'sales', 'admin', 'office', 'press', 'media', 'help'];
+        if (highValuePrefixes.some(prefix => lowerEmail.startsWith(prefix + '@'))) {
+          score += 50;
+        }
+        
+        // Lower score for generic email providers
+        const lowValueDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com'];
+        if (lowValueDomains.some(d => lowerEmail.endsWith(`@${d}`))) {
+          score -= 20;
+        }
+        
+        // Penalty for generic names that are likely placeholders
+        const placeholderNames = ['name@', 'firstname@', 'lastname@', 'email@', 'yourname@', 'test@', 'user@'];
+        if (placeholderNames.some(p => lowerEmail.startsWith(p))) {
+          score -= 50;
+        }
+        
+        return score;
+      };
+      
+      const scoredEmails = normalizedEmails.map(email => ({
+        email,
+        score: getEmailRelevanceScore(email)
+      })).sort((a, b) => b.score - a.score);
+      
+      console.log(`[Enrichment] Scored emails:`, scoredEmails);
+      
+      emails = scoredEmails.filter(e => e.score > 0).map(e => e.email);
+    }
+    
+    console.log(`[Enrichment] Normalized emails:`, emails);
+  }
+
+  // Call Apollo API to find decision makers - only if explicitly requested
+  if (apollo) {
+    if (existingBusiness && apolloApiKey) {
+      try {
+        const businessName = existingBusiness.name;
+        const domain = existingBusiness.website ? extractDomain(existingBusiness.website) : null;
+    let orgId = undefined;
+    let enrichedOrg = undefined;
+
+        // 1. Enrich the organization (only if we have a valid domain)
+    if (domain) {
+          console.log('[Enrichment] Apollo Enrich API request:', { domain, name: businessName });
+      const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'x-api-key': apolloApiKey,
+        },
+        body: JSON.stringify({
+          api_key: apolloApiKey,
+          domain: domain,
+              name: businessName,
+        }),
+      });
+      const enrichData = await enrichRes.json();
+          console.log('[Enrichment] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
+          if (enrichData.organization) {
+      enrichedOrg = enrichData.organization;
+            orgId = enrichedOrg.id;
+          }
+        } else {
+          console.log('[Enrichment] Skipping Apollo organization enrichment: no domain available.');
+        }
+  
+        // 2. Use org_id, domain, or name to search for decision makers
+    let peopleBody = {
+      api_key: apolloApiKey,
+            person_titles: ['Owner', 'Founder', 'Co-Founder', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'Chef Executive Officer', 'General Manager'],
+      page: 1,
+      per_page: 5,
+      reveal_personal_emails: true,
+      contact_email_status: ['verified', 'unverified'],
+      show_personal_emails: true,
+    };
+
+    if (orgId) {
+      peopleBody['organization_ids'] = [orgId];
+    } else if (domain) {
+      peopleBody['q_organization_domains'] = [domain];
+    } else {
+          console.log(`[Enrichment] Falling back to Apollo search by organization name: "${businessName}"`);
+          peopleBody['q_organization_names'] = [businessName];
+        }
+
+        // Add location filtering only if we don't have a specific organization ID
+        if (!orgId && existingBusiness.address) {
+          let addressParts = existingBusiness.address.split(', ');
+          
+          let country = null;
+          if (addressParts.length > 1 && /USA|United States/i.test(addressParts[addressParts.length - 1])) {
+              country = addressParts.pop().trim();
+          }
+
+          if (isMajorBrand(existingBusiness.name)) {
+              if (country) {
+                  peopleBody['person_locations'] = [country];
+                  console.log(`[Enrichment] Added location filter for major brand: ${country}`);
+              } else {
+                  console.log(`[Enrichment] Could not determine country for major brand, searching without location filter.`);
+              }
+          } else if (addressParts.length >= 2) {
+              const city = addressParts[addressParts.length - 2].trim();
+              const state = addressParts[addressParts.length - 1].trim().split(' ')[0];
+              peopleBody['person_locations'] = [`${city}, ${state}`];
+              console.log(`[Enrichment] Added location filter to Apollo search: ${city}, ${state}`);
+          }
+        }
+
+        console.log('[Enrichment] Apollo People API request:', peopleBody);
+    const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'x-api-key': apolloApiKey,
+      },
+      body: JSON.stringify(peopleBody),
+    });
+
+        if (!peopleRes.ok) {
+          const errorText = await peopleRes.text();
+          console.error(`[Enrichment] Apollo People API error: ${peopleRes.status}`, errorText);
+          throw new Error(`Apollo People API failed with status ${peopleRes.status}`);
+        }
+
+        const peopleData = await peopleRes.json();
+        console.log('[Enrichment] Apollo People API response:', JSON.stringify(peopleData, null, 2));
+        console.log('[Enrichment] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
+
+    // Store decision makers info
+        decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
+      let email = person.email;
+      // If email is locked, try to enrich
+      if (
+        (!email || email === 'email_not_unlocked@domain.com') &&
+        person.id
+      ) {
+        try {
+          const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'x-api-key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              api_key: apolloApiKey,
+              id: person.id,
+            }),
+          });
+          const enrichData = await enrichRes.json();
+          if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
+            email = enrichData.person.email;
+          } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
+            email = person.personal_emails[0];
+          }
+          try {
+            const personData = enrichData.person;
+            await ApiCallLog.create({
+              api: 'apollo_person_match',
+              timestamp: new Date(),
+              details: {
+                endpoint: 'person_match',
+                personId: person.id,
+              businessName: existingBusiness.name,
+              placeId: existingBusiness.placeId,
+                foundContacts: personData ? [{
+                  name: personData.name,
+                  title: personData.title,
+                  linkedin_url: personData.linkedin_url,
+                }] : [],
+                organizationName: personData?.organization?.name,
+                organizationWebsite: personData?.organization?.website_url,
+              }
+            });
+            console.log('[Tracking] Apollo Person Match API call tracked in database.');
+          } catch (error) {
+            console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
+          }
+        } catch (err) {
+          console.log('[Apollo] Error enriching person:', person.id, err);
+        }
+      } else if (
+        (!email || email === 'email_not_unlocked@domain.com') &&
+        Array.isArray(person.personal_emails) &&
+        person.personal_emails.length > 0
+      ) {
+        email = person.personal_emails[0];
+      }
+      return {
+        name: person.name,
+        title: person.title,
+        email,
+        linkedin_url: person.linkedin_url,
+        email_status: person.email_status,
+      };
+    }));
+
+        // Update the business in the database
+        existingBusiness.decisionMakers = decisionMakers;
+        existingBusiness.apolloAttempted = true;
+        if (enrichedOrg) {
+          existingBusiness.enriched = enrichedOrg;
+        }
+        await existingBusiness.save();
+        console.log('[Enrichment] Saved Apollo decision makers to database:', {
+          businessId: existingBusiness.id,
+          decisionMakersCount: decisionMakers.length,
+          apolloAttempted: true,
+          decisionMakers: decisionMakers.map(dm => ({ name: dm.name, title: dm.title }))
+        });
+
+      } catch (error) {
+          console.error('[Enrichment] Apollo API error:', error);
+          // Even if Apollo API fails, we should still save that we attempted Apollo enrichment
+          existingBusiness.decisionMakers = [];
+          existingBusiness.apolloAttempted = true;
+          await existingBusiness.save();
+          console.log('[Enrichment] Saved empty Apollo decision makers due to API error');
+      }
+    } else {
+      console.log('[Enrichment] Skipping Apollo enrichment: missing existing business data or API key.');
+    }
+  }
+
+  // 3. Save the enriched data to the database
+  if (existingBusiness) {
+    const hasNewContacts = emails.length > 0 || decisionMakers.length > 0;
+    const hasNewLocationInfo = numLocations !== undefined && numLocations > 0;
+
+    // Only save if we found new, meaningful data
+    if (hasNewContacts || hasNewLocationInfo) {
+      existingBusiness.website = website;
+      existingBusiness.emails = emails;
+      existingBusiness.numLocations = numLocations;
+      existingBusiness.locationNames = locationNames;
+      existingBusiness.decisionMakers = decisionMakers;
+      
+      // Final save to capture all updates
+      existingBusiness.enrichedAt = new Date();
+      await existingBusiness.save();
+      
+      console.log('[Enrichment] Saved enriched data to database:', {
+        businessId: existingBusiness.id,
+        businessName: existingBusiness.name,
+        website: existingBusiness.website,
+        phone: existingBusiness.phone,
+        emailsCount: existingBusiness.emails.length,
+        numLocations: existingBusiness.numLocations,
+        locationNamesCount: existingBusiness.locationNames.length,
+        decisionMakersCount: decisionMakers.length,
+        enrichedAt: existingBusiness.enrichedAt
+      });
+    } else {
+      console.log('[Enrichment] No new meaningful data found. Skipping save to avoid bumping timestamp.');
+    }
+  }
+
+  console.log('[Enrichment] Process complete.');
+  return existingBusiness;
+}
+
+
+const isMajorBrand = (name) => {
+    const majorBrands = [
+        "7-eleven", "mcdonald's", "starbucks", "walmart", "subway", 
+        "marriott", "hilton", "hyatt",
+    ];
+    const lowerCaseName = name.toLowerCase();
+    return majorBrands.some(brand => lowerCaseName.includes(brand));
+};
+
 // Configuration endpoint
 router.get('/config', (req, res) => {
     res.json({
@@ -151,229 +647,129 @@ router.post('/search', async (req, res) => {
   }
 });
 
+// Apollo-only enrichment for finding contacts
+router.post('/apollo/enrich/:placeId', async (req, res) => {
+  const { placeId } = req.params;
+  const apolloApiKey = process.env.APOLLO_API_KEY;
+  const googleApiKey = process.env.GOOGLE_PLACES_API_KEY;
+
+  try {
+    const business = await Business.findOne({ placeId });
+    if (!business) {
+      return res.status(404).json({ error: 'Business not found' });
+    }
+    
+    // Step 1: Ensure we have a website. If not, fetch from Google Places Details.
+    if (!business.website && googleApiKey) {
+      console.log(`[Apollo Enrich] Website not found for "${business.name}". Fetching from Google Places...`);
+      const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=website&key=${googleApiKey}`;
+      try {
+        const detailsRes = await fetch(detailsUrl);
+        const detailsData = await detailsRes.json();
+        if (detailsData.result && detailsData.result.website) {
+          business.website = detailsData.result.website;
+          await business.save(); // Save website before proceeding
+          console.log(`[Apollo Enrich] Found and saved website: ${business.website}`);
+        } else {
+          console.log(`[Apollo Enrich] No website found in Google Places Details for "${business.name}".`);
+        }
+      } catch (error) {
+        console.error(`[Apollo Enrich] Error fetching Google Places Details:`, error);
+      }
+    }
+    
+    // Step 2: Call Apollo API to find decision makers
+    const businessName = business.name;
+    const domain = business.website ? extractDomain(business.website) : null;
+    let orgId = undefined;
+
+    if (domain) {
+      const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloApiKey },
+        body: JSON.stringify({ api_key: apolloApiKey, domain, name: businessName }),
+      });
+      const enrichData = await enrichRes.json();
+      if (enrichData.organization) {
+        orgId = enrichData.organization.id;
+      }
+    }
+
+    let peopleBody = {
+      api_key: apolloApiKey,
+      person_titles: ['Owner', 'Founder', 'Co-Founder', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'Chef Executive Officer', 'General Manager'],
+      page: 1,
+      per_page: 5,
+    };
+
+    if (orgId) {
+      peopleBody['organization_ids'] = [orgId];
+    } else if (domain) {
+      peopleBody['q_organization_domains'] = [domain];
+    } else {
+      peopleBody['q_organization_names'] = [businessName];
+    }
+
+    const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloApiKey },
+      body: JSON.stringify(peopleBody),
+    });
+
+    if (!peopleRes.ok) throw new Error(`Apollo People API failed with status ${peopleRes.status}`);
+
+    const peopleData = await peopleRes.json();
+    
+    // Log the people search API call
+    try {
+      await ApiCallLog.create({
+        api: 'apollo_people_search',
+        timestamp: new Date(),
+        details: {
+          endpoint: 'people/search',
+          businessName: business.name,
+          placeId: business.placeId,
+          foundContactsCount: peopleData.people?.length || 0
+        }
+      });
+    } catch (error) {
+      console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
+    }
+    
+    business.decisionMakers = peopleData.people || [];
+    business.apolloAttempted = true;
+    await business.save();
+
+    res.json({
+      emails: business.emails,
+      decisionMakers: business.decisionMakers
+    });
+
+  } catch (error) {
+    console.error(`[Apollo Enrich] Error for placeId ${placeId}:`, error);
+    res.status(500).json({ error: 'Failed to fetch from Apollo API' });
+  }
+});
+
 // Find emails for a business
 router.post('/emails/:businessId', async (req, res) => {
   const { businessId } = req.params;
   console.log(`[Apollo] /api/emails/${businessId} endpoint hit`);
   
   try {
-    const business = await Business.findOne({ id: businessId });
-
+    const business = await Business.findOne({ placeId: businessId });
     if (!business) {
       console.log(`[Apollo] Business not found for id: ${businessId}`);
       return res.status(404).json({ error: 'Business not found' });
     }
 
-    // If business has no website, try to fetch it from Google Places
-    if (!business.website && business.placeId) {
-      console.log(`[Apollo] Business '${business.name}' is missing a website. Fetching from Google Places...`);
-      const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-      if (apiKey) {
-        const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${business.placeId}&fields=website,formatted_phone_number&key=${apiKey}`;
-        try {
-          const response = await fetch(url);
-          const data = await response.json();
-          
-          await ApiCallLog.create({
-            api: 'google_places_details',
-            timestamp: new Date(),
-            details: {
-              endpoint: 'details',
-              placeId: business.placeId,
-            },
-          });
+    const enrichedBusiness = await enrichBusinessData(business.placeId, { enrich: false, apollo: true });
 
-          if (data.result) {
-            business.website = data.result.website || null;
-            business.phone = data.result.formatted_phone_number || null;
-            await business.save();
-            console.log(`[Apollo] Updated business '${business.name}' with website: ${business.website}`);
-          }
-        } catch (error) {
-          console.error(`[Apollo] Error fetching details from Google Places for placeId ${business.placeId}:`, error);
-        }
-      } else {
-        console.log('[Apollo] No Google Places API key found, cannot fetch website.');
-      }
-    }
-
-    const apolloApiKey = process.env.APOLLO_API_KEY;
-    const domain = extractDomain(business.website);
-    let orgId = undefined;
-    let enrichedOrg = undefined;
-
-    // 1. Enrich the organization if we have a valid domain
-    if (domain) {
-      console.log('[Apollo] Enrich API request:', { domain, name: business.name });
-      const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-          'x-api-key': apolloApiKey,
-        },
-        body: JSON.stringify({
-          api_key: apolloApiKey,
-          domain: domain,
-          name: business.name,
-        }),
-      });
-      const enrichData = await enrichRes.json();
-      console.log('[Apollo] Enrich API response:', JSON.stringify(enrichData, null, 2));
-      enrichedOrg = enrichData.organization;
-      business.enriched = enrichedOrg;
-      orgId = enrichedOrg && enrichedOrg.id;
-      
-      // Track Apollo API call
-      try {
-        await ApiCallLog.create({
-          api: 'apollo_enrich',
-          timestamp: new Date(),
-          details: {
-            endpoint: 'enrich',
-            domain: domain,
-            businessName: business.name
-          }
-        });
-        console.log('[Tracking] Apollo Enrich API call tracked in database.');
-      } catch (error) {
-        console.error('[Tracking] Error saving Apollo Enrich API call to database:', error);
-      }
-    }
-
-    // 2. Use org_id or domain to search for decision makers
-    let peopleBody = {
-      api_key: apolloApiKey,
-      person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'President', 'General Manager'],
-      page: 1,
-      per_page: 5,
-      email_required: true,
-      reveal_personal_emails: true,
-      contact_email_status: ['verified', 'unverified'],
-      show_personal_emails: true,
-    };
-    if (orgId) {
-      peopleBody['organization_ids'] = [orgId];
-    } else if (domain) {
-      peopleBody['q_organization_domains'] = [domain];
-    } else {
-      peopleBody['q_organization_names'] = [business.name];
-    }
-    console.log('[Apollo] People API request:', peopleBody);
-    const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
-        'x-api-key': apolloApiKey,
-      },
-      body: JSON.stringify(peopleBody),
+    res.json({ 
+      emails: enrichedBusiness.emails, 
+      decisionMakers: enrichedBusiness.decisionMakers, 
+      enriched: enrichedBusiness.enriched 
     });
-    const peopleData = await peopleRes.json();
-    console.log('[Apollo] People API response:', JSON.stringify(peopleData, null, 2));
-    console.log('[Apollo] People API status:', peopleRes.status);
-    console.log('[Apollo] People API total entries:', peopleData.pagination?.total_entries || 0);
-    
-    // Track Apollo API call
-    try {
-      await ApiCallLog.create({
-        api: 'apollo_people_search',
-        timestamp: new Date(),
-        details: {
-          endpoint: 'people_search',
-          businessName: business.name,
-          orgId: orgId,
-          domain: domain,
-          foundContacts: (peopleData.people || []).map(p => ({
-            name: p.name,
-            title: p.title,
-            linkedin_url: p.linkedin_url,
-          })),
-          organizationName: (peopleData.people && peopleData.people.length > 0) ? peopleData.people[0].organization?.name : null,
-          organizationWebsite: (peopleData.people && peopleData.people.length > 0) ? peopleData.people[0].organization?.website_url : null,
-        }
-      });
-      console.log('[Tracking] Apollo People Search API call tracked in database.');
-    } catch (error) {
-      console.error('[Tracking] Error saving Apollo People Search API call to database:', error);
-    }
-
-    // Extract emails and names
-    const emails = (peopleData.people || []).map(person => person.email).filter(Boolean);
-    business.emails = emails;
-
-    // Store decision makers info
-    business.decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
-      let email = person.email;
-      // If email is locked, try to enrich
-      if (
-        (!email || email === 'email_not_unlocked@domain.com') &&
-        person.id
-      ) {
-        try {
-          const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'no-cache',
-              'x-api-key': apolloApiKey,
-            },
-            body: JSON.stringify({
-              api_key: apolloApiKey,
-              id: person.id,
-            }),
-          });
-          const enrichData = await enrichRes.json();
-          if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
-            email = enrichData.person.email;
-          } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
-            email = person.personal_emails[0];
-          }
-          
-          // Track Apollo API call
-          try {
-            const personData = enrichData.person;
-            await ApiCallLog.create({
-              api: 'apollo_person_match',
-              timestamp: new Date(),
-              details: {
-                endpoint: 'person_match',
-                personId: person.id,
-                businessName: business.name,
-                placeId: business.placeId,
-                foundContacts: personData ? [{
-                  name: personData.name,
-                  title: personData.title,
-                  linkedin_url: personData.linkedin_url,
-                }] : [],
-                organizationName: personData?.organization?.name,
-                organizationWebsite: personData?.organization?.website_url,
-              }
-            });
-            console.log('[Tracking] Apollo Person Match API call tracked in database.');
-          } catch (error) {
-            console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
-          }
-        } catch (err) {
-          console.log('[Apollo] Error enriching person:', person.id, err);
-        }
-      } else if (
-        (!email || email === 'email_not_unlocked@domain.com') &&
-        Array.isArray(person.personal_emails) &&
-        person.personal_emails.length > 0
-      ) {
-        email = person.personal_emails[0];
-      }
-      return {
-        name: person.name,
-        title: person.title,
-        email,
-        linkedin_url: person.linkedin_url,
-        email_status: person.email_status,
-      };
-    }));
-
-    res.json({ emails, decisionMakers: business.decisionMakers, enriched: business.enriched });
   } catch (error) {
     console.error('[Apollo] Error:', error);
     res.status(500).json({ error: 'Failed to fetch from Apollo API' });
@@ -742,43 +1138,41 @@ router.get('/email-activities', async (req, res) => {
     console.log('[Costs] Request timestamp:', new Date().toISOString());
     
     try {
-      console.log('[Costs] Fetching Google Places costs...');
-      const googlePlacesCosts = await getGooglePlacesCosts();
-      console.log('[Costs] Google Places costs result:', JSON.stringify(googlePlacesCosts, null, 2));
+      console.log('[Costs] Fetching cost history for the last 6 months...');
+      const monthlyStats = await getMonthlyStats(6);
       
-      console.log('[Costs] Fetching Apollo costs...');
-      const apolloCosts = await getApolloCosts();
-      console.log('[Costs] Apollo costs result:', JSON.stringify(apolloCosts, null, 2));
-      
-      const costsData = {
-        googlePlaces: googlePlacesCosts,
-        apollo: apolloCosts,
-        total: {
-          currentMonth: 0,
-          previousMonth: 0,
-          trend: 'stable'
-        }
-      };
-  
-      // Calculate totals
-      costsData.total.currentMonth = costsData.googlePlaces.currentMonth + costsData.apollo.currentMonth;
-      costsData.total.previousMonth = costsData.googlePlaces.previousMonth + costsData.apollo.previousMonth;
-      
-      console.log('[Costs] Calculated totals:', {
-        currentMonth: costsData.total.currentMonth,
-        previousMonth: costsData.total.previousMonth
+      const lastSixMonthsCosts = monthlyStats.lastSixMonths.map(monthData => {
+        const googleCost = (monthData.stats.googlePlacesSearch * 0.017) + (monthData.stats.googlePlacesDetails * 0.017);
+        const apolloCost = monthData.stats.apolloContacts * (parseFloat(process.env.APOLLO_COST_PER_CREDIT) || 0.00895);
+        return {
+          month: monthData.month,
+          totalCost: googleCost + apolloCost,
+          googleCost,
+          apolloCost,
+          usage: monthData.stats
+        };
       });
+
+      const currentMonthData = lastSixMonthsCosts[lastSixMonthsCosts.length - 1] || { totalCost: 0, usage: {} };
+      const previousMonthData = lastSixMonthsCosts[lastSixMonthsCosts.length - 2] || { totalCost: 0 };
       
-      // Determine trend
-      if (costsData.total.currentMonth > costsData.total.previousMonth * 1.05) {
-        costsData.total.trend = 'up';
-      } else if (costsData.total.currentMonth < costsData.total.previousMonth * 0.95) {
-        costsData.total.trend = 'down';
-      } else {
-        costsData.total.trend = 'stable';
+      let trend = 'stable';
+      if (currentMonthData.totalCost > previousMonthData.totalCost * 1.05) {
+        trend = 'up';
+      } else if (currentMonthData.totalCost < previousMonthData.totalCost * 0.95) {
+        trend = 'down';
       }
+
+      const costsData = {
+        total: {
+          currentMonth: currentMonthData.totalCost,
+          previousMonth: previousMonthData.totalCost,
+          trend: trend
+        },
+        history: lastSixMonthsCosts
+      };
       
-      console.log('[Costs] Final trend:', costsData.total.trend);
+      console.log('[Costs] Final costs data:', JSON.stringify(costsData, null, 2));
       console.log('[Costs] ===== API COSTS REQUEST COMPLETE =====');
       
       res.json(costsData);
@@ -1026,551 +1420,24 @@ router.put('/email-templates/:id/default', async (req, res) => {
 router.get('/place-details/:placeId', async (req, res) => {
   const { placeId } = req.params;
   const { enrich, testUrl, disablePuppeteer, apollo, debug } = req.query;
-  const shouldEnrich = enrich === 'true';
-  const shouldUseApollo = apollo === 'true';
-  const noPuppeteer = disablePuppeteer === 'true';
-  const debugMode = debug === 'true' || process.env.DEBUG_SCRAPER === 'true';
   
   try {
-    console.log(`[PlaceDetails] ===== ENRICHMENT REQUEST START =====`);
-    console.log(`[PlaceDetails] Request details:`, {
-      placeId,
-      enrich: shouldEnrich,
-      apollo: shouldUseApollo,
-      testUrl: testUrl || 'none',
-      debugMode,
-      noPuppeteer,
-      timestamp: new Date().toISOString()
+    const enrichedBusiness = await enrichBusinessData(placeId, { 
+      enrich: enrich === 'true', 
+      apollo: apollo === 'true', 
+      testUrl, 
+      disablePuppeteer: disablePuppeteer === 'true', 
+      debug: debug === 'true' 
     });
-    
-    if (debugMode) {
-      console.log('[PlaceDetails] Debug mode enabled - bot detection will be logged but not trigger Puppeteer');
-    }
-    
-    if (noPuppeteer) {
-      console.log('[PlaceDetails] Puppeteer fallback disabled for this request');
-    }
-    
-    const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-    const apolloApiKey = process.env.APOLLO_API_KEY;
 
-    // Try to find the business in our database first
-    console.log(`[PlaceDetails] Looking up business in database for placeId: ${placeId}`);
-    const existingBusiness = await Business.findOne({ placeId });
-    
-    if (existingBusiness) {
-      console.log('[PlaceDetails] Found existing business in database:', {
-        id: existingBusiness.id,
-        name: existingBusiness.name,
-        placeId: existingBusiness.placeId,
-        emailsCount: existingBusiness.emails?.length || 0,
-        numLocations: existingBusiness.numLocations,
-        locationNamesCount: existingBusiness.locationNames?.length || 0,
-        website: existingBusiness.website,
-        phone: existingBusiness.phone,
-        lastUpdated: existingBusiness.lastUpdated,
-        createdAt: existingBusiness.createdAt
-      });
-    } else {
-      console.log('[PlaceDetails] No existing business found in database for placeId:', placeId);
-    }
-
-    // Get detailed information directly from Google Places API (only if not using Apollo)
-    let website = null;
-    let phone = null;
-    
-    if (!shouldUseApollo || (existingBusiness && !existingBusiness.website)) {
-      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
-      console.log('[PlaceDetails] Google API request URL:', url.replace(apiKey, 'API_KEY_HIDDEN'));
-
-      try {
-        const response = await fetch(url);
-        console.log('[PlaceDetails] Google API response status:', response.status);
-        const data = await response.json();
-        console.log('[PlaceDetails] Google API full response:', JSON.stringify(data, null, 2));
-        
-        // Track Google Places Details API call in the database
-        try {
-          await ApiCallLog.create({
-            api: 'google_places_details',
-            timestamp: new Date(),
-            details: {
-              endpoint: 'details',
-              placeId: placeId
-            }
-          });
-          console.log('[Tracking] Google Places Details API call tracked in database.');
-        } catch (error) {
-          console.error('[Tracking] Error saving Google Places Details API call to database:', error);
-        }
-
-        // Retrieve website and phone number from google places api
-        website = data.result?.website || null;
-        phone = data.result?.formatted_phone_number || null;
-        
-        if (existingBusiness) {
-          existingBusiness.website = website;
-          existingBusiness.phone = phone;
-        }
-      } catch (error) {
-        console.log('[PlaceDetails] Google API error:', error.message);
-      }
-    }
-
-    // If we have website from existing business but not from API, use that
-    if (!website && existingBusiness && existingBusiness.website) {
-      website = existingBusiness.website;
-      console.log('[PlaceDetails] Using website from local data:', website);
-    }
-    
-    // When fetching the website, use the test URL if provided
-    if (testUrl) {
-      website = testUrl;
-      console.log(`[PlaceDetails] Using provided test URL: ${website}`);
-    }
-    
-    console.log('[PlaceDetails] Final website value:', website);
-    console.log('[PlaceDetails] Phone:', phone);
-
-    // If not enriching data, return basic details
-    if (!shouldEnrich) {
-      return res.json({
-        website,
-        formatted_phone_number: phone,
-        emails: [],
-        decisionMakers: []
-      });
-    }
-
-    // If we get here, enrichment was requested
-    let emails = [];
-    let numLocations = undefined;
-    let locationNames = [];
-    let decisionMakers = [];
-    let usedPuppeteerForAnyRequest = false;
-
-    // Website scraping and enrichment. This now runs for Apollo requests as well if a website is found.
-    if (website) {
-      // 1. Scrape homepage HTML using progressive strategy
-      console.log(`[PlaceDetails] Fetching website: ${website}`);
-      const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
-
-      // Track if Puppeteer was used for any request
-      usedPuppeteerForAnyRequest = homepageUsedPuppeteer;
-
-      // Detect locations from the homepage HTML
-      console.log(`[PlaceDetails] Detecting locations from homepage HTML`);
-      const { 
-        numLocations: detectedNumLocations, 
-        locationNames: detectedLocationNames, 
-        usedPuppeteer: detectLocationsUsedPuppeteer 
-      } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode });
-      
-      if (detectLocationsUsedPuppeteer) {
-        usedPuppeteerForAnyRequest = true;
-      }
-      
-      numLocations = detectedNumLocations;
-      locationNames = detectedLocationNames;
-
-      // Normalize and format location names
-      if (locationNames.length > 0) {
-        console.log(`[PlaceDetails] Raw location names found:`, locationNames);
-        
-        // Further refinement of location names to remove noise and duplicates
-        const normalizeForComparison = (name) => {
-          return name.toLowerCase()
-            .replace(/<[^>]+>/g, '') // Remove HTML tags
-            .replace(/[^\w\s]/g, '') // Remove punctuation
-            .replace(/\s+/g, ' ') // Normalize whitespace
-            .trim();
-        };
-        
-        const uniqueNormalizedLocations = new Map();
-        locationNames.forEach(name => {
-          const normalized = normalizeForComparison(name);
-          if (normalized && !uniqueNormalizedLocations.has(normalized)) {
-            uniqueNormalizedLocations.set(normalized, name);
-          }
-        });
-        
-        // Format location names for better readability
-        const formatLocationName = (name) => {
-          return name
-            .replace(/<[^>]+>/g, '') // Remove HTML tags
-            .replace(/\s+/g, ' ') // Normalize whitespace
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(' ')
-            .trim();
-        };
-        
-        const formattedLocationNames = Array.from(uniqueNormalizedLocations.values()).map(formatLocationName);
-        
-        // Remove duplicates again after formatting
-        const normalizeForFinalComparison = (name) => {
-          return name.toLowerCase().replace(/[^a-z0-9]/g, '');
-        };
-        
-        const finalUniqueLocations = new Map();
-        formattedLocationNames.forEach(name => {
-          const normalized = normalizeForFinalComparison(name);
-          if (normalized && !finalUniqueLocations.has(normalized)) {
-            finalUniqueLocations.set(normalized, name);
-          }
-        });
-        
-        locationNames = Array.from(finalUniqueLocations.values());
-        numLocations = locationNames.length;
-        
-        console.log(`[PlaceDetails] Refined location names:`, locationNames);
-      } else {
-        console.log('[PlaceDetails] No distinct locations detected on homepage.');
-      }
-
-      // 2. Extract emails
-      const allEmails = [];
-      const scrapedPages = new Set([website]); // Keep track of scraped pages
-
-      // Find contact/about pages
-      const findContactPages = (html) => {
-        const contactPageRegex = /<a\s+(?:[^>]*?\s+)?href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
-        const links = Array.from(html.matchAll(contactPageRegex));
-        const contactKeywords = ['contact', 'about', 'team', 'staff', 'connect'];
-        const contactPageUrls = new Set();
-
-        for (const link of links) {
-          const href = link[2];
-          const text = link[3].toLowerCase();
-
-          if (contactKeywords.some(keyword => text.includes(keyword) || href.includes(keyword))) {
-            try {
-              const absoluteUrl = new URL(href, website).href;
-              contactPageUrls.add(absoluteUrl);
-            } catch (error) {
-              console.log(`[PlaceDetails] Invalid URL found: ${href}`);
-            }
-          }
-        }
-        return Array.from(contactPageUrls).slice(0, 3); // Limit to 3 pages to avoid excessive scraping
-      };
-
-      const extractEmails = (html) => {
-        const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
-        const foundEmails = html.match(emailRegex) || [];
-        return foundEmails.filter(email => !email.endsWith('.png') && !email.endsWith('.gif') && !email.endsWith('.jpg'));
-      };
-      
-      // Scrape emails from homepage
-      allEmails.push(...extractEmails(homepageHtml));
-      
-      // Scrape emails from contact/about pages
-      const contactPages = findContactPages(homepageHtml);
-      if (contactPages.length > 0) {
-        console.log(`[PlaceDetails] Found contact/about pages to scrape:`, contactPages);
-        for (const pageUrl of contactPages) {
-          if (!scrapedPages.has(pageUrl)) {
-            try {
-              console.log(`[PlaceDetails] Scraping for emails on: ${pageUrl}`);
-              const { html: pageHtml, usedPuppeteer: pageUsedPuppeteer } = await fetchHtmlWithFallback(pageUrl, { noPuppeteer, debugMode });
-              allEmails.push(...extractEmails(pageHtml));
-              scrapedPages.add(pageUrl);
-              if (pageUsedPuppeteer) {
-                usedPuppeteerForAnyRequest = true;
-              }
-            } catch (error) {
-              console.error(`[PlaceDetails] Error scraping page ${pageUrl}:`, error.message);
-            }
-          }
-        }
-      } else {
-        console.log('[PlaceDetails] No valid contact/about pages found to scrape for emails.');
-      }
-      
-      // Normalize and filter emails
-      const isValidEmail = (email) => {
-        // Basic email validation
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return false;
-        // Filter out common dummy/example emails
-        if (['example.com', 'yourdomain.com', 'domain.com', 'email.com'].some(domain => email.endsWith(domain))) return false;
-        // Filter out image file extensions
-        if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].some(ext => email.toLowerCase().endsWith(ext))) return false;
-        return true;
-      };
-  
-      const normalizedEmails = normalizeAndDeduplicateEmails(allEmails.filter(isValidEmail));
-      
-      // Score emails based on relevance
-      if (normalizedEmails.length > 0) {
-          const domain = extractDomain(website);
-        
-          const getEmailRelevanceScore = (email) => {
-          const lowerEmail = email.toLowerCase();
-          let score = 0;
-          
-          // High score for matching domain
-          if (domain && lowerEmail.endsWith(`@${domain}`)) {
-            score += 100;
-          }
-          
-          // High score for generic business-related prefixes
-          const highValuePrefixes = ['info', 'contact', 'hello', 'support', 'sales', 'admin', 'office', 'press', 'media', 'help'];
-          if (highValuePrefixes.some(prefix => lowerEmail.startsWith(prefix + '@'))) {
-            score += 50;
-          }
-          
-          // Lower score for generic email providers
-          const lowValueDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com'];
-          if (lowValueDomains.some(d => lowerEmail.endsWith(`@${d}`))) {
-            score -= 20;
-          }
-          
-          // Penalty for generic names that are likely placeholders
-          const placeholderNames = ['name@', 'firstname@', 'lastname@', 'email@', 'yourname@', 'test@', 'user@'];
-          if (placeholderNames.some(p => lowerEmail.startsWith(p))) {
-            score -= 50;
-          }
-          
-          return score;
-        };
-        
-        const scoredEmails = normalizedEmails.map(email => ({
-          email,
-          score: getEmailRelevanceScore(email)
-        })).sort((a, b) => b.score - a.score);
-        
-        console.log(`[PlaceDetails] Scored emails:`, scoredEmails);
-        
-        emails = scoredEmails.map(e => e.email);
-      }
-      
-      console.log(`[PlaceDetails] Normalized emails:`, emails);
-    } else {
-      console.log('[PlaceDetails] No website available for scraping, skipping enrichment.');
-    }
-
-    // Call Apollo API to find decision makers - only if explicitly requested
-    if (shouldUseApollo) {
-      if (existingBusiness && apolloApiKey) {
-        try {
-          const businessName = existingBusiness.name;
-          const domain = existingBusiness.website ? extractDomain(existingBusiness.website) : null;
-          let orgId = undefined;
-          let enrichedOrg = undefined;
-  
-          // 1. Enrich the organization (only if we have a valid domain)
-          if (domain) {
-            console.log('[PlaceDetails] Apollo Enrich API request:', { domain, name: businessName });
-            const enrichRes = await fetch('https://api.apollo.io/v1/organizations/enrich', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-cache',
-                'x-api-key': apolloApiKey,
-              },
-              body: JSON.stringify({
-                api_key: apolloApiKey,
-                domain: domain,
-                name: businessName,
-              }),
-            });
-            const enrichData = await enrichRes.json();
-            console.log('[PlaceDetails] Apollo Enrich API response:', JSON.stringify(enrichData, null, 2));
-            if (enrichData.organization) {
-              enrichedOrg = enrichData.organization;
-              orgId = enrichedOrg.id;
-            }
-          } else {
-            console.log('[PlaceDetails] Skipping Apollo organization enrichment: no domain available.');
-          }
-  
-          // 2. Use org_id, domain, or name to search for decision makers
-          let peopleBody = {
-            api_key: apolloApiKey,
-            person_titles: ['Owner', 'Marketing Executive', 'Marketing Director', 'Marketing Manager', 'CEO', 'President', 'General Manager'],
-            page: 1,
-            per_page: 5,
-            email_required: true,
-            reveal_personal_emails: true,
-            contact_email_status: ['verified', 'unverified'],
-            show_personal_emails: true,
-          };
-
-          if (orgId) {
-            peopleBody['organization_ids'] = [orgId];
-          } else if (domain) {
-            peopleBody['q_organization_domains'] = [domain];
-          } else {
-            console.log(`[PlaceDetails] Falling back to Apollo search by organization name: "${businessName}"`);
-            peopleBody['q_organization_names'] = [businessName];
-          }
-
-          // Add location filtering if address is available
-          if (existingBusiness.address) {
-            const addressParts = existingBusiness.address.split(', ');
-            if (addressParts.length >= 2) {
-              const city = addressParts[addressParts.length - 2];
-              const state = addressParts[addressParts.length - 1].split(' ')[0];
-              peopleBody['person_locations'] = [`${city}, ${state}`];
-              console.log(`[PlaceDetails] Added location filter to Apollo search: ${city}, ${state}`);
-            }
-          }
-
-          console.log('[PlaceDetails] Apollo People API request:', peopleBody);
-          const peopleRes = await fetch('https://api.apollo.io/v1/people/search', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'no-cache',
-              'x-api-key': apolloApiKey,
-            },
-            body: JSON.stringify(peopleBody),
-          });
-
-          if (!peopleRes.ok) {
-            const errorText = await peopleRes.text();
-            console.error(`[PlaceDetails] Apollo People API error: ${peopleRes.status}`, errorText);
-            throw new Error(`Apollo People API failed with status ${peopleRes.status}`);
-          }
-
-          const peopleData = await peopleRes.json();
-          console.log('[PlaceDetails] Apollo People API response:', JSON.stringify(peopleData, null, 2));
-          console.log('[PlaceDetails] Apollo People API total entries:', peopleData.pagination?.total_entries || 0);
-  
-          // Store decision makers info
-          decisionMakers = await Promise.all((peopleData.people || []).map(async person => {
-            let email = person.email;
-            // If email is locked, try to enrich
-            if (
-              (!email || email === 'email_not_unlocked@domain.com') &&
-              person.id
-            ) {
-              try {
-                const enrichRes = await fetch('https://api.apollo.io/v1/people/match', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',
-                    'x-api-key': apolloApiKey,
-                  },
-                  body: JSON.stringify({
-                    api_key: apolloApiKey,
-                    id: person.id,
-                  }),
-                });
-                const enrichData = await enrichRes.json();
-                if (enrichData.person && enrichData.person.email && enrichData.person.email !== 'email_not_unlocked@domain.com') {
-                  email = enrichData.person.email;
-                } else if (Array.isArray(person.personal_emails) && person.personal_emails.length > 0) {
-                  email = person.personal_emails[0];
-                }
-                 try {
-            const personData = enrichData.person;
-            await ApiCallLog.create({
-              api: 'apollo_person_match',
-              timestamp: new Date(),
-              details: {
-                endpoint: 'person_match',
-                personId: person.id,
-                businessName: existingBusiness.name,
-                placeId: existingBusiness.placeId,
-                foundContacts: personData ? [{
-                  name: personData.name,
-                  title: personData.title,
-                  linkedin_url: personData.linkedin_url,
-                }] : [],
-                organizationName: personData?.organization?.name,
-                organizationWebsite: personData?.organization?.website_url,
-              }
-            });
-            console.log('[Tracking] Apollo Person Match API call tracked in database.');
-          } catch (error) {
-            console.error('[Tracking] Error saving Apollo Person Match API call to database:', error);
-                }
-              } catch (err) {
-                console.log('[Apollo] Error enriching person:', person.id, err);
-              }
-            } else if (
-              (!email || email === 'email_not_unlocked@domain.com') &&
-              Array.isArray(person.personal_emails) &&
-              person.personal_emails.length > 0
-            ) {
-              email = person.personal_emails[0];
-            }
-            return {
-              name: person.name,
-              title: person.title,
-              email,
-              linkedin_url: person.linkedin_url,
-              email_status: person.email_status,
-            };
-          }));
-  
-          // Update the business in the database
-          existingBusiness.decisionMakers = decisionMakers;
-          existingBusiness.apolloAttempted = true;
-          if (enrichedOrg) {
-            existingBusiness.enriched = enrichedOrg;
-          }
-          await existingBusiness.save();
-          console.log('[PlaceDetails] Saved Apollo decision makers to database:', {
-            businessId: existingBusiness.id,
-            businessName: existingBusiness.name,
-            decisionMakersCount: decisionMakers.length,
-            apolloAttempted: true,
-            decisionMakers: decisionMakers.map(dm => ({ name: dm.name, title: dm.title }))
-          });
-
-        } catch (error) {
-            console.error('[PlaceDetails] Apollo API error:', error);
-            // Even if Apollo API fails, we should still save that we attempted Apollo enrichment
-            existingBusiness.decisionMakers = [];
-            existingBusiness.apolloAttempted = true;
-            await existingBusiness.save();
-            console.log('[PlaceDetails] Saved empty Apollo decision makers due to API error');
-        }
-      } else {
-        console.log('[PlaceDetails] Skipping Apollo enrichment: missing existing business data or API key.');
-      }
-    }
-  
-    // 3. Save the enriched data to the database
-    if (existingBusiness) {
-      existingBusiness.website = website;
-      existingBusiness.phone = phone;
-      existingBusiness.emails = emails;
-      existingBusiness.numLocations = numLocations;
-      existingBusiness.locationNames = locationNames;
-      existingBusiness.decisionMakers = decisionMakers;
-      
-      // Set a timestamp to indicate when enrichment was last performed
-      existingBusiness.lastUpdated = new Date();
-      
-      await existingBusiness.save();
-      console.log('[PlaceDetails] Saved enriched data to database:', {
-        businessId: existingBusiness.id,
-        businessName: existingBusiness.name,
-        website: existingBusiness.website,
-        phone: existingBusiness.phone,
-        emailsCount: existingBusiness.emails.length,
-        numLocations: existingBusiness.numLocations,
-        locationNamesCount: existingBusiness.locationNames.length,
-        decisionMakersCount: existingBusiness.decisionMakers.length,
-        lastUpdated: existingBusiness.lastUpdated
-      });
-    }
-
-    console.log('[PlaceDetails] ===== ENRICHMENT REQUEST COMPLETE =====');
-    
-    // Return all enriched data
     res.json({
-      website,
-      formatted_phone_number: phone,
-      emails,
-      numLocations,
-      locationNames,
-      decisionMakers,
-      usedPuppeteer: usedPuppeteerForAnyRequest
+      website: enrichedBusiness.website,
+      formatted_phone_number: enrichedBusiness.phone,
+      emails: enrichedBusiness.emails,
+      numLocations: enrichedBusiness.numLocations,
+      locationNames: enrichedBusiness.locationNames,
+      decisionMakers: enrichedBusiness.decisionMakers,
+      usedPuppeteer: false // This can be refined within the enrichment function
     });
   } catch (error) {
     console.error(`[PlaceDetails] Error enriching place details for placeId ${placeId}:`, error);

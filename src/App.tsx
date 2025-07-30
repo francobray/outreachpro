@@ -137,12 +137,11 @@ function App() {
                       setIsLoading={setIsLoading}
                       includeApollo={includeApollo}
                       setIncludeApollo={setIncludeApollo}
-                      estimatedResults={estimatedResults}
-                      setEstimatedResults={setEstimatedResults}
                     />
                     <CostEstimator
                       estimatedResults={estimatedResults}
                       includeApollo={includeApollo}
+                      setEstimatedResults={setEstimatedResults}
                     />
                   </div>
                 </div>

@@ -92,29 +92,27 @@ export async function getApiTrackingStats() {
 }
 
 // Function to get monthly API call statistics from the database
-export async function getMonthlyStats() {
+export async function getMonthlyStats(months = 2) {
   const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const startOfPreviousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+  const monthlyData = [];
 
-  try {
-    const currentMonthCalls = await ApiCallLog.aggregate([
-      { $match: { timestamp: { $gte: startOfMonth } } },
-      { $group: { _id: '$api', count: { $sum: 1 } } }
-    ]);
+  for (let i = 0; i < months; i++) {
+    const targetMonth = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const startOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
+    const startOfNextMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 1);
 
-    const previousMonthCalls = await ApiCallLog.aggregate([
-      { $match: { timestamp: { $gte: startOfPreviousMonth, $lte: endOfPreviousMonth } } },
-      { $group: { _id: '$api', count: { $sum: 1 } } }
-    ]);
+    try {
+      const calls = await ApiCallLog.aggregate([
+        { $match: { timestamp: { $gte: startOfMonth, $lt: startOfNextMonth } } },
+        { $group: { _id: '$api', count: { $sum: 1 } } }
+      ]);
 
-    const formatStats = (calls) => {
       const stats = {
         googlePlacesSearch: 0,
         googlePlacesDetails: 0,
         apolloContacts: 0
       };
+
       calls.forEach(call => {
         if (call._id === 'google_places_search') stats.googlePlacesSearch = call.count;
         if (call._id === 'google_places_details') stats.googlePlacesDetails = call.count;
@@ -122,20 +120,25 @@ export async function getMonthlyStats() {
           stats.apolloContacts += call.count;
         }
       });
-      return stats;
-    };
 
-    return {
-      currentMonth: formatStats(currentMonthCalls),
-      previousMonth: formatStats(previousMonthCalls)
-    };
-  } catch (error) {
-    console.error('[Tracking] Error getting monthly stats:', error);
-    return {
-      currentMonth: { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 },
-      previousMonth: { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 }
-    };
+      monthlyData.push({
+        month: startOfMonth.toLocaleString('default', { month: 'long', year: 'numeric' }),
+        stats: stats
+      });
+    } catch (error) {
+      console.error(`[Tracking] Error getting stats for ${startOfMonth.toLocaleString('default', { month: 'long' })}:`, error);
+      monthlyData.push({
+        month: startOfMonth.toLocaleString('default', { month: 'long', year: 'numeric' }),
+        stats: { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 }
+      });
+    }
   }
+  
+  return {
+    lastSixMonths: monthlyData.reverse(),
+    currentMonth: monthlyData.length > 0 ? monthlyData[monthlyData.length - 1].stats : { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 },
+    previousMonth: monthlyData.length > 1 ? monthlyData[monthlyData.length - 2].stats : { googlePlacesSearch: 0, googlePlacesDetails: 0, apolloContacts: 0 }
+  };
 }
 
 // Helper to extract a valid business domain from a website URL
@@ -778,44 +781,35 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
       }
       
       const $$ = cheerio.load(locationsPageHtml);
-      const headings = 'h2.elementor-heading-title'; // More specific selector for location names
-      
-      const foundHeadings = $$(headings);
-
-      foundHeadings.each((i, el) => {
-        const locationName = $$(el).text().trim();
-        const upperLocationName = locationName.toUpperCase();
-
-        // Keywords to identify non-location headers
-        const ignoreKeywords = ['LOCATION', 'CONTACT', 'HOUR', 'SERVICE', 'AMENITIES', 'PRICING', 'SCHEDULE'];
-        
-        if (ignoreKeywords.some(keyword => upperLocationName.includes(keyword))) {
-          return; // Skip this heading
-        }
-        
-        // Find the containing <section> for the heading
-        const headingSection = $$(el).closest('section.elementor-section');
-        
-        // The content with the address is expected in the very next <section>
-        const contentSection = headingSection.next('section.elementor-section');
-        
-        if (contentSection.length > 0) {
-          // Get the HTML, replace <br> tags with spaces, and then strip all other HTML to get clean text with spaces.
-          const contentHtml = contentSection.html();
-          const contentBlock = contentHtml.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-
-          // If we find a zip code in the text following the heading, we consider it a location.
-          if (contentBlock.match(/\b\d{5}\b/)) {
-            locationSet.add(locationName);
-          }
+      // This regex is more flexible and handles formats with or without commas, and with pipes.
+      const addressRegex = /\d+[\w\s.'#()-]+(?:\s*[,|]\s*|\s+)\s*[\w\s.'-]+,?\s*[A-Z]{2}\s+\d{5}/g;
+ 
+      // Strategy 1: Look for common layout patterns like Elementor columns
+      $$('.elementor-column, .elementor-widget-wrap, .location, .address-block').each((i, el) => {
+        const elementHtml = $$(el).html();
+        // Sanitize text by replacing <br> and other tags with spaces
+        const elementText = elementHtml.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        const matches = elementText.match(addressRegex);
+        if (matches) {
+          matches.forEach(match => locationSet.add(match));
         }
       });
+ 
+      // Strategy 2: If the structured search fails, fall back to searching the whole body
+      if (locationSet.size === 0) {
+        console.log(`[PlaceDetails] Structured search failed. Falling back to full-page text search.`);
+        const bodyHtml = $$('body').html();
+        const bodyText = bodyHtml.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        const matches = bodyText.match(addressRegex);
+        if (matches) {
+          matches.forEach(match => locationSet.add(match));
+        }
+      }
     } catch (error) {
       console.error(`[PlaceDetails] Error processing locations page ${locationsPageUrl}:`, error);
     }
   } else {
     console.log(`[PlaceDetails] No locations page link found. Analyzing homepage for location details.`);
-    // Fallback to searching for addresses on the homepage if no link is found
     const addressRegex = /\d+\s+[a-zA-Z0-9\s]+,\s+[a-zA-Z\s]+,\s*[A-Z]{2}\s+\d{5}/g;
     const bodyText = $('body').text();
     const matches = bodyText.match(addressRegex);

@@ -633,10 +633,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const enrichWithApollo = async (business: Business) => {
     updateLoadingState(business.id, 'apollo');
     try {
-      // Don't set the contact info loading state when using Apollo
-      const url = `/api/place-details/${business.placeId}?enrich=true&apollo=true`;
+      // Use the new dedicated Apollo enrichment endpoint
+      const url = `/api/apollo/enrich/${business.placeId}`;
       console.log(`[Apollo Enrich] Fetching from: ${url}`);
-      const res = await fetch(url);
+      
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
       const data = await res.json();
       console.log(`[Apollo Enrich] Received data for ${business.placeId}:`, data);
       
