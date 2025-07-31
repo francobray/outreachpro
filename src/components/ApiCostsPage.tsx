@@ -194,15 +194,15 @@ const ApiCostsPage: React.FC = () => {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Current Month:</span>
-                <span className={`font-semibold ${costsData ? getStatusColor(costsData.total.currentMonth) : 'text-gray-900'}`}>
-                  {costsData ? formatCurrency(costsData.total.currentMonth) : '$0.00'}
+                <span className={`font-semibold ${costsData ? getStatusColor(costsData.history.at(-1)?.googleCost || 0) : 'text-gray-900'}`}>
+                  {costsData ? formatCurrency(costsData.history.at(-1)?.googleCost || 0) : '$0.00'}
                 </span>
               </div>
               
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Previous Month:</span>
                 <span className="font-semibold text-gray-900">
-                  {costsData ? formatCurrency(costsData.total.previousMonth) : '$0.00'}
+                  {costsData ? formatCurrency(costsData.history.at(-2)?.googleCost || 0) : '$0.00'}
                 </span>
               </div>
               
@@ -216,6 +216,15 @@ const ApiCostsPage: React.FC = () => {
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Details Requests:</span>
                     <span className="font-medium">{costsData?.history.at(-1)?.usage.googlePlacesDetails ?? '0'}</span>
+                  </div>
+                </div>
+                
+                <div className="border-t border-gray-200 pt-4 mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Cost Breakdown</h4>
+                  <div className="space-y-1 text-xs text-gray-600">
+                    <div>Search: {costsData?.history.at(-1)?.usage.googlePlacesSearch ?? '0'} × $0.017 = {formatCurrency((costsData?.history.at(-1)?.usage.googlePlacesSearch ?? 0) * 0.017)}</div>
+                    <div>Details: {costsData?.history.at(-1)?.usage.googlePlacesDetails ?? '0'} × $0.017 = {formatCurrency((costsData?.history.at(-1)?.usage.googlePlacesDetails ?? 0) * 0.017)}</div>
+                    <div className="font-medium text-gray-800 pt-1">Total: {formatCurrency(costsData?.history.at(-1)?.googleCost || 0)}</div>
                   </div>
                 </div>
               </div>
@@ -236,15 +245,15 @@ const ApiCostsPage: React.FC = () => {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Current Month:</span>
-                <span className={`font-semibold ${costsData ? getStatusColor(costsData.total.currentMonth) : 'text-gray-900'}`}>
-                  {costsData ? formatCurrency(costsData.total.currentMonth) : '$0.00'}
+                <span className={`font-semibold ${costsData ? getStatusColor(costsData.history.at(-1)?.apolloCost || 0) : 'text-gray-900'}`}>
+                  {costsData ? formatCurrency(costsData.history.at(-1)?.apolloCost || 0) : '$0.00'}
                 </span>
               </div>
               
               <div className="flex justify-between items-center">
                 <span className="text-gray-600">Previous Month:</span>
                 <span className="font-semibold text-gray-900">
-                  {costsData ? formatCurrency(costsData.total.previousMonth) : '$0.00'}
+                  {costsData ? formatCurrency(costsData.history.at(-2)?.apolloCost || 0) : '$0.00'}
                 </span>
               </div>
               
@@ -258,6 +267,14 @@ const ApiCostsPage: React.FC = () => {
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Remaining Credits:</span>
                     <span className="font-medium">0</span>
+                  </div>
+                </div>
+                
+                <div className="border-t border-gray-200 pt-4 mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Cost Breakdown</h4>
+                  <div className="space-y-1 text-xs text-gray-600">
+                    <div>Contacts: {costsData?.history.at(-1)?.usage.apolloContacts ?? '0'} × $0.00895 = {formatCurrency((costsData?.history.at(-1)?.usage.apolloContacts ?? 0) * 0.00895)}</div>
+                    <div className="font-medium text-gray-800 pt-1">Total: {formatCurrency(costsData?.history.at(-1)?.apolloCost || 0)}</div>
                   </div>
                 </div>
               </div>

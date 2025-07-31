@@ -8,7 +8,7 @@ interface ApiCallLogTableProps {
 
 const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(15);
+  const [pageSize, setPageSize] = useState(50);
 
   const displayItems = useMemo(() => {
     if (!logs || logs.length === 0) {
@@ -17,6 +17,7 @@ const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
 
     const groupedByPlaceId = logs.reduce((acc, log) => {
       const placeId = log.details?.placeId || log.metadata?.request?.placeId;
+      // Group apollo_person_match logs by placeId, but include all other logs individually
       if (placeId && log.api === 'apollo_person_match') {
         if (!acc[placeId]) {
           acc[placeId] = [];
@@ -29,7 +30,28 @@ const ApiCallLogTable: React.FC<ApiCallLogTableProps> = ({ logs, title }) => {
       return acc;
     }, {} as Record<string, ApiCallLog[]>);
 
-    return Object.values(groupedByPlaceId);
+    // Sort groups to prioritize logs with found contacts
+    const sortedGroups = Object.values(groupedByPlaceId).sort((a, b) => {
+      const aHasContacts = a.some(log => log.details?.foundContacts && log.details.foundContacts.length > 0);
+      const bHasContacts = b.some(log => log.details?.foundContacts && log.details.foundContacts.length > 0);
+      
+      if (aHasContacts && !bHasContacts) return -1;
+      if (!aHasContacts && bHasContacts) return 1;
+      return 0;
+    });
+
+    // For Apollo logs, prioritize showing logs with found contacts
+    if (title.toLowerCase().includes('apollo')) {
+      const withContacts = sortedGroups.filter(group => 
+        group.some(log => log.details?.foundContacts && log.details.foundContacts.length > 0)
+      );
+      const withoutContacts = sortedGroups.filter(group => 
+        !group.some(log => log.details?.foundContacts && log.details.foundContacts.length > 0)
+      );
+      return [...withContacts, ...withoutContacts];
+    }
+
+    return sortedGroups;
   }, [logs]);
 
   if (displayItems.length === 0) {

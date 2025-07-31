@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
+import ApiCallLog from './models/ApiCallLog.js';
 
 let puppeteer, puppeteerExtra, StealthPlugin, robotsParser;
 

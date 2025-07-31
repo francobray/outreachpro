@@ -56,6 +56,7 @@ export interface ApiCallLog {
       name: string;
       title: string;
       linkedin_url: string;
+      _id?: string;
     }[];
     organizationName?: string;
     organizationWebsite?: string;
