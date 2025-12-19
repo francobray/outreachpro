@@ -747,6 +747,133 @@ export async function getApolloCosts() {
   }
 }
 
+/**
+ * Analyze website for ICP-related variables
+ * @param {string} html - Homepage HTML
+ * @param {string} website - Base URL
+ * @returns {Object} - Website analysis results
+ */
+export const analyzeWebsiteForICP = (html, website) => {
+  console.log(`[Website Analysis] Starting analysis for ${website}`);
+  const analysis = {
+    hasSEO: null,
+    hasWhatsApp: null,
+    hasReservation: null,
+    hasDirectOrdering: null,
+    hasThirdPartyDelivery: null,
+    analyzedAt: new Date()
+  };
+
+  const htmlLower = html.toLowerCase();
+  const $ = cheerio.load(html);
+
+  // 1. Check for SEO/AEO practices
+  const hasTitle = $('title').length > 0 && $('title').text().trim().length > 0;
+  const hasMetaDescription = $('meta[name="description"]').length > 0 && $('meta[name="description"]').attr('content')?.trim().length > 0;
+  const hasH1 = $('h1').length > 0;
+  const hasStructuredData = $('script[type="application/ld+json"]').length > 0;
+  
+  // Consider good SEO if at least 3 of the 4 criteria are met
+  const seoScore = [hasTitle, hasMetaDescription, hasH1, hasStructuredData].filter(Boolean).length;
+  analysis.hasSEO = seoScore >= 3;
+  console.log(`[Website Analysis]   SEO: ${analysis.hasSEO} (score: ${seoScore}/4)`);
+
+  // 2. Check for WhatsApp
+  const whatsappPatterns = [
+    /wa\.me/i,
+    /api\.whatsapp\.com/i,
+    /whatsapp/i,
+    /href="https?:\/\/[^"]*whatsapp[^"]*"/i
+  ];
+  analysis.hasWhatsApp = whatsappPatterns.some(pattern => pattern.test(htmlLower));
+  console.log(`[Website Analysis]   WhatsApp: ${analysis.hasWhatsApp}`);
+
+  // 3. Check for Reservation CTAs (English, Spanish, Italian, Portuguese)
+  const reservationKeywords = [
+    // English
+    'reservation', 'reserve', 'book a table', 'book now', 'make a booking',
+    // Spanish
+    'reserva', 'reservas', 'reservar', 'hacer reserva', 'reserva tu mesa',
+    // Italian
+    'prenotazione', 'prenota', 'prenotare',
+    // Portuguese
+    'reserva', 'reservar', 'fazer reserva',
+    // Platforms
+    'opentable', 'resy', 'tock', 'yelp reservations', 'tablein', 'pastarossaonline'
+  ];
+  const reservationPatterns = [
+    ...reservationKeywords.map(kw => new RegExp(kw, 'i')),
+    /href="[^"]*opentable\.com/i,
+    /href="[^"]*resy\.com/i,
+    /href="[^"]*exploretock\.com/i,
+    /href="[^"]*pastarossaonline\.com/i
+  ];
+  analysis.hasReservation = reservationPatterns.some(pattern => pattern.test(htmlLower));
+  console.log(`[Website Analysis]   Reservation: ${analysis.hasReservation}`);
+
+  // 4. Check for Third Party Delivery (Global and Regional platforms)
+  const thirdPartyPatterns = [
+    // North America
+    /ubereats\.com/i,
+    /doordash\.com/i,
+    /grubhub\.com/i,
+    /postmates\.com/i,
+    /seamless\.com/i,
+    /uber eats/i,
+    /door dash/i,
+    // Europe
+    /deliveroo\./i,
+    /just-eat\./i,
+    /justeat\./i,
+    /glovo\./i,
+    // Latin America
+    /rappi\./i,
+    /pedidosya\./i,
+    /pedidos ya/i,
+    /ifood\./i,
+    // Asia
+    /foodpanda\./i,
+    /grab\./i,
+    // General keywords
+    /delivery partner/i,
+    /third.party.delivery/i
+  ];
+  analysis.hasThirdPartyDelivery = thirdPartyPatterns.some(pattern => pattern.test(htmlLower));
+  console.log(`[Website Analysis]   Third Party Delivery: ${analysis.hasThirdPartyDelivery}`);
+
+  // 5. Check for Direct Ordering (Multilingual)
+  const directOrderingKeywords = [
+    // English
+    'order online', 'order now', 'online ordering', 'place order', 'order pickup',
+    'order delivery', 'add to cart', 'checkout', 'buy now', 'shop now',
+    // Spanish
+    'pedir online', 'pedir ahora', 'hacer pedido', 'ordenar', 'pedido online',
+    'añadir al carrito', 'agregar al carrito', 'comprar ahora', 'pedir delivery',
+    'pedir domicilio', 'takeaway', 'take away', 'para llevar',
+    // Italian
+    'ordina online', 'ordina ora', 'fare ordine', 'aggiungi al carrello',
+    'acquista ora', 'asporto',
+    // Portuguese
+    'pedir online', 'fazer pedido', 'adicionar ao carrinho', 'comprar agora',
+    // General
+    'menu', 'carta', 'menú'
+  ];
+  // Look for ordering keywords combined with form elements or buttons
+  const hasOrderingKeywords = directOrderingKeywords.some(kw => htmlLower.includes(kw));
+  const buttonText = $('button, a').text().toLowerCase();
+  const hasOrderingUI = /(order|menu|cart|checkout|pedir|pedido|ordenar|carrito|ordina|compra)/i.test(buttonText);
+  const hasMenuItems = $('.menu-item, .product, .dish, .carta, .plato').length > 0 || 
+                       htmlLower.includes('add to cart') || 
+                       htmlLower.includes('añadir al carrito') ||
+                       htmlLower.includes('agregar al carrito');
+  
+  analysis.hasDirectOrdering = hasOrderingKeywords && (hasOrderingUI || hasMenuItems);
+  console.log(`[Website Analysis]   Direct Ordering: ${analysis.hasDirectOrdering}`);
+
+  console.log(`[Website Analysis] Completed analysis for ${website}`);
+  return analysis;
+};
+
 // Detect locations from the homepage HTML
 export const detectLocations = async (html, baseUrl, options = {}) => {
   const { noPuppeteer = false, debugMode = false } = options;
@@ -755,10 +882,45 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   let usedPuppeteer = false;
   const $ = cheerio.load(html);
 
-  // Try to find a 'locations' page link
-  const locationPageKeywords = ['location', 'contact', 'store', 'find-us', 'branches', 'contact-us', 'retail-store-locations'];
+  // Try to find a 'locations' page link or section (multilingual: English, Spanish, Italian, Portuguese)
+  const locationPageKeywords = [
+    // English
+    'location', 'locations', 'contact', 'store', 'stores', 'find-us', 'branches', 
+    'contact-us', 'retail-store-locations', 'our-locations', 'find-a-store',
+    // Spanish
+    'ubicacion', 'ubicaciones', 'sucursal', 'sucursales', 'locales', 'local',
+    'nuestras-ubicaciones', 'nuestros-locales', 'donde-estamos', 'encuentranos', 
+    'puntos-de-venta', 'nuestras-sucursales',
+    // Italian
+    'posizione', 'posizioni', 'sede', 'sedi', 'negozi', 'dove-siamo',
+    // Portuguese
+    'localizacao', 'localizacoes', 'onde-estamos', 'nossos-locais', 'lojas'
+  ];
   let locationsPageUrl = null;
 
+  // First, check for location buttons on the same page (common in single-page apps)
+  const locationButtons = $('[data-location-id], [data-location], .location-item, .location-card, [class*="location-"]');
+  if (locationButtons.length > 2) { // If we have 3+ location elements, it's likely a multi-location business
+    console.log(`[PlaceDetails] Found ${locationButtons.length} location elements on the homepage`);
+    
+    locationButtons.each((i, el) => {
+      const locationName = $(el).attr('data-location-id') || 
+                          $(el).attr('data-location') || 
+                          $(el).find('h2, h3, h4, .location-name, [class*="name"]').first().text().trim() ||
+                          $(el).text().trim();
+      
+      if (locationName && locationName.length > 2 && locationName.length < 100) {
+        locationSet.add(locationName);
+      }
+    });
+    
+    if (locationSet.size > 0) {
+      console.log(`[PlaceDetails] Detected ${locationSet.size} locations from homepage elements`);
+      return { numLocations: locationSet.size, locationNames: Array.from(locationSet), usedPuppeteer };
+    }
+  }
+
+  // If no location elements found, try to find a 'locations' page link
   $('a').each((i, el) => {
     const href = $(el).attr('href');
     if (href) {

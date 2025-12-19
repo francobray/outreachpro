@@ -30,6 +30,9 @@ export interface Business {
   apolloStatus?: 'pending' | 'in_progress' | 'found' | 'not_found' | 'error';
   graderReport?: any;
   addedAt: string;
+  enrichedAt?: string | null;
+  numLocations?: number;
+  locationNames?: string[];
 }
 
 export interface Campaign {

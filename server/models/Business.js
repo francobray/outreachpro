@@ -44,6 +44,10 @@ const businessSchema = new mongoose.Schema({
   types: [{
     type: String
   }],
+  category: {
+    type: String,
+    default: null
+  },
   rating: {
     type: Number,
     default: null
@@ -69,11 +73,35 @@ const businessSchema = new mongoose.Schema({
   },
   numLocations: {
     type: Number,
-    default: null
+    default: 1  // Default to 1 location for any business
   },
   locationNames: [{
     type: String
-  }]
+  }],
+  icpScores: {
+    midmarket: {
+      score: { type: Number, default: null, min: 0, max: 10 },
+      breakdown: { type: mongoose.Schema.Types.Mixed, default: {} },
+      lastCalculated: { type: Date, default: null }
+    },
+    independent: {
+      score: { type: Number, default: null, min: 0, max: 10 },
+      breakdown: { type: mongoose.Schema.Types.Mixed, default: {} },
+      lastCalculated: { type: Date, default: null }
+    }
+  },
+  websiteAnalysis: {
+    hasSEO: { type: Boolean, default: null },
+    hasWhatsApp: { type: Boolean, default: null },
+    hasReservation: { type: Boolean, default: null },
+    hasDirectOrdering: { type: Boolean, default: null },
+    hasThirdPartyDelivery: { type: Boolean, default: null },
+    analyzedAt: { type: Date, default: null }
+  },
+  country: {
+    type: String,
+    default: null
+  }
 }, {
   timestamps: true
 });

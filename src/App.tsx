@@ -6,6 +6,7 @@ import PlacesPage from './components/PlacesPage';
 import ContactsPage from './components/ContactsPage';
 import EmailActivityPage from './components/EmailActivityPage';
 import ApiCostsPage from './components/ApiCostsPage';
+import ICPPage from './components/ICPPage';
 import CampaignModal from './components/CampaignModal';
 import AlertModal from './components/AlertModal';
 import Sidebar from './components/Sidebar';
@@ -25,7 +26,7 @@ interface EmailTemplate {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs'>('search');
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs' | 'icp'>('search');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -106,6 +107,7 @@ function App() {
                     {activeTab === 'contacts' && 'Contacts'}
                     {activeTab === 'api-costs' && 'API Costs'}
                     {activeTab === 'email-activity' && 'Email Activity'}
+                    {activeTab === 'icp' && 'Ideal Customer Profile'}
                   </h1>
                   <p className="text-sm text-gray-600">
                     {activeTab === 'search' && 'Find and manage local businesses for your outreach campaigns'}
@@ -114,6 +116,7 @@ function App() {
                     {activeTab === 'contacts' && 'View and manage Apollo contacts from your database'}
                     {activeTab === 'api-costs' && 'Track your monthly API usage and costs'}
                     {activeTab === 'email-activity' && 'Track the performance of your email campaigns'}
+                    {activeTab === 'icp' && 'Configure scoring factors for your ideal customer profiles'}
                   </p>
                 </div>
                 
@@ -174,6 +177,8 @@ function App() {
               <ApiCostsPage />
             ) : activeTab === 'email-activity' ? (
               <EmailActivityPage />
+            ) : activeTab === 'icp' ? (
+              <ICPPage />
             ) : (
               <EmailTemplates />
             )}

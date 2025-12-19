@@ -18,7 +18,9 @@ import {
   ShieldCheck,
   MapPin as LocationIcon,
   Star,
-  Send
+  Send,
+  Calculator,
+  X
 } from 'lucide-react';
 
 import { Business, DecisionMaker } from '../types';
@@ -91,6 +93,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     title: string;
     message: string;
     type: 'info' | 'warning' | 'error' | 'success' | 'confirm';
+    onConfirm?: () => void;
   }>({
     isOpen: false,
     title: '',
@@ -106,12 +109,30 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     emails: 200,
     locations: 120,
     grader: 100,
-    actions: 120
+    icpScore: 100,
+    actions: 140
   });
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [contactInfo, setContactInfo] = useState<{[key: string]: { website: string | null, phone: string | null, emails?: string[], numLocations?: number, locationNames?: string[], loading: boolean, usedPuppeteer?: boolean, websiteStatus?: 'ok' | 'timeout' | 'not_found' | 'error' | 'enotfound'; } }>({});
   const [tooltipPlaceId, setTooltipPlaceId] = useState<string | null>(null);
+  const [icpBreakdownModal, setIcpBreakdownModal] = useState<{
+    isOpen: boolean;
+    type: 'midmarket' | 'independent' | null;
+    breakdown: any;
+    score: number | null;
+    businessName: string;
+    category: string | null;
+    website: string | null;
+  }>({
+    isOpen: false,
+    type: null,
+    breakdown: null,
+    score: null,
+    businessName: '',
+    category: null,
+    website: null
+  });
   const [isResizing, setIsResizing] = useState(false);
   const [resizeColumn, setResizeColumn] = useState<keyof typeof colWidths | null>(null);
 
@@ -438,9 +459,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     const dbBusiness = databaseBusinesses[business.placeId];
     if (!dbBusiness) return false;
     
-    return !!(dbBusiness.website || 
-              (dbBusiness.phone && dbBusiness.phone.trim() !== '') || 
-              (dbBusiness.emails && dbBusiness.emails.length > 0));
+    // Check if the business was actually enriched (not just has basic Google Places data)
+    return !!(dbBusiness.enrichedAt);
   };
 
   // Helper function to check if a business has enriched Apollo data from database
@@ -560,9 +580,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     }
   };
 
-  // Add a function to enrich places data
-  const enrichPlacesData = async (business: Business) => {
-    updateLoadingState(business.id, 'enrich');
+  // Perform the actual enrichment
+  const performEnrichment = async (business: Business) => {
     try {
       // Use the new dedicated business enrichment endpoint
       const url = `/api/business/enrich/${business.placeId}`;
@@ -606,13 +625,66 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         enrichedAt: data.business.enrichedAt
       });
 
-      // Refresh database state to show updated enriched data
+      // Refresh database state to show updated enriched data and ICP scores
       await refreshDatabaseState();
+      
+      // Show success message
+      setAlertModal({
+        isOpen: true,
+        title: 'Success',
+        message: `${business.name} has been enriched successfully${data.business.icpScores ? ' and ICP scores have been recalculated' : ''}.`,
+        type: 'success'
+      });
     } catch (error) {
       console.error('Failed to enrich business data:', error);
       setContactInfo(prev => ({ ...prev, [business.placeId]: { ...(prev[business.placeId] || {}), loading: false } }));
-    } finally {
-      updateLoadingState(business.id, '');
+      throw error; // Re-throw to be caught by caller
+    }
+  };
+
+  // Add a function to enrich places data
+  const enrichPlacesData = async (business: Business) => {
+    const dbBusiness = databaseBusinesses[business.placeId];
+    
+    // Check if business was already enriched
+    if (dbBusiness?.enrichedAt) {
+      // Show confirmation modal
+      setAlertModal({
+        isOpen: true,
+        title: 'Confirm Re-enrichment',
+        message: 'This business was already enriched. Do you want to re-enrich it? This will re-scrape the website and may update location counts, emails, and other data.',
+        type: 'confirm',
+        onConfirm: async () => {
+          updateLoadingState(business.id, 'enrich');
+          try {
+            await performEnrichment(business);
+          } catch (error) {
+            setAlertModal({
+              isOpen: true,
+              title: 'Error',
+              message: 'Failed to enrich business data. Please try again.',
+              type: 'error'
+            });
+          } finally {
+            updateLoadingState(business.id, '');
+          }
+        }
+      });
+    } else {
+      // No existing enrichment, enrich directly
+      updateLoadingState(business.id, 'enrich');
+      try {
+        await performEnrichment(business);
+      } catch (error) {
+        setAlertModal({
+          isOpen: true,
+          title: 'Error',
+          message: 'Failed to enrich business data. Please try again.',
+          type: 'error'
+        });
+      } finally {
+        updateLoadingState(business.id, '');
+      }
     }
   };
 
@@ -622,7 +694,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     try {
       // Use the new dedicated Apollo enrichment endpoint
       const url = `/api/apollo/enrich/${business.placeId}`;
-      console.log(`[Apollo Enrich] Fetching from: ${url}`);
       
       const res = await fetch(url, {
         method: 'POST',
@@ -632,7 +703,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       });
       
       const data = await res.json();
-      console.log(`[Apollo Enrich] Received data for ${business.placeId}:`, data);
       
       if (!data.success) {
         throw new Error(data.message || 'Apollo enrichment failed');
@@ -655,6 +725,85 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         apolloStatus: 'error'
       });
     } finally {
+      updateLoadingState(business.id, '');
+    }
+  };
+
+  // Perform the actual ICP calculation
+  const performICPCalculation = async (businessId: string) => {
+    try {
+      // Calculate for both ICP types
+      const [midmarketRes, independentRes] = await Promise.all([
+        fetch(`/api/icp-score/${businessId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ icpType: 'midmarket' })
+        }),
+        fetch(`/api/icp-score/${businessId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ icpType: 'independent' })
+        })
+      ]);
+
+      if (midmarketRes.ok && independentRes.ok) {
+        // Refresh database state to show updated scores
+        await refreshDatabaseState();
+        setAlertModal({
+          isOpen: true,
+          title: 'Success',
+          message: 'ICP scores calculated successfully!',
+          type: 'success'
+        });
+      } else {
+        throw new Error('Failed to calculate ICP scores');
+      }
+    } catch (error) {
+      console.error('Failed to calculate ICP:', error);
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Failed to calculate ICP scores. Please try again.',
+        type: 'error'
+      });
+    }
+  };
+
+  // Calculate ICP Score for a business
+  const handleCalculateICP = async (business: Business) => {
+    const dbBusiness = databaseBusinesses[business.placeId];
+    if (!dbBusiness || !dbBusiness.id) {
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Business not found in database. Please enrich the business first.',
+        type: 'error'
+      });
+      return;
+    }
+
+    // Check if ICP scores already exist
+    const hasExistingScores = dbBusiness.icpScores && 
+      (dbBusiness.icpScores.midmarket?.score !== null || 
+       dbBusiness.icpScores.independent?.score !== null);
+
+    if (hasExistingScores) {
+      // Show confirmation modal
+      setAlertModal({
+        isOpen: true,
+        title: 'Confirm Recalculation',
+        message: 'ICP scores already exist for this business. Do you want to recalculate them? This will overwrite the existing scores.',
+        type: 'confirm',
+        onConfirm: async () => {
+          updateLoadingState(business.id, 'icp');
+          await performICPCalculation(dbBusiness.id);
+          updateLoadingState(business.id, '');
+        }
+      });
+    } else {
+      // No existing scores, calculate directly
+      updateLoadingState(business.id, 'icp');
+      await performICPCalculation(dbBusiness.id);
       updateLoadingState(business.id, '');
     }
   };
@@ -866,10 +1015,10 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                     {selectedBusinesses.size} selected
                   </span>
                   <span className="text-sm px-2 py-1 bg-blue-50 text-blue-700 rounded-md">
-                    {websiteEmailsCount} Website emails
+                    {websiteEmailsCount} Website ✉️
                   </span>
                   <span className="text-sm px-2 py-1 bg-purple-50 text-purple-700 rounded-md">
-                    {apolloEmailsCount} Apollo emails
+                    {apolloEmailsCount} Apollo ✉️
                   </span>
                 </div>
               )}
@@ -903,6 +1052,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                     Find Apollo DMs
                   </button>
                   
+                  {/* Grade Businesses Button */}
                   <button
                     onClick={batchGradeBusinesses}
                     disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
@@ -941,13 +1091,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                   # Locations
                   <span className="ml-1">{sortBy === 'numLocations' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website emails</th>
-                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo emails</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website ✉️</th>
+                <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo ✉️</th>
                 <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('graderScore')}>
                   Grader
                   <span className="ml-1">{sortBy === 'graderScore' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
                 </th>
-                <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
+                <th style={{ width: 100 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">ICP Score</th>
+                <th style={{ width: 140 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -989,17 +1140,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                               <CheckCircle className="h-3 w-3" />
                             </span>
                           )}
-                          <a
-                            href={`https://www.google.com/maps/place/?q=place_id:${business.placeId}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="ml-1 flex items-center justify-center w-6 h-6 bg-gray-100 hover:bg-blue-100 rounded-full text-blue-600 hover:text-blue-800 transition-colors"
-                            title="Open in Google Maps"
-                            tabIndex={-1}
-                            style={{ minWidth: 24, minHeight: 24 }}
-                          >
-                            <ExternalLink className="h-4 w-4 inline text-blue-600" />
-                          </a>
                         </div>
                         <div className="text-xs text-gray-600">
                           {enrichedBusiness.rating !== undefined && enrichedBusiness.rating !== null ? (
@@ -1125,8 +1265,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         const attempted = hasApolloBeenAttempted(business);
                         const hasData = hasEnrichedApolloData(business);
                         
-                        console.log(`[Apollo Display Debug] ${business.name}: attempted=${attempted}, hasData=${hasData}, apolloStatus=${enrichedBusiness.apolloStatus}`);
-                        
                         if (Array.isArray(apolloContacts) && apolloContacts.length > 0) {
                           return (
                             <div className="space-y-1">
@@ -1196,15 +1334,77 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         <span className="text-xs text-gray-400">-</span>
                       )}
                     </td>
-                    <td style={{ width: 80 }} className="px-2 py-1 text-xs">
+                    <td style={{ width: 100 }} className="px-2 py-1 text-xs text-center">
+                      {(() => {
+                        const dbBusiness = databaseBusinesses[business.placeId];
+                        const icpScores = dbBusiness?.icpScores;
+                        
+                        return (
+                          <div className="flex flex-col gap-1">
+                            {/* MidMarket Score */}
+                            {icpScores?.midmarket?.score !== undefined && icpScores?.midmarket?.score !== null ? (
+                              <button
+                                onClick={() => setIcpBreakdownModal({
+                                  isOpen: true,
+                                  type: 'midmarket',
+                                  breakdown: icpScores.midmarket.breakdown,
+                                  score: icpScores.midmarket.score,
+                                  businessName: business.name,
+                                  category: dbBusiness?.category || business.category || null,
+                                  website: dbBusiness?.website || null
+                                })}
+                                className={`px-2 py-0.5 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${
+                                  icpScores.midmarket.score >= 7 ? 'bg-green-100 text-green-800' :
+                                  icpScores.midmarket.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                                  'bg-red-100 text-red-800'
+                                }`}
+                              >
+                                MM: {icpScores.midmarket.score.toFixed(1)}
+                              </button>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
+                                MM: N/A
+                              </span>
+                            )}
+                            
+                            {/* Independent Score */}
+                            {icpScores?.independent?.score !== undefined && icpScores?.independent?.score !== null ? (
+                              <button
+                                onClick={() => setIcpBreakdownModal({
+                                  isOpen: true,
+                                  type: 'independent',
+                                  breakdown: icpScores.independent.breakdown,
+                                  score: icpScores.independent.score,
+                                  businessName: business.name,
+                                  category: dbBusiness?.category || business.category || null,
+                                  website: dbBusiness?.website || null
+                                })}
+                                className={`px-2 py-0.5 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${
+                                  icpScores.independent.score >= 7 ? 'bg-green-100 text-green-800' :
+                                  icpScores.independent.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                                  'bg-red-100 text-red-800'
+                                }`}
+                              >
+                                Ind: {icpScores.independent.score.toFixed(1)}
+                              </button>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
+                                Ind: N/A
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    <td style={{ width: 140 }} className="px-2 py-1 text-xs">
                       <div className="flex items-center justify-center space-x-1">
                         {/* Google Places Enrich Button */}
                         <button
                           onClick={() => enrichPlacesData(business)}
-                          disabled={loading === 'enrich' || hasEnrichedPlacesData(business)}
+                          disabled={loading === 'enrich'}
                           className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
                             hasEnrichedPlacesData(business) 
-                              ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                              ? 'bg-green-100 text-green-600 hover:bg-green-200 hover:text-green-800' 
                               : 'bg-blue-100 hover:bg-blue-200 text-blue-600 hover:text-blue-800'
                           } ${loading === 'enrich' ? 'opacity-50' : ''}`}
                           title={hasEnrichedPlacesData(business) ? "Already enriched from database" : "Enrich Google Places"}
@@ -1257,6 +1457,18 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         >
                           <Mail className="h-3 w-3" />
                         </button>
+                        <button
+                          onClick={() => handleCalculateICP(business)}
+                          className="flex items-center justify-center w-6 h-6 bg-purple-100 hover:bg-purple-200 rounded-full text-purple-600 hover:text-purple-800 transition-colors disabled:opacity-50"
+                          title="Calculate ICP Score"
+                          disabled={loading === 'icp'}
+                        >
+                          {loading === 'icp' ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Calculator className="h-3 w-3" />
+                          )}
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -1277,10 +1489,145 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       <AlertModal
         isOpen={alertModal.isOpen}
         onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
+        onConfirm={alertModal.onConfirm}
         title={alertModal.title}
         message={alertModal.message}
         type={alertModal.type}
       />
+      
+      {/* ICP Breakdown Modal */}
+      {icpBreakdownModal.isOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-[883px] w-full mx-4">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-900">
+                {icpBreakdownModal.type === 'midmarket' ? 'MidMarket' : 'Independent'} ICP Breakdown
+              </h2>
+              <button
+                onClick={() => setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false })}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6">
+              <div className="grid grid-cols-4 gap-4 mb-6 pb-4 border-b border-gray-200">
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Business</div>
+                  <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.businessName}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Category</div>
+                  <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.category || 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Website</div>
+                  {icpBreakdownModal.website ? (
+                    <a 
+                      href={icpBreakdownModal.website} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-lg font-semibold text-blue-600 hover:text-blue-800 hover:underline"
+                    >
+                      {icpBreakdownModal.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+                    </a>
+                  ) : (
+                    <div className="text-lg font-semibold text-gray-400">N/A</div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Total Score</div>
+                  <div className={`inline-block px-3 py-1 rounded text-lg font-bold ${
+                    (icpBreakdownModal.score || 0) >= 7 ? 'bg-green-100 text-green-800' :
+                    (icpBreakdownModal.score || 0) >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-red-100 text-red-800'
+                  }`}>
+                    {icpBreakdownModal.score?.toFixed(1)}/10
+                  </div>
+                </div>
+              </div>
+              
+              <div>
+                <div className="text-sm font-semibold text-gray-900 mb-3">Factor Breakdown</div>
+                {icpBreakdownModal.breakdown && Object.keys(icpBreakdownModal.breakdown).length > 0 ? (
+                  <div className="grid grid-cols-3 gap-3">
+                    {Object.entries(icpBreakdownModal.breakdown).map(([key, value]: [string, any]) => {
+                      // Convert technical names to human-readable labels
+                      const factorLabels: { [key: string]: string } = {
+                        numLocations: 'Number of Locations',
+                        noWebsite: 'No Website',
+                        poorSEO: 'Good SEO Practices',
+                        hasWhatsApp: 'WhatsApp Contact',
+                        hasReservation: 'Reservation System',
+                        hasDirectOrdering: 'Direct Ordering',
+                        geography: 'Target Geography',
+                        deliveryIntensiveCategory: 'Delivery Intensive',
+                        bookingIntensiveCategory: 'Booking Intensive'
+                      };
+                      
+                      // Format value display based on factor type
+                      const formatValue = (val: any) => {
+                        if (val === null || val === undefined) return 'N/A';
+                        if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+                        if (typeof val === 'object' && val.hasDirectOrdering !== undefined) {
+                          return val.hasDirectOrdering && val.hasThirdPartyDelivery ? 'Has both' : 
+                                 val.hasDirectOrdering ? 'Direct only' : 'None';
+                        }
+                        return val.toString();
+                      };
+                      
+                      // Get ideal range for numLocations
+                      const getIdealRange = (key: string) => {
+                        if (key === 'numLocations') {
+                          // MidMarket: 2-30, Independent: 1 location
+                          return icpBreakdownModal.type === 'midmarket' ? 
+                            'Ideal: 2-30 locations' : 'Ideal: 1 location';
+                        }
+                        return null;
+                      };
+                      
+                      return (
+                        <div key={key} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                          <div className="text-sm font-medium text-gray-700 mb-1">{factorLabels[key] || key}</div>
+                          <div className="text-xs text-gray-500 mb-1">
+                            Value: <span className="font-semibold text-gray-700">{formatValue(value.value)}</span>
+                          </div>
+                          {getIdealRange(key) && (
+                            <div className="text-xs text-blue-600 mb-1">
+                              {getIdealRange(key)}
+                            </div>
+                          )}
+                          <div className="text-xs text-gray-500 mb-2">
+                            Score: {value.scorePercent?.toFixed(0)}% × Weight: {value.weight}
+                          </div>
+                          <div className="text-lg font-bold text-gray-900">
+                            {value.contribution?.toFixed(2)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    <p className="mb-2">No breakdown data available.</p>
+                    <p className="text-sm">Please calculate the ICP score for this business.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex justify-end p-6 border-t border-gray-200">
+              <button
+                onClick={() => setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false })}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };

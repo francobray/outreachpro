@@ -1,9 +1,9 @@
 import React from 'react';
-import { Search, Mail, Database, BarChart3, ChevronLeft, ChevronRight, User, DollarSign } from 'lucide-react';
+import { Search, Mail, Database, BarChart3, ChevronLeft, ChevronRight, User, DollarSign, Target } from 'lucide-react';
 
 interface SidebarProps {
-  activeTab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs';
-  onTabChange: (tab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs') => void;
+  activeTab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs' | 'icp';
+  onTabChange: (tab: 'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs' | 'icp') => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
 }
@@ -14,7 +14,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, 
       id: 'search' as const,
       label: 'Search',
       icon: Search,
-      description: 'Find local businesses'
+      description: 'Find restaurants'
+    },
+    {
+      id: 'icp' as const,
+      label: 'ICP Config',
+      icon: Target,
+      description: 'Ideal Customer Profile'
     },
     {
       id: 'templates' as const,
@@ -56,14 +62,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, 
         {/* Logo and Title */}
         <div className={`flex items-center space-x-3 mb-8 ${isCollapsed ? 'justify-center' : ''}`}>
           <img
-            src="https://www.rayapp.io/wp-content/uploads/2024/12/logo-rayapp-azulwebp-300x150-1.webp"
+            src="https://www.rayapp.io/_next/image?url=%2Fimages%2Flogo-rayapp-azulwebp-300x150.webp&w=128&q=75"
             alt="RAY Logo"
             className={`object-contain ${isCollapsed ? 'h-6 w-auto' : 'h-8 w-auto'}`}
           />
           {!isCollapsed && (
             <div>
               <h1 className="text-lg font-bold text-gray-900">OutreachPro</h1>
-              <p className="text-xs text-gray-600">Campaign Manager</p>
             </div>
           )}
         </div>

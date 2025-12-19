@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
 
 import {
   resetApiTracking,
@@ -12,6 +13,7 @@ import {
   fetchHtmlWithFallback,
   extractDomain,
   detectLocations,
+  analyzeWebsiteForICP,
   normalizeAndDeduplicateEmails,
 } from './utils.js';
 
@@ -20,18 +22,107 @@ import Campaign from './models/Campaign.js';
 import EmailTemplate from './models/EmailTemplate.js';
 import EmailActivity from './models/EmailActivity.js';
 import ApiCallLog from './models/ApiCallLog.js';
+import ICPConfig from './models/ICPConfig.js';
+import { calculateICPScore, getDefaultICPConfigs } from './icpScoring.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
+/**
+ * Extract country from address string
+ */
+function extractCountryFromAddress(address) {
+  if (!address) return null;
+  
+  // Common patterns: "City, State, Country" or "Address, City, Country"
+  const parts = address.split(',').map(p => p.trim());
+  if (parts.length > 0) {
+    const lastPart = parts[parts.length - 1].toLowerCase();
+    
+    // Check for country names
+    const countryMap = {
+      'argentina': 'Argentina',
+      'united states': 'United States',
+      'usa': 'United States',
+      'us': 'United States',
+      'mexico': 'Mexico',
+      'brazil': 'Brazil',
+      'chile': 'Chile',
+      'colombia': 'Colombia',
+      'spain': 'Spain',
+      'france': 'France',
+      'italy': 'Italy',
+      'germany': 'Germany',
+      'united kingdom': 'United Kingdom',
+      'uk': 'United Kingdom',
+      'canada': 'Canada'
+    };
+    
+    for (const [key, value] of Object.entries(countryMap)) {
+      if (lastPart.includes(key)) {
+        return value;
+      }
+    }
+    
+    // Check for country codes (2-letter)
+    if (lastPart.length === 2) {
+      const countryCodeMap = {
+        'ar': 'Argentina',
+        'us': 'United States',
+        'mx': 'Mexico',
+        'br': 'Brazil',
+        'cl': 'Chile',
+        'co': 'Colombia',
+        'es': 'Spain',
+        'fr': 'France',
+        'it': 'Italy',
+        'de': 'Germany',
+        'gb': 'United Kingdom',
+        'uk': 'United Kingdom',
+        'ca': 'Canada'
+      };
+      if (countryCodeMap[lastPart.toLowerCase()]) {
+        return countryCodeMap[lastPart.toLowerCase()];
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Extract primary category from Google Places types
+ */
+function extractCategoryFromTypes(types) {
+  if (!types || types.length === 0) return null;
+  
+  // Filter out generic types and get the most specific one
+  const genericTypes = ['establishment', 'point_of_interest', 'food', 'store'];
+  const specificTypes = types.filter(type => !genericTypes.includes(type));
+  
+  if (specificTypes.length > 0) {
+    // Return the first specific type, formatted nicely
+    return specificTypes[0]
+      .split('_')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+  
+  // Fallback to first type if all are generic
+  return types[0]
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 async function enrichBusinessData(placeId, options = {}) {
-  const { enrich = true, apollo = true, testUrl = '', disablePuppeteer = false, debug = false } = options;
+  const { enrich = true, apollo = true, testUrl = '', disablePuppeteer = false, debug = false, force = false } = options;
   const noPuppeteer = disablePuppeteer;
   const debugMode = debug || process.env.DEBUG_SCRAPER === 'true';
 
-  console.log(`[Enrichment] Starting for placeId: ${placeId}`);
+  console.log(`[Enrichment] Starting for placeId: ${placeId}, force: ${force}`);
   const existingBusiness = await Business.findOne({ placeId });
 
   if (!existingBusiness) {
@@ -42,14 +133,18 @@ async function enrichBusinessData(placeId, options = {}) {
   
   console.log(`[Enrichment] Found business. enrichedAt: ${existingBusiness.enrichedAt}`);
 
-  // If business was recently enriched, return cached data
-  if (existingBusiness.enrichedAt && enrich) {
+  // If business was recently enriched and not forcing, return cached data
+  if (existingBusiness.enrichedAt && enrich && !force) {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     if (new Date(existingBusiness.enrichedAt) > thirtyDaysAgo) {
       console.log('[Enrichment] Business recently enriched. Returning cached data.');
       return existingBusiness;
     }
+  }
+  
+  if (force) {
+    console.log('[Enrichment] Force re-enrichment requested. Bypassing cache.');
   }
 
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
@@ -79,11 +174,23 @@ async function enrichBusinessData(placeId, options = {}) {
   let numLocations = 1; // Default to 1 location for any business
   let locationNames = [];
   let decisionMakers = [];
+  let websiteAnalysis = {
+    hasSEO: null,
+    hasWhatsApp: null,
+    hasReservation: null,
+    hasDirectOrdering: null,
+    hasThirdPartyDelivery: null,
+    analyzedAt: null
+  };
 
   if (enrich && website) {
     // 1. Scrape homepage HTML using progressive strategy
     console.log(`[Enrichment] Fetching website: ${website}`);
     const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
+
+    // Analyze website for ICP variables
+    console.log(`[Enrichment] Analyzing website for ICP variables`);
+    websiteAnalysis = analyzeWebsiteForICP(homepageHtml, website);
 
     // Detect locations from the homepage HTML
     console.log(`[Enrichment] Detecting locations from homepage HTML`);
@@ -527,6 +634,7 @@ async function enrichBusinessData(placeId, options = {}) {
     existingBusiness.numLocations = numLocations;
     existingBusiness.locationNames = locationNames;
     existingBusiness.decisionMakers = decisionMakers;
+    existingBusiness.websiteAnalysis = websiteAnalysis;
     
     // Always set enrichedAt timestamp when enrichment is performed
     existingBusiness.enrichedAt = new Date();
@@ -541,6 +649,7 @@ async function enrichBusinessData(placeId, options = {}) {
       numLocations: existingBusiness.numLocations,
       locationNamesCount: existingBusiness.locationNames.length,
       decisionMakersCount: decisionMakers.length,
+      websiteAnalysis: existingBusiness.websiteAnalysis,
       enrichedAt: existingBusiness.enrichedAt,
       hasNewContacts: hasNewContacts,
       hasNewLocationInfo: hasNewLocationInfo
@@ -575,6 +684,16 @@ router.get('/config', (req, res) => {
   router.get('/test-grader', (req, res) => {
     res.sendFile(path.join(__dirname, 'test-grader.html'));
   });
+
+// Get Google API key for frontend (Places autocomplete)
+router.get('/google-api-key', (req, res) => {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (apiKey) {
+    res.json({ apiKey });
+  } else {
+    res.status(500).json({ error: 'API key not configured' });
+  }
+});
 
   // Search businesses using Google Places API (real implementation)
 router.post('/search', async (req, res) => {
@@ -642,20 +761,33 @@ router.post('/search', async (req, res) => {
 
     // Map Google results to business format without additional API calls
     const businessesFound = (placesData.results || []).map(place => {
+      const address = place.vicinity || place.formatted_address || '';
       const business = {
-      id: place.place_id,
-      name: place.name,
-        address: place.vicinity || '',
+        id: place.place_id,
+        name: place.name,
+        address: address,
         website: null, // Will be populated on demand with the place-details endpoint
-      placeId: place.place_id,
+        placeId: place.place_id,
         phone: '', // Will be populated on demand with the place-details endpoint
-      emails: [],
-      auditReport: null,
-      emailStatus: 'pending',
-      addedAt: new Date().toISOString(),
-      types: place.types || [],
-      rating: place.rating || null,
-      userRatingsTotal: place.user_ratings_total || null,
+        emails: [],
+        auditReport: null,
+        emailStatus: 'pending',
+        addedAt: new Date().toISOString(),
+        types: place.types || [],
+        category: extractCategoryFromTypes(place.types),
+        rating: place.rating || null,
+        userRatingsTotal: place.user_ratings_total || null,
+        country: extractCountryFromAddress(address),
+        numLocations: 1, // Default to 1, will be updated during enrichment
+        locationNames: [],
+        websiteAnalysis: {
+          hasSEO: null,
+          hasWhatsApp: null,
+          hasReservation: null,
+          hasDirectOrdering: null,
+          hasThirdPartyDelivery: null,
+          analyzedAt: null
+        }
       };
 
       return business;
@@ -686,6 +818,148 @@ router.post('/search', async (req, res) => {
   }
 });
 
+// Search business by Place ID (for "Look by name" feature)
+router.post('/search-by-place-id', async (req, res) => {
+  const { placeId, includeApollo = true } = req.body;
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+
+  console.log('[Search by Place ID] Request received:', { placeId });
+
+  if (!apiKey) {
+    console.log('[Search by Place ID] No Google Places API key found');
+    return res.status(500).json({ 
+      error: 'Google Places API key not configured',
+      message: 'The Google Places API key is missing. Please add it to the server configuration to enable search.' 
+    });
+  }
+
+  if (!placeId) {
+    return res.status(400).json({ 
+      error: 'Place ID is required',
+      message: 'Please provide a valid place ID.' 
+    });
+  }
+
+  try {
+    // Get place details from Google Places API
+    const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=place_id,name,formatted_address,website,formatted_phone_number,types,rating,user_ratings_total&key=${apiKey}`;
+    console.log('[Search by Place ID] Fetching place details...');
+    
+    const detailsRes = await fetch(detailsUrl);
+    const detailsData = await detailsRes.json();
+    
+    if (detailsData.status !== 'OK' || !detailsData.result) {
+      console.log('[Search by Place ID] Place not found:', detailsData.status);
+      return res.status(404).json({ 
+        error: 'Place not found',
+        message: 'The selected business could not be found. It may no longer exist or may have been removed.'
+      });
+    }
+
+    const place = detailsData.result;
+    console.log('[Search by Place ID] Found place:', place.name);
+
+    // Track Google Places Details API call
+    try {
+      await ApiCallLog.create({
+        api: 'google_places_details',
+        timestamp: new Date(),
+        details: {
+          endpoint: 'details',
+          placeId: placeId,
+          businessName: place.name
+        }
+      });
+      console.log('[Tracking] Google Places Details API call tracked in database.');
+    } catch (error) {
+      console.error('[Tracking] Error saving Google Places Details API call to database:', error);
+    }
+
+    // Create business object
+    const address = place.formatted_address || '';
+    const business = {
+      id: place.place_id,
+      name: place.name,
+      address: address,
+      website: place.website || null,
+      placeId: place.place_id,
+      phone: place.formatted_phone_number || '',
+      emails: [],
+      auditReport: null,
+      emailStatus: 'pending',
+      addedAt: new Date().toISOString(),
+      types: place.types || [],
+      category: extractCategoryFromTypes(place.types),
+      rating: place.rating || null,
+      userRatingsTotal: place.user_ratings_total || null,
+      country: extractCountryFromAddress(address),
+      numLocations: 1, // Default to 1, will be updated during enrichment
+      locationNames: [],
+      websiteAnalysis: {
+        hasSEO: null,
+        hasWhatsApp: null,
+        hasReservation: null,
+        hasDirectOrdering: null,
+        hasThirdPartyDelivery: null,
+        analyzedAt: null
+      }
+    };
+
+    // Save to database or fetch existing business
+    let businessToReturn = business;
+    try {
+      const existingBusiness = await Business.findOne({ placeId: business.placeId });
+      if (!existingBusiness) {
+        await Business.create(business);
+        console.log('[Search by Place ID] Business saved to database');
+      } else {
+        console.log('[Search by Place ID] Business already exists in database');
+        // Return the existing business with all enriched data
+        businessToReturn = {
+          id: existingBusiness.placeId,
+          name: existingBusiness.name,
+          address: existingBusiness.address,
+          website: existingBusiness.website,
+          placeId: existingBusiness.placeId,
+          phone: existingBusiness.phone,
+          emails: existingBusiness.emails || [],
+          auditReport: existingBusiness.auditReport || null,
+          emailStatus: existingBusiness.emailStatus || 'pending',
+          addedAt: existingBusiness.addedAt || new Date().toISOString(),
+          types: existingBusiness.types || [],
+          category: existingBusiness.category,
+          rating: existingBusiness.rating,
+          userRatingsTotal: existingBusiness.userRatingsTotal,
+          country: existingBusiness.country,
+          numLocations: existingBusiness.numLocations || 1,
+          locationNames: existingBusiness.locationNames || [],
+          websiteAnalysis: existingBusiness.websiteAnalysis || {
+            hasSEO: null,
+            hasWhatsApp: null,
+            hasReservation: null,
+            hasDirectOrdering: null,
+            hasThirdPartyDelivery: null,
+            analyzedAt: null
+          },
+          enrichedAt: existingBusiness.enrichedAt || null,
+          icpScores: existingBusiness.icpScores || {}
+        };
+      }
+    } catch (error) {
+      console.error('[Search by Place ID] Error saving business to MongoDB:', error);
+    }
+
+    // Return as array to match the format of regular search
+    res.json({ businesses: [businessToReturn] });
+  } catch (error) {
+    console.log('[Search by Place ID] Error:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to find business',
+      message: 'An unexpected error occurred while trying to find the business. Please try again later.'
+    });
+  }
+});
+
 // Business enrichment endpoint - called by the business enrichment button
 router.post('/business/enrich/:placeId', async (req, res) => {
   const { placeId } = req.params;
@@ -693,28 +967,70 @@ router.post('/business/enrich/:placeId', async (req, res) => {
   try {
     console.log(`[Business Enrich] Starting enrichment for placeId: ${placeId}`);
     
-    // Call the enrichment method with apollo disabled
+    // Call the enrichment method with apollo disabled and force re-enrichment
     const enrichedBusiness = await enrichBusinessData(placeId, { 
       enrich: true, 
-      apollo: false 
+      apollo: false,
+      force: true  // Always force re-enrichment when user clicks the button
     });
     
     // The enrichBusinessData function already updates enrichedAt timestamp
     console.log(`[Business Enrich] Enrichment completed for placeId: ${placeId}`);
     
-    res.json({
-      success: true,
-      message: 'Business enriched successfully',
-      business: {
-        id: enrichedBusiness.id,
-        name: enrichedBusiness.name,
-        website: enrichedBusiness.website,
-        emails: enrichedBusiness.emails,
-        numLocations: enrichedBusiness.numLocations,
-        locationNames: enrichedBusiness.locationNames,
-        enrichedAt: enrichedBusiness.enrichedAt
+    // Automatically recalculate ICP scores after enrichment to reflect new data
+    console.log(`[Business Enrich] Recalculating ICP scores for ${enrichedBusiness.name}...`);
+    try {
+      const icpConfigs = await ICPConfig.find();
+      const updatedScores = {};
+      
+      for (const config of icpConfigs) {
+        const icpType = config.name === 'MidMarket Brands' ? 'midmarket' : 'independent';
+        const score = calculateICPScore(enrichedBusiness, config);
+        updatedScores[icpType] = score;
+        console.log(`[Business Enrich] ${config.name} ICP score: ${score.score.toFixed(1)}/10`);
       }
-    });
+      
+      // Update ICP scores in database using atomic update
+      await Business.updateOne(
+        { _id: enrichedBusiness._id },
+        { $set: { icpScores: updatedScores } }
+      );
+      
+      console.log(`[Business Enrich] ICP scores recalculated successfully`);
+      
+      // Return enriched business with updated ICP scores
+      res.json({
+        success: true,
+        message: 'Business enriched and ICP scores recalculated successfully',
+        business: {
+          id: enrichedBusiness.id,
+          name: enrichedBusiness.name,
+          website: enrichedBusiness.website,
+          emails: enrichedBusiness.emails,
+          numLocations: enrichedBusiness.numLocations,
+          locationNames: enrichedBusiness.locationNames,
+          enrichedAt: enrichedBusiness.enrichedAt,
+          icpScores: updatedScores
+        }
+      });
+    } catch (icpError) {
+      console.error(`[Business Enrich] Error recalculating ICP scores:`, icpError);
+      // Still return success for enrichment, but note ICP error
+      res.json({
+        success: true,
+        message: 'Business enriched successfully, but ICP recalculation failed',
+        business: {
+          id: enrichedBusiness.id,
+          name: enrichedBusiness.name,
+          website: enrichedBusiness.website,
+          emails: enrichedBusiness.emails,
+          numLocations: enrichedBusiness.numLocations,
+          locationNames: enrichedBusiness.locationNames,
+          enrichedAt: enrichedBusiness.enrichedAt
+        },
+        icpWarning: icpError.message
+      });
+    }
   } catch (error) {
     console.error(`[Business Enrich] Error for placeId ${placeId}:`, error);
     res.status(500).json({ 
@@ -1710,6 +2026,569 @@ router.get('/campaigns/:id', async (req, res) => {
   } catch (error) {
     console.error('[Campaigns] Error fetching campaign:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ==================== ICP (Ideal Customer Profile) Routes ====================
+
+// Get all ICP configurations
+router.get('/icp-configs', async (req, res) => {
+  try {
+    const configs = await ICPConfig.find({});
+    
+    // If no configs exist, initialize with defaults
+    if (configs.length === 0) {
+      console.log('[ICP] No configurations found. Creating defaults...');
+      const defaultConfigs = getDefaultICPConfigs();
+      const createdConfigs = await ICPConfig.insertMany(defaultConfigs);
+      return res.json(createdConfigs);
+    }
+    
+    res.json(configs);
+  } catch (error) {
+    console.error('[ICP] Error fetching ICP configs:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get a single ICP configuration
+router.get('/icp-configs/:id', async (req, res) => {
+  try {
+    const config = await ICPConfig.findById(req.params.id);
+    
+    if (!config) {
+      return res.status(404).json({ error: 'ICP configuration not found' });
+    }
+    
+    res.json(config);
+  } catch (error) {
+    console.error('[ICP] Error fetching ICP config:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create a new ICP configuration
+router.post('/icp-configs', async (req, res) => {
+  try {
+    const config = new ICPConfig(req.body);
+    await config.save();
+    res.json(config);
+  } catch (error) {
+    console.error('[ICP] Error creating ICP config:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update an ICP configuration
+router.put('/icp-configs/:id', async (req, res) => {
+  try {
+    const config = await ICPConfig.findByIdAndUpdate(
+      req.params.id,
+      { ...req.body, updatedAt: Date.now() },
+      { new: true }
+    );
+    
+    if (!config) {
+      return res.status(404).json({ error: 'ICP configuration not found' });
+    }
+    
+    res.json(config);
+  } catch (error) {
+    console.error('[ICP] Error updating ICP config:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Calculate ICP score for a single business
+router.post('/icp-score/:businessId', async (req, res) => {
+  try {
+    const { businessId } = req.params;
+    const { icpType } = req.body; // 'midmarket' or 'independent'
+    
+    console.log(`[ICP Score] Request received for businessId: ${businessId}, icpType: ${icpType}`);
+    
+    const business = await Business.findOne({ id: businessId });
+    
+    if (!business) {
+      console.log(`[ICP Score] Business not found: ${businessId}`);
+      return res.status(404).json({ error: 'Business not found' });
+    }
+    
+    console.log(`[ICP Score] Found business: ${business.name}`);
+    
+    // Check if websiteAnalysis is missing or outdated (older than 30 days)
+    const needsWebsiteAnalysis = business.website && (
+      !business.websiteAnalysis || 
+      !business.websiteAnalysis.analyzedAt ||
+      business.websiteAnalysis.hasSEO === null ||
+      (new Date() - new Date(business.websiteAnalysis.analyzedAt)) > 30 * 24 * 60 * 60 * 1000
+    );
+    
+    if (needsWebsiteAnalysis) {
+      console.log(`[ICP Score] Website analysis missing or outdated, analyzing website: ${business.website}`);
+      try {
+        const { html: homepageHtml } = await fetchHtmlWithFallback(business.website, { noPuppeteer: false, debugMode: false });
+        const websiteAnalysis = analyzeWebsiteForICP(homepageHtml, business.website);
+        
+        // Use atomic update to prevent race conditions
+        await Business.updateOne(
+          { id: businessId },
+          { $set: { websiteAnalysis } }
+        );
+        
+        // Update local business object for current calculation
+        business.websiteAnalysis = websiteAnalysis;
+        console.log(`[ICP Score] Website analysis completed and saved:`, websiteAnalysis);
+      } catch (error) {
+        console.error(`[ICP Score] Error analyzing website:`, error);
+        // Continue with existing data even if analysis fails
+      }
+    } else if (business.websiteAnalysis) {
+      console.log(`[ICP Score] Using existing website analysis from ${business.websiteAnalysis.analyzedAt}`);
+    }
+    
+    const config = await ICPConfig.findOne({ type: icpType });
+    
+    if (!config) {
+      console.log(`[ICP Score] ICP configuration not found for type: ${icpType}`);
+      return res.status(404).json({ error: 'ICP configuration not found' });
+    }
+    
+    console.log(`[ICP Score] Calculating score with config: ${config.name}`);
+    console.log(`[ICP Score] Business data:`, {
+      name: business.name,
+      numLocations: business.numLocations,
+      website: business.website,
+      country: business.country,
+      category: business.category,
+      websiteAnalysis: business.websiteAnalysis
+    });
+    
+    const result = calculateICPScore(business, config);
+    
+    console.log(`[ICP Score] Calculated score: ${result.score}/10`);
+    console.log(`[ICP Score] Breakdown:`, JSON.stringify(result.breakdown, null, 2));
+    
+    // Update business with ICP score using atomic operation to prevent race conditions
+    await Business.updateOne(
+      { id: businessId },
+      { 
+        $set: {
+          [`icpScores.${icpType}`]: {
+            score: result.score,
+            breakdown: result.breakdown,
+            lastCalculated: result.calculatedAt
+          }
+        }
+      }
+    );
+    
+    console.log(`[ICP Score] Successfully saved score for ${business.name} (${icpType}): ${result.score}/10`);
+    
+    res.json({
+      businessId,
+      icpType,
+      score: result.score,
+      breakdown: result.breakdown,
+      calculatedAt: result.calculatedAt
+    });
+  } catch (error) {
+    console.error('[ICP Score] Error calculating ICP score:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Bulk calculate ICP scores for all businesses
+router.post('/icp-score/bulk-calculate', async (req, res) => {
+  try {
+    const { icpType } = req.body; // 'midmarket', 'independent', or 'both'
+    
+    const config = await ICPConfig.findOne({ 
+      type: icpType === 'both' ? { $in: ['midmarket', 'independent'] } : icpType 
+    });
+    
+    if (!config && icpType !== 'both') {
+      return res.status(404).json({ error: 'ICP configuration not found' });
+    }
+    
+    const businesses = await Business.find({});
+    
+    let processed = 0;
+    let errors = 0;
+    
+    const configs = icpType === 'both' 
+      ? await ICPConfig.find({}) 
+      : [config];
+    
+    for (const business of businesses) {
+      try {
+        for (const cfg of configs) {
+          const result = calculateICPScore(business, cfg);
+          
+          if (!business.icpScores) {
+            business.icpScores = {};
+          }
+          business.icpScores[cfg.type] = {
+            score: result.score,
+            breakdown: result.breakdown,
+            lastCalculated: result.calculatedAt
+          };
+        }
+        
+        await business.save();
+        processed++;
+      } catch (err) {
+        console.error(`[ICP] Error processing business ${business.id}:`, err);
+        errors++;
+      }
+    }
+    
+    res.json({
+      message: 'Bulk ICP calculation completed',
+      processed,
+      errors,
+      total: businesses.length
+    });
+  } catch (error) {
+    console.error('[ICP] Error in bulk ICP calculation:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Reset ICP configurations to defaults
+router.post('/icp-configs/reset', async (req, res) => {
+  try {
+    await ICPConfig.deleteMany({});
+    const defaultConfigs = getDefaultICPConfigs();
+    const createdConfigs = await ICPConfig.insertMany(defaultConfigs);
+    res.json({ 
+      message: 'ICP configurations reset to defaults',
+      configs: createdConfigs
+    });
+  } catch (error) {
+    console.error('[ICP] Error resetting ICP configs:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Migrate ICP configurations from isArgentina to geography
+router.post('/icp-configs/migrate', async (req, res) => {
+  try {
+    console.log('[ICP Migration] Starting migration from isArgentina to geography...');
+    
+    const configs = await ICPConfig.find({});
+    let migrated = 0;
+    
+    for (const config of configs) {
+      // Check if config has isArgentina but not geography
+      if (config.factors.isArgentina && !config.factors.geography) {
+        console.log(`[ICP Migration] Migrating config: ${config.name}`);
+        
+        // Copy isArgentina settings to geography
+        config.factors.geography = {
+          enabled: config.factors.isArgentina.enabled,
+          weight: config.factors.isArgentina.weight
+        };
+        
+        // Disable isArgentina
+        config.factors.isArgentina.enabled = false;
+        config.factors.isArgentina.weight = 0;
+        
+        await config.save();
+        migrated++;
+      }
+    }
+    
+    console.log(`[ICP Migration] Migrated ${migrated} configurations`);
+    
+    res.json({ 
+      message: 'ICP configurations migrated successfully',
+      migrated
+    });
+  } catch (error) {
+    console.error('[ICP Migration] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ===== GRADER ENDPOINTS =====
+
+// Function to grade business quality
+async function gradeBusiness(placeId) {
+  try {
+    // Check if we should use a mock response
+    if (!process.env.RAY_GRADER_API_KEY || process.env.RAY_GRADER_API_KEY === 'demo-key') {
+      console.log('[Grader] Using mock grader response (no API key or demo key)');
+      const mockScore = Math.floor(Math.random() * 100) + 1; // Score between 1-100
+      const mockReportId = `mock-${placeId}-${Date.now()}`;
+      
+      // Create a mock PDF for download
+      const reportPath = path.join(__dirname, 'reports', `${mockReportId}.pdf`);
+      await fs.mkdir(path.dirname(reportPath), { recursive: true });
+      await fs.writeFile(reportPath, 'This is a mock PDF report.');
+      
+      return {
+        success: true,
+        score: mockScore,
+        reportId: mockReportId,
+      };
+    }
+    
+    let apiUrl = process.env.GRADER_BACKEND_URL || 'https://grader.rayapp.io/api/generate-report-v2';
+    if (apiUrl && !apiUrl.endsWith('/api/generate-report-v2')) {
+      apiUrl = apiUrl.replace(/\/$/, '') + '/api/generate-report-v2';
+    }
+    console.log(`[Grader] Full API URL: ${apiUrl}`);
+    
+    const requestBody = { 
+      placeId: placeId,
+      apiKey: process.env.RAY_GRADER_API_KEY
+    };
+    
+    console.log(`[Grader] Request body: ${JSON.stringify(requestBody, null, 2)}`);
+    
+    const graderResponse = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(180000) // 180 second timeout
+    });
+
+    if (!graderResponse.ok) {
+      const errorText = await graderResponse.text();
+      console.error(`[Grader] Grader API returned an error. Status: ${graderResponse.status}, Body: ${errorText}`);
+      throw new Error(`Grader API request failed: ${errorText}`);
+    }
+
+    const contentType = graderResponse.headers.get('content-type');
+
+    if (contentType && contentType.includes('application/pdf')) {
+      const pdfBuffer = await graderResponse.arrayBuffer();
+      const reportId = `ray-${placeId}-${Date.now()}`;
+      const reportPath = path.join(__dirname, 'reports', `${reportId}.pdf`);
+
+      await fs.mkdir(path.dirname(reportPath), { recursive: true });
+      await fs.writeFile(reportPath, Buffer.from(pdfBuffer));
+
+      const scoreHeader = graderResponse.headers.get('x-grader-score');
+      const score = scoreHeader ? parseInt(scoreHeader, 10) : null;
+
+      if (score === null) {
+        console.log('[Grader] Grader API returned a PDF, but the x-grader-score header was not found.');
+      }
+
+      return {
+        success: true,
+        score: score,
+        reportId: reportId,
+      };
+    }
+
+    // Fallback to JSON parsing if not a direct PDF response
+    const clonedResponse = graderResponse.clone();
+    try {
+      const reportData = await graderResponse.json();
+      const reportId = `ray-${placeId}-${Date.now()}`;
+      
+      if (reportData.pdfUrl) {
+        const pdfResponse = await fetch(reportData.pdfUrl);
+        if (pdfResponse.ok) {
+          const pdfBuffer = await pdfResponse.arrayBuffer();
+          const reportPath = path.join(__dirname, 'reports', `${reportId}.pdf`);
+          await fs.mkdir(path.dirname(reportPath), { recursive: true });
+          await fs.writeFile(reportPath, Buffer.from(pdfBuffer));
+        } else {
+          console.error(`[Grader] Failed to download PDF from url: ${reportData.pdfUrl}`);
+        }
+      }
+      
+      return {
+        success: true,
+        score: reportData.score,
+        reportId: reportId,
+      };
+    } catch (error) {
+        console.error('[Grader] Failed to parse JSON response from grader API. Logging headers and body.');
+        console.error('[Grader] Grader API Response Headers:', JSON.stringify(Object.fromEntries(clonedResponse.headers.entries())));
+        const responseBody = await clonedResponse.text();
+        console.error('[Grader] Grader API Response Body (first 500 chars):', responseBody.substring(0, 500));
+        
+        throw error;
+    }
+
+  } catch (error) {
+    console.error('[Grader] Error grading business:', error);
+    throw error;
+  }
+}
+
+// Endpoint to grade business quality
+router.post('/api/grade-business', async (req, res) => {
+  const { placeId } = req.body;
+
+  if (!placeId) {
+    return res.status(400).json({ error: 'placeId is required' });
+  }
+
+  try {
+    const report = await gradeBusiness(placeId);
+    res.json(report);
+  } catch (error) {
+    console.error('[Grader] Error in /api/grade-business endpoint:', error);
+    res.status(500).json({ error: 'Failed to grade business' });
+  }
+});
+
+// Endpoint to get a grade report by ID
+router.get('/api/grade-report/:reportId', async (req, res) => {
+  try {
+    const { reportId } = req.params;
+    
+    if (!reportId) {
+      return res.status(400).json({ error: 'Report ID is required' });
+    }
+    
+    console.log(`[Grader] Fetching report with ID: ${reportId}`);
+    
+    // Check if this is a mock report ID
+    if (reportId.startsWith('mock-')) {
+      console.log('[Grader] Generating mock report HTML');
+      
+      // Extract the place ID from the mock report ID
+      const parts = reportId.split('-');
+      const placeId = parts[1];
+      
+      // Generate a simple HTML report
+      const mockHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Mock Grader Report</title>
+          <style>
+            body { 
+              font-family: Arial, sans-serif; 
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px;
+              background-color: #f5f5f5;
+            }
+            .report-header { 
+              background: linear-gradient(to right, #4a6cf7, #8a54ff);
+              color: white;
+              padding: 20px;
+              border-radius: 10px 10px 0 0;
+            }
+            .report-body {
+              background: white;
+              border: 1px solid #ddd;
+              padding: 20px;
+              border-radius: 0 0 10px 10px;
+            }
+            .score {
+              font-size: 48px;
+              font-weight: bold;
+              margin: 20px 0;
+              color: #4a6cf7;
+            }
+            .category {
+              margin: 15px 0;
+              padding: 15px;
+              background-color: #f9f9f9;
+              border-radius: 5px;
+            }
+            .category h3 {
+              margin-top: 0;
+              color: #333;
+            }
+            .bar {
+              height: 10px;
+              background-color: #eee;
+              border-radius: 5px;
+              margin-top: 5px;
+            }
+            .bar-fill {
+              height: 100%;
+              border-radius: 5px;
+              background: linear-gradient(to right, #4a6cf7, #8a54ff);
+            }
+          </style>
+        </head>
+        <body>
+          <div class="report-header">
+            <h1>🎯 RAY Grader Report</h1>
+            <p>Generated on ${new Date().toLocaleDateString()} for Place ID: ${placeId}</p>
+            <p style="opacity: 0.8; margin-top: 10px;">⚠️ This is a MOCK report for testing purposes</p>
+          </div>
+          
+          <div class="report-body">
+            <h2>Business Quality Score</h2>
+            
+            <div class="score">
+              ${Math.floor(Math.random() * 40) + 60}/100
+            </div>
+            
+            <div class="category">
+              <h3>📱 Online Presence</h3>
+              <p>Website quality, social media activity, and digital footprint</p>
+              <div class="bar">
+                <div class="bar-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%"></div>
+              </div>
+            </div>
+            
+            <div class="category">
+              <h3>⭐ Customer Reviews</h3>
+              <p>Rating distribution, review count, and sentiment analysis</p>
+              <div class="bar">
+                <div class="bar-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%"></div>
+              </div>
+            </div>
+            
+            <div class="category">
+              <h3>📊 Business Information</h3>
+              <p>Completeness and accuracy of business details</p>
+              <div class="bar">
+                <div class="bar-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%"></div>
+              </div>
+            </div>
+            
+            <div class="category">
+              <h3>🎨 Visual Content</h3>
+              <p>Photo quality, quantity, and engagement metrics</p>
+              <div class="bar">
+                <div class="bar-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%"></div>
+              </div>
+            </div>
+            
+            <div style="margin-top: 30px; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 5px;">
+              <strong>Note:</strong> This is a mock report generated for demonstration purposes. 
+              To access real grader data, configure RAY_GRADER_API_KEY in your environment.
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+      
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(mockHtml);
+    }
+    
+    // For real report IDs, serve the PDF file
+    const reportPath = path.join(__dirname, 'reports', `${reportId}.pdf`);
+    
+    try {
+      await fs.access(reportPath);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${reportId}.pdf"`);
+      res.sendFile(reportPath);
+    } catch (error) {
+      console.error(`[Grader] Report file not found: ${reportPath}`);
+      res.status(404).json({ error: 'Report not found' });
+    }
+  } catch (error) {
+    console.error('[Grader] Error fetching grade report:', error);
+    res.status(500).json({ error: 'Failed to fetch report' });
   }
 });
 

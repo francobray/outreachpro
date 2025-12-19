@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator } from 'lucide-react';
 
 interface Place {
   id: string;
@@ -18,6 +18,18 @@ interface Place {
   addedAt: string;
   decisionMakers?: any[];
   apolloAttempted?: boolean;
+  icpScores?: {
+    midmarket?: {
+      score: number;
+      breakdown: any;
+      lastCalculated: string;
+    };
+    independent?: {
+      score: number;
+      breakdown: any;
+      lastCalculated: string;
+    };
+  };
 }
 
 const PlacesPage: React.FC = () => {
@@ -71,7 +83,7 @@ const PlacesPage: React.FC = () => {
       const businesses = data.businesses || [];
       console.log('[PlacesPage] Fetched places:', {
         count: businesses.length,
-        sample: businesses.slice(0, 3).map(b => ({
+        sample: businesses.slice(0, 3).map((b: Place) => ({
           name: b.name,
           enriched: b.enriched,
           types: b.types,
@@ -100,6 +112,37 @@ const PlacesPage: React.FC = () => {
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch places');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleCalculateICP = async (businessId: string) => {
+    try {
+      setRefreshing(true);
+      // Calculate for both ICP types
+      const [midmarketRes, independentRes] = await Promise.all([
+        fetch(`/api/icp-score/${businessId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ icpType: 'midmarket' })
+        }),
+        fetch(`/api/icp-score/${businessId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ icpType: 'independent' })
+        })
+      ]);
+
+      if (midmarketRes.ok && independentRes.ok) {
+        // Refresh the places list to show updated scores
+        await handleRefresh();
+      } else {
+        alert('Failed to calculate ICP scores');
+      }
+    } catch (error) {
+      console.error('Error calculating ICP:', error);
+      alert('Failed to calculate ICP scores');
     } finally {
       setRefreshing(false);
     }
@@ -285,7 +328,7 @@ const PlacesPage: React.FC = () => {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 p-6">
-        <div className="w-[90%] mx-auto">
+        <div className="w-full mx-auto">
           <div className="text-center py-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
             <p className="mt-2 text-gray-600">Loading places...</p>
@@ -298,7 +341,7 @@ const PlacesPage: React.FC = () => {
   if (error) {
     return (
       <div className="min-h-screen bg-gray-50 p-6">
-        <div className="w-[90%] mx-auto">
+        <div className="w-full mx-auto">
           <div className="text-center py-8">
             <p className="text-red-600">Error: {error}</p>
             <button
@@ -315,7 +358,7 @@ const PlacesPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
-      <div className="w-[90%] mx-auto">
+      <div className="w-full mx-auto">
 
         {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -497,6 +540,11 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <div className="flex items-center">
+                      ICP Score
+                    </div>
+                  </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('addedAt')}>
                     <div className="flex items-center">
                       Added
@@ -505,6 +553,7 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -600,8 +649,45 @@ const PlacesPage: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex gap-2">
+                        {place.icpScores?.midmarket?.score !== undefined && (
+                          <div className={`px-2 py-1 rounded text-xs font-medium ${
+                            place.icpScores.midmarket.score >= 7 ? 'bg-green-100 text-green-800' :
+                            place.icpScores.midmarket.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`} title="MidMarket Score">
+                            MM: {Math.round(place.icpScores.midmarket.score)}/10
+                          </div>
+                        )}
+                        {place.icpScores?.independent?.score !== undefined && (
+                          <div className={`px-2 py-1 rounded text-xs font-medium ${
+                            place.icpScores.independent.score >= 7 ? 'bg-green-100 text-green-800' :
+                            place.icpScores.independent.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`} title="Independent Score">
+                            Ind: {Math.round(place.icpScores.independent.score)}/10
+                          </div>
+                        )}
+                        {!place.icpScores?.midmarket && !place.icpScores?.independent && (
+                          <span className="text-gray-400 text-xs">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
                         {new Date(place.addedAt).toLocaleDateString()}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleCalculateICP(place.id)}
+                          disabled={refreshing}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Calculate ICP Score"
+                        >
+                          <Calculator className="h-5 w-5" />
+                        </button>
                       </div>
                     </td>
                   </tr>

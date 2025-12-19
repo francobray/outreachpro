@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { DollarSign, Info, TrendingUp, HelpCircle } from 'lucide-react';
+import { DollarSign, Info, TrendingUp, HelpCircle, X } from 'lucide-react';
 
 interface CostEstimatorProps {
   estimatedResults: number;
@@ -20,6 +20,7 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
   const GOOGLE_PLACES_SEARCH_COST = 0.017; // per search request
   const GOOGLE_PLACES_DETAILS_COST = 0.017; // per details request
   const [apolloCostPerCredit, setApolloCostPerCredit] = useState(0.00895); // Default to your current rate ($198/22110 credits)
+  const [showCostModal, setShowCostModal] = useState(false);
   
   // Fetch Apollo cost per credit from server
   useEffect(() => {
@@ -44,7 +45,7 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
     // Google Places Search
     const searchCost = GOOGLE_PLACES_SEARCH_COST;
     costs.push({
-      name: 'Google Places Search',
+      name: 'Places Search',
       cost: searchCost,
       description: 'Text search request',
       color: 'bg-blue-50 text-blue-700',
@@ -54,7 +55,7 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
     // Google Places Details (for each result)
     const detailsCost = estimatedResults * GOOGLE_PLACES_DETAILS_COST;
     costs.push({
-      name: 'Google Places Details',
+      name: 'Places Details',
       cost: detailsCost,
       description: `${estimatedResults} detail requests`,
       color: 'bg-green-50 text-green-700',
@@ -65,7 +66,7 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
     if (includeApollo) {
       const apolloCost = estimatedResults * apolloCostPerCredit;
       costs.push({
-        name: 'Apollo Contact Lookup',
+        name: 'Apollo Lookup',
         cost: apolloCost,
         description: `${estimatedResults} contact searches`,
         color: 'bg-purple-50 text-purple-700',
@@ -88,12 +89,15 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center space-x-2">
           <DollarSign className="h-5 w-5 text-gray-600" />
-          <h3 className="text-sm font-medium text-gray-900">Estimated API Costs</h3>
+          <h3 className="text-sm font-medium text-gray-900">API Costs</h3>
         </div>
-        <div className="flex items-center space-x-1 text-xs text-gray-500">
+        <button
+          onClick={() => setShowCostModal(true)}
+          className="flex items-center space-x-1 text-xs text-gray-500 hover:text-blue-600 transition-colors cursor-pointer"
+        >
           <Info className="h-3 w-3" />
           <span>Estimates</span>
-        </div>
+        </button>
       </div>
       
       <div className="space-y-4">
@@ -134,7 +138,6 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
               </div>
               <div className="text-right">
                 <div className="font-medium">{formatCost(cost.cost)}</div>
-                <div className="text-xs text-gray-500">{cost.description}</div>
               </div>
             </div>
           ))}
@@ -144,31 +147,79 @@ const CostEstimator: React.FC<CostEstimatorProps> = ({ estimatedResults, include
       <div className="border-t border-gray-200 pt-3 mt-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
-            <TrendingUp className="h-4 w-4 text-gray-600" />
-            <span className="text-sm font-medium text-gray-900">Total Estimated Cost</span>
+            <span className="text-sm font-medium text-gray-900">Estimated Cost</span>
           </div>
           <div className="text-right">
             <div className="text-lg font-bold text-gray-900">{formatCost(totalCost)}</div>
-            <div className="text-xs text-gray-500">
-              for ~{estimatedResults} businesses
-            </div>
           </div>
         </div>
       </div>
       
-      <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
-        <div className="flex items-start space-x-2">
-          <Info className="h-3 w-3 mt-0.5 flex-shrink-0" />
-          <div>
-            <div className="font-medium mb-1">Cost Breakdown:</div>
-            <ul className="space-y-1 text-xs">
-              <li>•Google Places Search: $0.017 per request</li>
-              <li>•Google Places Details: $0.017 per business</li>
-              <li>•Apollo Contact Lookup: ${apolloCostPerCredit.toFixed(4)} per credit</li>
-            </ul>
+      {/* Cost Breakdown Modal */}
+      {showCostModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center space-x-2">
+                  <Info className="h-5 w-5 text-amber-600" />
+                  <h2 className="text-xl font-semibold text-gray-900">Cost Breakdown</h2>
+                </div>
+                <button
+                  onClick={() => setShowCostModal(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-medium text-blue-900">Places Search</span>
+                    <span className="text-blue-700 font-semibold">$0.017</span>
+                  </div>
+                  <p className="text-sm text-blue-800">Per search request</p>
+                </div>
+
+                <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-medium text-green-900">Places Details</span>
+                    <span className="text-green-700 font-semibold">$0.017</span>
+                  </div>
+                  <p className="text-sm text-green-800">Per business details request</p>
+                </div>
+
+                {includeApollo && (
+                  <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium text-purple-900">Apollo Lookup</span>
+                      <span className="text-purple-700 font-semibold">${apolloCostPerCredit.toFixed(4)}</span>
+                    </div>
+                    <p className="text-sm text-purple-800">Per credit</p>
+                  </div>
+                )}
+
+                <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                  <p className="text-xs text-gray-600">
+                    <strong>Note:</strong> These are estimated costs based on current API pricing. 
+                    Actual costs may vary based on your API usage and any discounts or credits applied.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end mt-6">
+                <button
+                  onClick={() => setShowCostModal(false)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Got it
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
