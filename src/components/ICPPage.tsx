@@ -254,7 +254,7 @@ const ICPPage: React.FC = () => {
 
   const factorLabels: Record<string, string> = {
     numLocations: 'Number of Locations',
-    poorSEO: 'Good SEO/AEO Practices',
+    poorSEO: 'Poor SEO/AEO Practices',
     hasWhatsApp: 'Has WhatsApp Number',
     hasReservation: 'Has Reservation CTA',
     hasDirectOrdering: 'Has Direct Ordering',
@@ -266,7 +266,7 @@ const ICPPage: React.FC = () => {
 
   const factorDescriptions: Record<string, string> = {
     numLocations: 'Ideal range of physical locations',
-    poorSEO: 'Website follows SEO best practices (title, meta, H1, structured data)',
+    poorSEO: 'Website lacks SEO best practices (no title/meta/H1/structured data)',
     hasWhatsApp: 'WhatsApp number exposed on website',
     hasReservation: 'Has "Reservar" call to action',
     hasDirectOrdering: 'Has direct ordering without PedidosYa/Rappi',

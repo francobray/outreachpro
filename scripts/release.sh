@@ -84,3 +84,4 @@ echo -e "   • Branch: ${CURRENT_BRANCH}"
 echo -e "   • Tag: v${NEW_VERSION}"
 echo ""
 
+

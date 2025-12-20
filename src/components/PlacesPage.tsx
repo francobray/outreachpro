@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info } from 'lucide-react';
+import AlertModal from './AlertModal';
 
 interface Place {
   id: string;
@@ -59,6 +60,35 @@ const PlacesPage: React.FC = () => {
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
   const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
   const [selectedLocationPlace, setSelectedLocationPlace] = useState<Place | null>(null);
+  const [icpBreakdownModal, setIcpBreakdownModal] = useState<{
+    isOpen: boolean;
+    type: 'midmarket' | 'independent' | null;
+    breakdown: any;
+    score: number | null;
+    businessName: string;
+    category: string | null;
+    website: string | null;
+  }>({
+    isOpen: false,
+    type: null,
+    breakdown: null,
+    score: null,
+    businessName: '',
+    category: null,
+    website: null
+  });
+  const [alertModal, setAlertModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'success' | 'error' | 'confirm';
+    onConfirm?: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'success'
+  });
 
   useEffect(() => {
     fetchPlaces();
@@ -71,6 +101,33 @@ const PlacesPage: React.FC = () => {
   useEffect(() => {
     setCurrentPage(1);
   }, [itemsPerPage]);
+
+  // Handle ESC key to close modals
+  useEffect(() => {
+    const handleEscKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (isModalOpen) {
+          setIsModalOpen(false);
+          setSelectedPlace(null);
+        }
+        if (isLocationsModalOpen) {
+          setIsLocationsModalOpen(false);
+          setSelectedLocationPlace(null);
+        }
+        if (icpBreakdownModal.isOpen) {
+          setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false });
+        }
+        if (alertModal.isOpen) {
+          setAlertModal({ ...alertModal, isOpen: false });
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleEscKey);
+    return () => {
+      document.removeEventListener('keydown', handleEscKey);
+    };
+  }, [isModalOpen, isLocationsModalOpen, icpBreakdownModal, alertModal]);
 
   const fetchPlaces = async () => {
     try {
@@ -117,9 +174,9 @@ const PlacesPage: React.FC = () => {
     }
   };
 
-  const handleCalculateICP = async (businessId: string) => {
+  // Perform the actual ICP calculation
+  const performICPCalculation = async (businessId: string) => {
     try {
-      setRefreshing(true);
       // Calculate for both ICP types
       const [midmarketRes, independentRes] = await Promise.all([
         fetch(`/api/icp-score/${businessId}`, {
@@ -137,13 +194,65 @@ const PlacesPage: React.FC = () => {
       if (midmarketRes.ok && independentRes.ok) {
         // Refresh the places list to show updated scores
         await handleRefresh();
+        setAlertModal({
+          isOpen: true,
+          title: 'Success',
+          message: 'ICP scores calculated successfully!',
+          type: 'success'
+        });
       } else {
-        alert('Failed to calculate ICP scores');
+        setAlertModal({
+          isOpen: true,
+          title: 'Error',
+          message: 'Failed to calculate ICP scores. Please try again.',
+          type: 'error'
+        });
       }
     } catch (error) {
       console.error('Error calculating ICP:', error);
-      alert('Failed to calculate ICP scores');
-    } finally {
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Failed to calculate ICP scores. Please try again.',
+        type: 'error'
+      });
+    }
+  };
+
+  // Calculate ICP Score for a business
+  const handleCalculateICP = async (place: Place) => {
+    if (!place.id) {
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Business not found in database. Please ensure the business is saved.',
+        type: 'error'
+      });
+      return;
+    }
+
+    // Check if ICP scores already exist
+    const hasExistingScores = place.icpScores && 
+      (place.icpScores.midmarket?.score !== null || 
+       place.icpScores.independent?.score !== null);
+
+    if (hasExistingScores) {
+      // Show confirmation modal
+      setAlertModal({
+        isOpen: true,
+        title: 'Confirm Recalculation',
+        message: 'ICP scores already exist for this business. Do you want to recalculate them? This will overwrite the existing scores.',
+        type: 'confirm',
+        onConfirm: async () => {
+          setRefreshing(true);
+          await performICPCalculation(place.id);
+          setRefreshing(false);
+        }
+      });
+    } else {
+      // No existing scores, calculate directly
+      setRefreshing(true);
+      await performICPCalculation(place.id);
       setRefreshing(false);
     }
   };
@@ -357,8 +466,9 @@ const PlacesPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <div className="w-full mx-auto">
+    <>
+      <div className="min-h-screen bg-gray-50 p-6">
+        <div className="w-full mx-auto">
 
         {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -512,7 +622,11 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <div className="flex items-center">
+                      ICP Score
+                    </div>
+                  </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Website</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('rating')}>
@@ -532,19 +646,14 @@ const PlacesPage: React.FC = () => {
                     </div>
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
+                  {/* <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
                     <div className="flex items-center">
                       Apollo DMs
                       {sortField === 'enriched' && (
                         sortDirection === 'asc' ? <SortAsc className="w-4 h-4 ml-1" /> : <SortDesc className="w-4 h-4 ml-1" />
                       )}
                     </div>
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    <div className="flex items-center">
-                      ICP Score
-                    </div>
-                  </th>
+                  </th> */}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('addedAt')}>
                     <div className="flex items-center">
                       Added
@@ -559,9 +668,59 @@ const PlacesPage: React.FC = () => {
               <tbody className="bg-white divide-y divide-gray-200">
                 {paginatedPlaces.map((place) => (
                   <tr key={place.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4" style={{ maxWidth: '250px' }}>
+                      <div className="text-sm font-medium text-gray-900 whitespace-nowrap overflow-hidden text-ellipsis">{place.name}</div>
+                      <div className="text-sm text-gray-500 line-clamp-2">{place.address}</div>
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">{place.name}</div>
-                      <div className="text-sm text-gray-500">{place.address}</div>
+                      <div className="flex flex-col gap-1">
+                        {place.icpScores?.midmarket?.score !== undefined && place.icpScores.midmarket.score !== null ? (
+                          <button
+                            onClick={() => setIcpBreakdownModal({
+                              isOpen: true,
+                              type: 'midmarket',
+                              breakdown: place.icpScores?.midmarket?.breakdown,
+                              score: place.icpScores?.midmarket?.score || 0,
+                              businessName: place.name,
+                              category: place.types?.[0] || null,
+                              website: place.website || null
+                            })}
+                            className={`px-2 py-1 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${
+                              place.icpScores.midmarket.score >= 7 ? 'bg-green-100 text-green-800' :
+                              place.icpScores.midmarket.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                              'bg-red-100 text-red-800'
+                            }`}
+                            title="Click to see MidMarket breakdown"
+                          >
+                            MM: {place.icpScores.midmarket.score.toFixed(1)}/10
+                          </button>
+                        ) : null}
+                        {place.icpScores?.independent?.score !== undefined && place.icpScores.independent.score !== null ? (
+                          <button
+                            onClick={() => setIcpBreakdownModal({
+                              isOpen: true,
+                              type: 'independent',
+                              breakdown: place.icpScores?.independent?.breakdown,
+                              score: place.icpScores?.independent?.score || 0,
+                              businessName: place.name,
+                              category: place.types?.[0] || null,
+                              website: place.website || null
+                            })}
+                            className={`px-2 py-1 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${
+                              place.icpScores.independent.score >= 7 ? 'bg-green-100 text-green-800' :
+                              place.icpScores.independent.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                              'bg-red-100 text-red-800'
+                            }`}
+                            title="Click to see Independent breakdown"
+                          >
+                            Ind: {place.icpScores.independent.score.toFixed(1)}/10
+                          </button>
+                        ) : null}
+                        {(!place.icpScores?.midmarket || place.icpScores.midmarket.score === null || place.icpScores.midmarket.score === undefined) && 
+                         (!place.icpScores?.independent || place.icpScores.independent.score === null || place.icpScores.independent.score === undefined) && (
+                          <span className="text-gray-400 text-xs">N/A</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {place.website ? (
@@ -595,21 +754,13 @@ const PlacesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
-                        {place.numLocations && place.numLocations > 1 ? (
+                        {place.numLocations && place.numLocations >= 1 ? (
                           <button
                             onClick={() => openLocationsModal(place)}
-                            className="flex items-center bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs hover:bg-blue-200 cursor-pointer transition-colors"
+                            className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs hover:bg-blue-200 cursor-pointer transition-colors"
                           >
-                            <span>{place.numLocations}</span>
-                            {place.locationNames && place.locationNames.length > 0 && (
-                              <span className="text-gray-500 ml-2 text-xs">
-                                {place.locationNames.slice(0, 2).join(', ')}
-                                {place.locationNames.length > 2 && '...'}
-                              </span>
-                            )}
+                            {place.numLocations} {place.numLocations === 1 ? 'location' : 'locations'}
                           </button>
-                        ) : place.numLocations === 1 ? (
-                          <span className="text-gray-400">1</span>
                         ) : (
                           <span className="text-gray-400">-</span>
                         )}
@@ -634,7 +785,7 @@ const PlacesPage: React.FC = () => {
                         ) : '-'}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    {/* <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
                         {place.decisionMakers && place.decisionMakers.length > 0 ? (
                           <button
@@ -647,32 +798,7 @@ const PlacesPage: React.FC = () => {
                           <span className="text-gray-400">-</span>
                         )}
                       </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex gap-2">
-                        {place.icpScores?.midmarket?.score !== undefined && (
-                          <div className={`px-2 py-1 rounded text-xs font-medium ${
-                            place.icpScores.midmarket.score >= 7 ? 'bg-green-100 text-green-800' :
-                            place.icpScores.midmarket.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-red-100 text-red-800'
-                          }`} title="MidMarket Score">
-                            MM: {Math.round(place.icpScores.midmarket.score)}/10
-                          </div>
-                        )}
-                        {place.icpScores?.independent?.score !== undefined && (
-                          <div className={`px-2 py-1 rounded text-xs font-medium ${
-                            place.icpScores.independent.score >= 7 ? 'bg-green-100 text-green-800' :
-                            place.icpScores.independent.score >= 5 ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-red-100 text-red-800'
-                          }`} title="Independent Score">
-                            Ind: {Math.round(place.icpScores.independent.score)}/10
-                          </div>
-                        )}
-                        {!place.icpScores?.midmarket && !place.icpScores?.independent && (
-                          <span className="text-gray-400 text-xs">-</span>
-                        )}
-                      </div>
-                    </td>
+                    </td> */}
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
                         {new Date(place.addedAt).toLocaleDateString()}
@@ -681,7 +807,7 @@ const PlacesPage: React.FC = () => {
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => handleCalculateICP(place.id)}
+                          onClick={() => handleCalculateICP(place)}
                           disabled={refreshing}
                           className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Calculate ICP Score"
@@ -852,8 +978,190 @@ const PlacesPage: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* ICP Breakdown Modal */}
+        {icpBreakdownModal.isOpen && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-[883px] w-full mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {icpBreakdownModal.type === 'midmarket' ? 'MidMarket' : 'Independent'} ICP Breakdown
+                </h2>
+                <button
+                  onClick={() => setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false })}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-6">
+                <div className="grid grid-cols-4 gap-4 mb-6 pb-4 border-b border-gray-200">
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Business</div>
+                    <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.businessName}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Category</div>
+                    <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.category || 'N/A'}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Website</div>
+                    {icpBreakdownModal.website ? (
+                      <a 
+                        href={icpBreakdownModal.website} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-lg font-semibold text-blue-600 hover:text-blue-800 hover:underline"
+                      >
+                        {icpBreakdownModal.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+                      </a>
+                    ) : (
+                      <div className="text-lg font-semibold text-gray-400">N/A</div>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Total Score</div>
+                    <div className={`inline-block px-3 py-1 rounded text-lg font-bold ${
+                      (icpBreakdownModal.score || 0) >= 7 ? 'bg-green-100 text-green-800' :
+                      (icpBreakdownModal.score || 0) >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-red-100 text-red-800'
+                    }`}>
+                      {icpBreakdownModal.score?.toFixed(1)}/10
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <div className="text-sm font-semibold text-gray-900 mb-3">Factor Breakdown</div>
+                  {icpBreakdownModal.breakdown && Object.keys(icpBreakdownModal.breakdown).length > 0 ? (
+                    <div className="grid grid-cols-3 gap-3">
+                      {Object.entries(icpBreakdownModal.breakdown).map(([key, value]: [string, any]) => {
+                        // Convert technical names to human-readable labels
+                        const factorLabels: { [key: string]: string } = {
+                          numLocations: 'Number of Locations',
+                          noWebsite: 'No Website',
+                          poorSEO: 'Poor SEO Practices',
+                          hasWhatsApp: 'WhatsApp Contact',
+                          hasReservation: 'Reservation System',
+                          hasDirectOrdering: 'Direct Ordering',
+                          geography: 'Target Geography',
+                          deliveryIntensiveCategory: 'Delivery Intensive',
+                          bookingIntensiveCategory: 'Booking Intensive'
+                        };
+                        
+                        // Format value display based on factor type
+                        const formatValue = (val: any, key: string) => {
+                          if (val === null || val === undefined) return 'N/A';
+                          
+                          // Special handling for poorSEO: invert the boolean display
+                          if (key === 'poorSEO' && typeof val === 'boolean') {
+                            return val ? 'No' : 'Yes'; // hasSEO=true means "No poor SEO", hasSEO=false means "Yes poor SEO"
+                          }
+                          
+                          if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+                          if (typeof val === 'object' && val.hasDirectOrdering !== undefined) {
+                            return val.hasDirectOrdering && val.hasThirdPartyDelivery ? 'Has both' : 
+                                   val.hasDirectOrdering ? 'Direct only' : 'None';
+                          }
+                          return val.toString();
+                        };
+                        
+                        // Get ideal range for numLocations
+                        const getIdealRange = (key: string) => {
+                          if (key === 'numLocations') {
+                            // MidMarket: 2-30, Independent: 1 location
+                            return icpBreakdownModal.type === 'midmarket' ? 
+                              'Ideal: 2-30 locations' : 'Ideal: 1 location';
+                          }
+                          return null;
+                        };
+                        
+                        // Get tooltip explanation for category scoring
+                        const getTooltip = (key: string, val: any) => {
+                          if (key === 'deliveryIntensiveCategory') {
+                            if (val === 'delivery-intensive') {
+                              return 'This business category is highly suited for delivery (Pizza, Hamburguesas, Sushi, Comida Mexicana, Comida Healthy, Milanesas, Empanadas). These categories have strong delivery demand and work well for direct ordering platforms. Score: 100%';
+                            } else if (val === 'moderate') {
+                              return 'This business category has moderate delivery potential. While not a primary delivery category, it can still benefit from delivery services. The category doesn\'t fall into high-delivery or no-delivery lists. Score: 33%';
+                            } else {
+                              return 'This business category is not typically delivery-focused. It may be better suited for dine-in or other business models. Score: 0%';
+                            }
+                          }
+                          if (key === 'bookingIntensiveCategory') {
+                            if (val === 'booking-intensive') {
+                              return 'This business category typically requires reservations (Bar, Craft Beer, Fine Dining). These establishments benefit greatly from online booking systems to manage table availability and customer flow. Score: 100%';
+                            } else if (val === 'no-booking') {
+                              return 'This business category doesn\'t typically accept reservations (Coffee shops, Cafeterías, Ice Cream shops). These are walk-in establishments where bookings aren\'t necessary or practical. Score: 0%';
+                            } else {
+                              return 'This business category has moderate booking needs. While not a primary reservation-based business, it could benefit from a booking system during peak times. Score: 50%';
+                            }
+                          }
+                          return null;
+                        };
+                        
+                        return (
+                          <div key={key} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                            <div className="flex items-center gap-1 mb-1">
+                              <div className="text-sm font-medium text-gray-700">{factorLabels[key] || key}</div>
+                              {getTooltip(key, value.value) && (
+                                <div className="relative group">
+                                  <Info className="w-4 h-4 text-gray-400 cursor-help" />
+                                  <div className="absolute left-0 bottom-full mb-2 w-80 p-3 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 leading-relaxed">
+                                    {getTooltip(key, value.value)}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 mb-1">
+                              Value: <span className="font-semibold text-gray-700">{formatValue(value.value, key)}</span>
+                            </div>
+                            {getIdealRange(key) && (
+                              <div className="text-xs text-blue-600 mb-1">
+                                {getIdealRange(key)}
+                              </div>
+                            )}
+                            <div className="text-xs text-gray-500 mb-2">
+                              Score: {value.scorePercent?.toFixed(0)}% × Weight: {value.weight}
+                            </div>
+                            <div className="text-lg font-bold text-gray-900">
+                              {value.contribution?.toFixed(2)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <p className="mb-2">No breakdown data available.</p>
+                      <p className="text-sm">Please calculate the ICP score for this business.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              <div className="flex justify-end p-6 border-t border-gray-200">
+                <button
+                  onClick={() => setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false })}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
+    <AlertModal
+      isOpen={alertModal.isOpen}
+      onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
+      onConfirm={alertModal.onConfirm}
+      title={alertModal.title}
+      message={alertModal.message}
+      type={alertModal.type}
+    />
+    </>
   );
 };
 

@@ -143,6 +143,25 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     }
   }, [businesses, isLoading]);
 
+  // Handle ESC key to close modals
+  useEffect(() => {
+    const handleEscKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (alertModal.isOpen) {
+          setAlertModal({ ...alertModal, isOpen: false });
+        }
+        if (icpBreakdownModal.isOpen) {
+          setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false });
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleEscKey);
+    return () => {
+      document.removeEventListener('keydown', handleEscKey);
+    };
+  }, [alertModal, icpBreakdownModal]);
+
   const resizingCol = useRef<keyof typeof colWidths | null>(null);
   const startX = useRef(0);
   const startWidth = useRef(0);
@@ -1256,6 +1275,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         const dbBusiness = databaseBusinesses[business.placeId];
                         const dbApolloContacts = dbBusiness?.decisionMakers || [];
                         
+
                         // Then check for current session decision makers
                         const sessionDecisionMakers = enrichedBusiness.decisionMakers || [];
                         
@@ -1557,7 +1577,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       const factorLabels: { [key: string]: string } = {
                         numLocations: 'Number of Locations',
                         noWebsite: 'No Website',
-                        poorSEO: 'Good SEO Practices',
+                        poorSEO: 'Poor SEO Practices',
                         hasWhatsApp: 'WhatsApp Contact',
                         hasReservation: 'Reservation System',
                         hasDirectOrdering: 'Direct Ordering',
@@ -1567,8 +1587,14 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       };
                       
                       // Format value display based on factor type
-                      const formatValue = (val: any) => {
+                      const formatValue = (val: any, key: string) => {
                         if (val === null || val === undefined) return 'N/A';
+                        
+                        // Special handling for poorSEO: invert the boolean display
+                        if (key === 'poorSEO' && typeof val === 'boolean') {
+                          return val ? 'No' : 'Yes'; // hasSEO=true means "No poor SEO", hasSEO=false means "Yes poor SEO"
+                        }
+                        
                         if (typeof val === 'boolean') return val ? 'Yes' : 'No';
                         if (typeof val === 'object' && val.hasDirectOrdering !== undefined) {
                           return val.hasDirectOrdering && val.hasThirdPartyDelivery ? 'Has both' : 
@@ -1587,11 +1613,44 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         return null;
                       };
                       
+                      // Get tooltip explanation for category scoring
+                      const getTooltip = (key: string, val: any) => {
+                        if (key === 'deliveryIntensiveCategory') {
+                          if (val === 'delivery-intensive') {
+                            return 'This business category is highly suited for delivery (Pizza, Hamburguesas, Sushi, Comida Mexicana, Comida Healthy, Milanesas, Empanadas). These categories have strong delivery demand and work well for direct ordering platforms. Score: 100%';
+                          } else if (val === 'moderate') {
+                            return 'This business category has moderate delivery potential. While not a primary delivery category, it can still benefit from delivery services. The category doesn\'t fall into high-delivery or no-delivery lists. Score: 33%';
+                          } else {
+                            return 'This business category is not typically delivery-focused. It may be better suited for dine-in or other business models. Score: 0%';
+                          }
+                        }
+                        if (key === 'bookingIntensiveCategory') {
+                          if (val === 'booking-intensive') {
+                            return 'This business category typically requires reservations (Bar, Craft Beer, Fine Dining). These establishments benefit greatly from online booking systems to manage table availability and customer flow. Score: 100%';
+                          } else if (val === 'no-booking') {
+                            return 'This business category doesn\'t typically accept reservations (Coffee shops, Cafeterías, Ice Cream shops). These are walk-in establishments where bookings aren\'t necessary or practical. Score: 0%';
+                          } else {
+                            return 'This business category has moderate booking needs. While not a primary reservation-based business, it could benefit from a booking system during peak times. Score: 50%';
+                          }
+                        }
+                        return null;
+                      };
+                      
                       return (
                         <div key={key} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                          <div className="text-sm font-medium text-gray-700 mb-1">{factorLabels[key] || key}</div>
+                          <div className="flex items-center gap-1 mb-1">
+                            <div className="text-sm font-medium text-gray-700">{factorLabels[key] || key}</div>
+                            {getTooltip(key, value.value) && (
+                              <div className="relative group">
+                                <Info className="w-4 h-4 text-gray-400 cursor-help" />
+                                <div className="absolute left-0 bottom-full mb-2 w-80 p-3 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 leading-relaxed">
+                                  {getTooltip(key, value.value)}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                           <div className="text-xs text-gray-500 mb-1">
-                            Value: <span className="font-semibold text-gray-700">{formatValue(value.value)}</span>
+                            Value: <span className="font-semibold text-gray-700">{formatValue(value.value, key)}</span>
                           </div>
                           {getIdealRange(key) && (
                             <div className="text-xs text-blue-600 mb-1">

@@ -54,10 +54,11 @@ export function calculateICPScore(business, config) {
     totalScore += contributionScore;
   }
 
-  // Factor 3: Good SEO/AEO practices (rewards businesses with good SEO)
+  // Factor 3: Poor SEO/AEO practices (rewards businesses with poor SEO that need help)
   if (factors.poorSEO.enabled && business.websiteAnalysis) {
-    const seoScorePercent = business.websiteAnalysis.hasSEO === true ? 100 : 
-                            business.websiteAnalysis.hasSEO === false ? 0 : 50;
+    // Inverted logic: 0 points for good SEO, 100 points for poor SEO
+    const seoScorePercent = business.websiteAnalysis.hasSEO === false ? 100 : 
+                            business.websiteAnalysis.hasSEO === true ? 0 : 50;
     const contributionScore = (seoScorePercent / 100) * factors.poorSEO.weight;
     breakdown.poorSEO = {
       scorePercent: seoScorePercent,
