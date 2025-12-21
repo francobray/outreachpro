@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outreachpro-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outreachpro-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: outreachpro-backend
+    spec:
+      containers:
+      - name: outreachpro-backend
+        image: <IMAGE_BACKEND>
+        ports:
+        - containerPort: 3001
+          name: http
+        env:
+        - name: MONGODB_URI
+          valueFrom:
+            secretKeyRef:
+              name: outreachpro-secrets
+              key: mongodb-uri
+        - name: GOOGLE_PLACES_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: outreachpro-secrets
+              key: google-places-api-key
+        - name: GRADER_BACKEND_URL
+          valueFrom:
+            secretKeyRef:
+              name: outreachpro-secrets
+              key: grader-backend-url
+        - name: RAY_GRADER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: outreachpro-secrets
+              key: ray-grader-api-key
+        - name: RESEND_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: outreachpro-secrets
+              key: resend-api-key
+        - name: NODE_ENV
+          value: "production"
+        - name: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+          value: "true"
+        - name: PUPPETEER_EXECUTABLE_PATH
+          value: "/usr/bin/chromium-browser"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        startupProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 60
+          failureThreshold: 90
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+

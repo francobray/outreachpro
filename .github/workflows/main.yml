@@ -1,0 +1,122 @@
+name: Deploy React Frontend and Node Backend
+
+on:
+  push:
+    branches: [ "main" ] # Or your main branch name
+
+env:
+  GCP_PROJECT_ID: prod1-svc-lzjf 
+  GCP_REGION: southamerica-east1
+  ARTIFACT_REGISTRY: southamerica-east1-docker.pkg.dev/prod1-svc-lzjf/prod
+  
+  IMAGE_FRONTEND: outreachpro-frontend:${{ github.sha }}
+  IMAGE_BACKEND: outreachpro-backend:${{ github.sha }}
+  KUBERNETES_NAMESPACE: prod-rayapp
+  FRONTEND_DEPLOYMENT_NAME: outreachpro-frontend
+  BACKEND_DEPLOYMENT_NAME: outreachpro-backend
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend_image: ${{ steps.build-frontend.outputs.image }}
+      backend_image: ${{ steps.build-backend.outputs.image }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js for backend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build backend
+        run: |
+          npm ci
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - id: "auth"
+        uses: "google-github-actions/auth@v1"
+        with:
+          credentials_json: "${{ secrets.GCP_SA_KEY_JSON }}"
+
+      - name: "Set up Cloud SDK"
+        uses: "google-github-actions/setup-gcloud@v1"
+
+      - name: "Use gcloud CLI"
+        run: "gcloud info"
+
+      - name: "Docker auth"
+        run: |-
+          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build frontend image
+        id: build-frontend
+        run: |-
+          docker build . \
+            --file Dockerfile.frontend \
+            --tag ${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_FRONTEND }}
+
+      - name: Push frontend image
+        run: docker push ${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_FRONTEND }}
+
+      - name: Set frontend image output
+        id: frontend-image
+        run: echo "image=${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_FRONTEND }}" >> $GITHUB_OUTPUT
+
+      - name: Build backend image
+        id: build-backend
+        run: |-
+          docker build . \
+            --file Dockerfile.backend \
+            --tag ${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_BACKEND }}
+
+      - name: Push backend image
+        run: docker push ${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_BACKEND }}
+
+      - name: Set backend image output
+        id: backend-image
+        run: echo "image=${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_BACKEND }}" >> $GITHUB_OUTPUT
+
+      - name: Configure gcloud
+        run: |-
+          gcloud config set project ${{ env.GCP_PROJECT_ID }}
+          gcloud container clusters get-credentials prod --zone ${{ env.GCP_REGION }} --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: Install gke-gcloud-auth-plugin
+        run: gcloud components install gke-gcloud-auth-plugin
+
+      - name: Apply secrets
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          GRADER_BACKEND_URL: ${{ secrets.GRADER_BACKEND_URL }}
+          RAY_GRADER_API_KEY: ${{ secrets.RAY_GRADER_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          kubectl delete secret outreachpro-secrets -n $KUBERNETES_NAMESPACE --ignore-not-found
+          kubectl create secret generic outreachpro-secrets \
+            --from-literal=mongodb-uri="$MONGODB_URI" \
+            --from-literal=google-places-api-key="$GOOGLE_PLACES_API_KEY" \
+            --from-literal=grader-backend-url="$GRADER_BACKEND_URL" \
+            --from-literal=ray-grader-api-key="$RAY_GRADER_API_KEY" \
+            --from-literal=resend-api-key="$RESEND_API_KEY" \
+            -n $KUBERNETES_NAMESPACE
+
+      - name: Deploy frontend
+        run: |-
+          sed -i "s|<IMAGE_FRONTEND>|${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_FRONTEND }}|" k8s/frontend-deployment.yaml
+          kubectl apply -f k8s/frontend-deployment.yaml --validate=false -n $KUBERNETES_NAMESPACE
+          kubectl apply -f k8s/frontend-service.yaml --validate=false -n $KUBERNETES_NAMESPACE
+
+      - name: Deploy backend
+        run: |-
+          sed -i "s|<IMAGE_BACKEND>|${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_BACKEND }}|" k8s/backend-deployment.yaml
+          kubectl apply -f k8s/backend-deployment.yaml -n $KUBERNETES_NAMESPACE
+          kubectl apply -f k8s/backend-service.yaml -n $KUBERNETES_NAMESPACE
+          kubectl apply -f gke-prod-httproute.yaml -n $KUBERNETES_NAMESPACE
