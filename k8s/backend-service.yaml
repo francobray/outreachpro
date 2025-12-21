@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: outreachpro-backend # Name for the service object
+spec:
+  selector:
+    app: outreachpro-backend # MUST match the 'app' label in deployment.yaml template.metadata.labels
+  ports:
+    - protocol: TCP
+      port: 3001 # Port the service listens on
+      targetPort: 3001 # Port your container listens on (must match containerPort in deployment.yaml)
+      name: http
+  type: ClusterIP # Internal service, not exposed externally
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: outreachpro-backend-healthcheck
+spec:
+  default:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    logConfig:
+      enabled: true
+    config:
+      type: HTTP
+      httpHealthCheck:
+        portSpecification: USE_FIXED_PORT
+        port: 3001
+        requestPath: /api/health
+  targetRef:
+    group: ""
+    kind: Service
+    name: outreachpro-backend
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: outreachpro-backend-policy
+spec:
+  default:
+    timeoutSec: 300
+  targetRef:
+    group: ""
+    kind: Service
+    name: outreachpro-backend

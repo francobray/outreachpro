@@ -670,6 +670,11 @@ const isMajorBrand = (name) => {
     return majorBrands.some(brand => lowerCaseName.includes(brand));
 };
 
+
+router.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // Configuration endpoint
 router.get('/config', (req, res) => {
     res.json({
