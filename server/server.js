@@ -39,7 +39,7 @@ async function connectToDatabase() {
     const { default: mongooseModule } = await import('mongoose');
     mongoose = mongooseModule;
     
-    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/outreachpro';
+    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/outreachpro'; 
     console.log(`[Server] Connecting to MongoDB: ${mongoUri.replace(/\/\/.*@/, '//***@')}`);
     
     await mongoose.connect(mongoUri, {
