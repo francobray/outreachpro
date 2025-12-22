@@ -35,7 +35,9 @@ export function calculateICPScore(business, config) {
       scorePercent: locationScorePercent,
       weight: factors.numLocations.weight,
       contribution: contributionScore,
-      value: business.numLocations
+      value: business.numLocations,
+      minIdeal: factors.numLocations.minIdeal,
+      maxIdeal: factors.numLocations.maxIdeal
     };
     totalScore += contributionScore;
     console.log(`[ICP Scoring]   numLocations: ${business.numLocations} → ${locationScorePercent}% → +${contributionScore.toFixed(2)}`);
@@ -250,14 +252,46 @@ const DELIVERY_INTENSIVE_CATEGORIES = [
   'comida mexicana',
   'comida healthy',
   'milanesas',
-  'empanadas'
+  'empanadas',
+  'ice cream',
+  'helados',
+  'dessert',
+  'chinese',
+  'china',
+  'thai',
+  'tailandesa',
+  'indian',
+  'india',
+  'wings',
+  'alitas',
+  'chicken',
+  'pollo',
+  'sandwich',
+  'fast food',
+  'comida rápida',
+  'pasta',
+  'italian',
+  'italiana',
+  'kebab',
+  'shawarma',
+  'middle eastern',
+  'vietnamese',
+  'pho',
+  'burger',
+  'taco',
+  'burrito',
+  'noodle',
+  'fideos',
+  'fried chicken',
+  'pollo frito',
+  'bbq',
+  'parrilla'
 ];
 
 /**
- * Moderate delivery categories (Bar/Fine dining/Coffee)
+ * Moderate delivery categories (Fine dining/Coffee)
  */
 const MODERATE_DELIVERY_CATEGORIES = [
-  'bar',
   'fine dining',
   'coffee',
   'café',
@@ -307,6 +341,21 @@ function getBusinessCategories(business) {
 }
 
 /**
+ * Check if a category matches with word boundaries
+ * This prevents false matches like "bar" matching "shawarma"
+ */
+function categoryMatches(businessCat, targetCat) {
+  // Exact match
+  if (businessCat === targetCat) {
+    return true;
+  }
+  
+  // Word boundary match using regex
+  const regex = new RegExp(`\\b${targetCat}\\b`, 'i');
+  return regex.test(businessCat);
+}
+
+/**
  * Get delivery category type for a business
  */
 function getDeliveryCategoryType(business) {
@@ -319,7 +368,7 @@ function getDeliveryCategoryType(business) {
   // Check for delivery intensive
   const isDeliveryIntensive = businessCategories.some(cat => 
     DELIVERY_INTENSIVE_CATEGORIES.some(deliveryCat => 
-      cat.includes(deliveryCat) || deliveryCat.includes(cat)
+      categoryMatches(cat, deliveryCat)
     )
   );
 
@@ -330,7 +379,7 @@ function getDeliveryCategoryType(business) {
   // Check for moderate categories
   const isModerate = businessCategories.some(cat => 
     MODERATE_DELIVERY_CATEGORIES.some(modCat => 
-      cat.includes(modCat) || modCat.includes(cat)
+      categoryMatches(cat, modCat)
     )
   );
 
@@ -370,7 +419,7 @@ function getBookingCategoryType(business) {
   // Check for no-booking categories first (Coffee/Ice cream)
   const isNoBooking = businessCategories.some(cat => 
     NO_BOOKING_CATEGORIES.some(noBookCat => 
-      cat.includes(noBookCat) || noBookCat.includes(cat)
+      categoryMatches(cat, noBookCat)
     )
   );
 
@@ -381,7 +430,7 @@ function getBookingCategoryType(business) {
   // Check for booking intensive
   const isBookingIntensive = businessCategories.some(cat => 
     BOOKING_INTENSIVE_CATEGORIES.some(bookingCat => 
-      cat.includes(bookingCat) || bookingCat.includes(cat)
+      categoryMatches(cat, bookingCat)
     )
   );
 

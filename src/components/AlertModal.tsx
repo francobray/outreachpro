@@ -55,9 +55,12 @@ const AlertModal: React.FC<AlertModalProps> = ({
   };
 
   const handleConfirm = () => {
+    console.log('[AlertModal] handleConfirm called, type:', type, 'has onConfirm:', !!onConfirm);
     if (onConfirm) {
+      console.log('[AlertModal] Calling onConfirm...');
       onConfirm();
     }
+    console.log('[AlertModal] Calling onClose...');
     onClose();
   };
 

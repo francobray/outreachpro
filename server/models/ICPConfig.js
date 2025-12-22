@@ -51,10 +51,6 @@ const icpConfigSchema = new mongoose.Schema({
       enabled: { type: Boolean, default: true },
       weight: { type: Number, default: 1, min: 0, max: 10 }
     },
-    isArgentina: {
-      enabled: { type: Boolean, default: false },
-      weight: { type: Number, default: 0, min: 0, max: 10 }
-    },
     noWebsite: {
       enabled: { type: Boolean, default: false },
       weight: { type: Number, default: 0, min: 0, max: 10 }

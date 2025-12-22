@@ -18,9 +18,14 @@ interface ICPConfig {
     hasWhatsApp: ICPFactor;
     hasReservation: ICPFactor;
     hasDirectOrdering: ICPFactor;
-    isArgentina: ICPFactor;
+    geography: ICPFactor;
     noWebsite: ICPFactor;
+    deliveryIntensiveCategory: ICPFactor;
+    bookingIntensiveCategory: ICPFactor;
   };
+  deliveryCategories?: string[];
+  bookingCategories?: string[];
+  targetCountries?: string[];
 }
 
 const ICPPage: React.FC = () => {
@@ -258,7 +263,7 @@ const ICPPage: React.FC = () => {
     hasWhatsApp: 'Has WhatsApp Number',
     hasReservation: 'Has Reservation CTA',
     hasDirectOrdering: 'Has Direct Ordering',
-    isArgentina: 'Geography',
+    geography: 'Geography',
     noWebsite: 'No Website (Independent only)',
     deliveryIntensiveCategory: 'Delivery Intensive Category',
     bookingIntensiveCategory: 'Booking Intensive Category'
@@ -267,10 +272,10 @@ const ICPPage: React.FC = () => {
   const factorDescriptions: Record<string, string> = {
     numLocations: 'Ideal range of physical locations',
     poorSEO: 'Website lacks SEO best practices (no title/meta/H1/structured data)',
+    geography: 'Business location matches target countries',
     hasWhatsApp: 'WhatsApp number exposed on website',
     hasReservation: 'Has "Reservar" call to action',
     hasDirectOrdering: 'Has direct ordering without PedidosYa/Rappi',
-    isArgentina: 'Business is located in selected countries',
     noWebsite: 'Business has no website (scoring factor for independent restaurants)',
     deliveryIntensiveCategory: 'Business category is delivery-intensive',
     bookingIntensiveCategory: 'Business uses bookings intensively'
@@ -464,7 +469,7 @@ const ICPPage: React.FC = () => {
                             </button>
                           )}
                           {/* Manage Countries icon for geography */}
-                          {factorKey === 'isArgentina' && (
+                          {factorKey === 'geography' && (
                             <button
                               onClick={() => setShowGeographyModal(true)}
                               className="ml-2 p-1 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
