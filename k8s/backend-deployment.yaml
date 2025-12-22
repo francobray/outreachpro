@@ -28,27 +28,27 @@ spec:
           valueFrom:
             secretKeyRef:
               name: outreachpro-secrets
-              key: mongodb-uri
+              key: MONGODB_URI
         - name: GOOGLE_PLACES_API_KEY
           valueFrom:
             secretKeyRef:
               name: outreachpro-secrets
-              key: google-places-api-key
+              key: GOOGLE_PLACES_API_KEY
         - name: GRADER_BACKEND_URL
           valueFrom:
             secretKeyRef:
               name: outreachpro-secrets
-              key: grader-backend-url
+              key: GRADER_BACKEND_URL
         - name: RAY_GRADER_API_KEY
           valueFrom:
             secretKeyRef:
               name: outreachpro-secrets
-              key: ray-grader-api-key
+              key: RAY_GRADER_API_KEY
         - name: RESEND_API_KEY
           valueFrom:
             secretKeyRef:
               name: outreachpro-secrets
-              key: resend-api-key
+              key: RESEND_API_KEY
         - name: NODE_ENV
           value: "production"
         - name: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
