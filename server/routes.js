@@ -33,44 +33,51 @@ const router = express.Router();
 /**
  * Extract country from address string
  */
-function extractCountryFromAddress(address) {
-  if (!address) return null;
-  
-  // Common patterns: "City, State, Country" or "Address, City, Country"
-  const parts = address.split(',').map(p => p.trim());
-  if (parts.length > 0) {
-    const lastPart = parts[parts.length - 1].toLowerCase();
+function extractCountryFromAddress(address, website = null, phone = null) {
+  // Check for city/region-specific patterns first (most reliable)
+  if (address) {
+    const addressLower = address.toLowerCase();
     
-    // Check for country names
-    const countryMap = {
-      'argentina': 'Argentina',
-      'united states': 'United States',
-      'usa': 'United States',
-      'us': 'United States',
-      'mexico': 'Mexico',
-      'brazil': 'Brazil',
-      'chile': 'Chile',
-      'colombia': 'Colombia',
-      'spain': 'Spain',
-      'france': 'France',
-      'italy': 'Italy',
-      'germany': 'Germany',
-      'united kingdom': 'United Kingdom',
-      'uk': 'United Kingdom',
-      'canada': 'Canada'
-    };
-    
-    for (const [key, value] of Object.entries(countryMap)) {
-      if (lastPart.includes(key)) {
-        return value;
-      }
+    // Argentina-specific patterns
+    if (addressLower.includes('caba') || 
+        addressLower.includes('cdad. autónoma') ||
+        addressLower.includes('ciudad autónoma') ||
+        addressLower.includes('buenos aires') ||
+        addressLower.includes('c1107') || // Buenos Aires postal codes start with C
+        addressLower.includes('cordoba') ||
+        addressLower.includes('rosario') ||
+        addressLower.includes('mendoza')) {
+      return 'Argentina';
     }
     
-    // Check for country codes (2-letter)
-    if (lastPart.length === 2) {
-      const countryCodeMap = {
+    // Mexico-specific patterns
+    if (addressLower.includes('cdmx') ||
+        addressLower.includes('ciudad de méxico') ||
+        addressLower.includes('guadalajara') ||
+        addressLower.includes('monterrey')) {
+      return 'Mexico';
+    }
+    
+    // Brazil-specific patterns
+    if (addressLower.includes('são paulo') ||
+        addressLower.includes('rio de janeiro') ||
+        addressLower.includes('brasília')) {
+      return 'Brazil';
+    }
+    
+    // USA-specific patterns
+    if (addressLower.match(/\b[a-z]{2}\s+\d{5}\b/)) { // State abbreviation + ZIP code
+      return 'United States';
+    }
+  }
+  
+  // Check website TLD
+  if (website) {
+    const tldMatch = website.match(/\.([a-z]{2,})$/i);
+    if (tldMatch) {
+      const tld = tldMatch[1].toLowerCase();
+      const tldCountryMap = {
         'ar': 'Argentina',
-        'us': 'United States',
         'mx': 'Mexico',
         'br': 'Brazil',
         'cl': 'Chile',
@@ -79,12 +86,87 @@ function extractCountryFromAddress(address) {
         'fr': 'France',
         'it': 'Italy',
         'de': 'Germany',
-        'gb': 'United Kingdom',
         'uk': 'United Kingdom',
         'ca': 'Canada'
       };
-      if (countryCodeMap[lastPart.toLowerCase()]) {
-        return countryCodeMap[lastPart.toLowerCase()];
+      if (tldCountryMap[tld]) {
+        return tldCountryMap[tld];
+      }
+    }
+  }
+  
+  // Check phone number patterns
+  if (phone) {
+    const phoneClean = phone.replace(/\D/g, '');
+    if (phoneClean.startsWith('54') || phone.startsWith('011')) { // Argentina
+      return 'Argentina';
+    }
+    if (phoneClean.startsWith('52') || phone.startsWith('+52')) { // Mexico
+      return 'Mexico';
+    }
+    if (phoneClean.startsWith('55') || phone.startsWith('+55')) { // Brazil
+      return 'Brazil';
+    }
+    if (phoneClean.startsWith('1') && phoneClean.length === 11) { // US/Canada
+      return 'United States';
+    }
+  }
+  
+  // Fallback to parsing address parts
+  if (address) {
+    const parts = address.split(',').map(p => p.trim());
+    if (parts.length > 0) {
+      const lastPart = parts[parts.length - 1].toLowerCase();
+      
+      // Check for country names
+      const countryMap = {
+        'argentina': 'Argentina',
+        'united states': 'United States',
+        'usa': 'United States',
+        'us': 'United States',
+        'mexico': 'Mexico',
+        'méxico': 'Mexico',
+        'brazil': 'Brazil',
+        'brasil': 'Brazil',
+        'chile': 'Chile',
+        'colombia': 'Colombia',
+        'spain': 'Spain',
+        'españa': 'Spain',
+        'france': 'France',
+        'italy': 'Italy',
+        'italia': 'Italy',
+        'germany': 'Germany',
+        'united kingdom': 'United Kingdom',
+        'uk': 'United Kingdom',
+        'canada': 'Canada'
+      };
+      
+      for (const [key, value] of Object.entries(countryMap)) {
+        if (lastPart.includes(key)) {
+          return value;
+        }
+      }
+      
+      // Check for country codes (2-letter)
+      if (lastPart.length === 2) {
+        const countryCodeMap = {
+          'ar': 'Argentina',
+          'us': 'United States',
+          'mx': 'Mexico',
+          'br': 'Brazil',
+          'cl': 'Chile',
+          'co': 'Colombia',
+          'es': 'Spain',
+          'fr': 'France',
+          'it': 'Italy',
+          'de': 'Germany',
+          'gb': 'United Kingdom',
+          'uk': 'United Kingdom',
+          'ca': 'Canada'
+        };
+        if (countryCodeMap[lastPart.toLowerCase()]) {
+          return countryCodeMap[lastPart.toLowerCase()];
+        }
       }
     }
   }
@@ -98,19 +180,22 @@ function extractCountryFromAddress(address) {
 function extractCategoryFromTypes(types) {
   if (!types || types.length === 0) return null;
   
-  // Filter out generic types and get the most specific one
-  const genericTypes = ['establishment', 'point_of_interest', 'food', 'store'];
-  const specificTypes = types.filter(type => !genericTypes.includes(type));
+  // Google Places returns types in order of specificity (most specific first)
+  // Filter out very generic types that don't provide useful categorization
+  const genericTypes = ['establishment', 'point_of_interest'];
   
-  if (specificTypes.length > 0) {
-    // Return the first specific type, formatted nicely
-    return specificTypes[0]
+  // Find the first type that's not in the generic list
+  const specificType = types.find(type => !genericTypes.includes(type));
+  
+  if (specificType) {
+    // Return the specific type, formatted nicely
+    return specificType
       .split('_')
       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
   }
   
-  // Fallback to first type if all are generic
+  // Fallback to first type if all are generic (unlikely)
   return types[0]
     .split('_')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
@@ -156,6 +241,12 @@ async function enrichBusinessData(placeId, options = {}) {
     const response = await fetch(detailsUrl);
     const data = await response.json();
     if (data.result) {
+      console.log('[Enrichment] Google Place API data:', {
+        name: data.result.name,
+        formatted_address: data.result.formatted_address,
+        website: data.result.website,
+        formatted_phone_number: data.result.formatted_phone_number
+      });
       existingBusiness.website = data.result.website || existingBusiness.website;
       existingBusiness.phone = data.result.formatted_phone_number || existingBusiness.phone;
       existingBusiness.address = data.result.formatted_address || existingBusiness.address;
@@ -636,6 +727,19 @@ async function enrichBusinessData(placeId, options = {}) {
     existingBusiness.decisionMakers = decisionMakers;
     existingBusiness.websiteAnalysis = websiteAnalysis;
     
+    // Update country if we now have more information (website, phone)
+    console.log(`[Enrichment] Current country: ${existingBusiness.country}, checking if update needed...`);
+    if (!existingBusiness.country || existingBusiness.country === 'United States') {
+      console.log(`[Enrichment] Attempting country detection with address: "${existingBusiness.address}", website: "${website}", phone: "${existingBusiness.phone}"`);
+      const updatedCountry = extractCountryFromAddress(existingBusiness.address, website, existingBusiness.phone);
+      console.log(`[Enrichment] Detected country: ${updatedCountry}`);
+      if (updatedCountry) {
+        const oldCountry = existingBusiness.country;
+        existingBusiness.country = updatedCountry;
+        console.log(`[Enrichment] ✅ Updated country from "${oldCountry}" to: ${updatedCountry}`);
+      }
+    }
+    
     // Always set enrichedAt timestamp when enrichment is performed
     existingBusiness.enrichedAt = new Date();
     await existingBusiness.save();
@@ -643,8 +747,10 @@ async function enrichBusinessData(placeId, options = {}) {
     console.log('[Enrichment] Saved enriched data to database:', {
       businessId: existingBusiness.id,
       businessName: existingBusiness.name,
+      category: existingBusiness.category,
       website: existingBusiness.website,
       phone: existingBusiness.phone,
+      country: existingBusiness.country,
       emailsCount: existingBusiness.emails.length,
       numLocations: existingBusiness.numLocations,
       locationNamesCount: existingBusiness.locationNames.length,
@@ -782,7 +888,7 @@ router.post('/search', async (req, res) => {
         category: extractCategoryFromTypes(place.types),
         rating: place.rating || null,
         userRatingsTotal: place.user_ratings_total || null,
-        country: extractCountryFromAddress(address),
+        country: extractCountryFromAddress(address, place.website, place.formatted_phone_number),
         numLocations: 1, // Default to 1, will be updated during enrichment
         locationNames: [],
         websiteAnalysis: {
@@ -897,7 +1003,7 @@ router.post('/search-by-place-id', async (req, res) => {
       category: extractCategoryFromTypes(place.types),
       rating: place.rating || null,
       userRatingsTotal: place.user_ratings_total || null,
-      country: extractCountryFromAddress(address),
+      country: extractCountryFromAddress(address, place.website, place.formatted_phone_number),
       numLocations: 1, // Default to 1, will be updated during enrichment
       locationNames: [],
       websiteAnalysis: {

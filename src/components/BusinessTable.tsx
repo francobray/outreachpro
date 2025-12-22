@@ -766,12 +766,29 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       ]);
 
       if (midmarketRes.ok && independentRes.ok) {
+        // Parse the responses to get the scores
+        const midmarketData = await midmarketRes.json();
+        const independentData = await independentRes.json();
+        
+        // Format scores with color indicators
+        const mmScore = midmarketData.score?.toFixed(1) || 'N/A';
+        const indScore = independentData.score?.toFixed(1) || 'N/A';
+        
+        const getScoreColor = (score: number) => {
+          if (score >= 7) return '🟢';
+          if (score >= 5) return '🟡';
+          return '🔴';
+        };
+        
+        const mmEmoji = typeof midmarketData.score === 'number' ? getScoreColor(midmarketData.score) : '';
+        const indEmoji = typeof independentData.score === 'number' ? getScoreColor(independentData.score) : '';
+        
         // Refresh database state to show updated scores
         await refreshDatabaseState();
         setAlertModal({
           isOpen: true,
-          title: 'Success',
-          message: 'ICP scores calculated successfully!',
+          title: 'ICP Scores Calculated Successfully! 🎉',
+          message: `MidMarket: ${mmEmoji} ${mmScore}/10\nIndependent: ${indEmoji} ${indScore}/10`,
           type: 'success'
         });
       } else {
@@ -797,6 +814,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         title: 'Error',
         message: 'Business not found in database. Please enrich the business first.',
         type: 'error'
+      });
+      return;
+    }
+
+    // Check if business has been enriched
+    if (!dbBusiness.enrichedAt) {
+      setAlertModal({
+        isOpen: true,
+        title: 'Enrichment Required',
+        message: 'This business needs to be enriched first to get accurate ICP scores. Enrichment will analyze the website for locations, SEO practices, WhatsApp, reservations, and ordering systems.\n\nPlease click the "Enrich" button first.',
+        type: 'info'
       });
       return;
     }
@@ -1532,15 +1560,30 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
             </div>
             
             <div className="p-6">
-              <div className="grid grid-cols-4 gap-4 mb-6 pb-4 border-b border-gray-200">
-                <div>
-                  <div className="text-sm text-gray-600 mb-1">Business</div>
-                  <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.businessName}</div>
+              <div className="mb-6 pb-4 border-b border-gray-200">
+                {/* First Row: Business, Category, Total Score */}
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Business</div>
+                    <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.businessName}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Category</div>
+                    <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.category || 'N/A'}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-1">Total Score</div>
+                    <div className={`inline-block px-3 py-1 rounded text-lg font-bold ${
+                      (icpBreakdownModal.score || 0) >= 7 ? 'bg-green-100 text-green-800' :
+                      (icpBreakdownModal.score || 0) >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-red-100 text-red-800'
+                    }`}>
+                      {icpBreakdownModal.score?.toFixed(1)}/10
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-sm text-gray-600 mb-1">Category</div>
-                  <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.category || 'N/A'}</div>
-                </div>
+                
+                {/* Second Row: Website (full width) */}
                 <div>
                   <div className="text-sm text-gray-600 mb-1">Website</div>
                   {icpBreakdownModal.website ? (
@@ -1550,21 +1593,11 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       rel="noopener noreferrer"
                       className="text-lg font-semibold text-blue-600 hover:text-blue-800 hover:underline"
                     >
-                      {icpBreakdownModal.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+                      {icpBreakdownModal.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '').split('?')[0]}
                     </a>
                   ) : (
                     <div className="text-lg font-semibold text-gray-400">N/A</div>
                   )}
-                </div>
-                <div>
-                  <div className="text-sm text-gray-600 mb-1">Total Score</div>
-                  <div className={`inline-block px-3 py-1 rounded text-lg font-bold ${
-                    (icpBreakdownModal.score || 0) >= 7 ? 'bg-green-100 text-green-800' :
-                    (icpBreakdownModal.score || 0) >= 5 ? 'bg-yellow-100 text-yellow-800' :
-                    'bg-red-100 text-red-800'
-                  }`}>
-                    {icpBreakdownModal.score?.toFixed(1)}/10
-                  </div>
                 </div>
               </div>
               

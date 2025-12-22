@@ -26,7 +26,7 @@ interface EmailTemplate {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs' | 'icp'>('search');
+  const [activeTab, setActiveTab] = useState<'search' | 'templates' | 'places' | 'contacts' | 'email-activity' | 'api-costs' | 'icp'>('places');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [isLoading, setIsLoading] = useState(false);

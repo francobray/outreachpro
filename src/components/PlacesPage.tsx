@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2 } from 'lucide-react';
 import AlertModal from './AlertModal';
 
 interface Place {
@@ -17,6 +17,7 @@ interface Place {
   locationNames: string[];
   enriched: boolean;
   addedAt: string;
+  country?: string | null;
   decisionMakers?: any[];
   apolloAttempted?: boolean;
   icpScores?: {
@@ -53,13 +54,15 @@ const PlacesPage: React.FC = () => {
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [itemsPerPage, setItemsPerPage] = useState(50);
   
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
   const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
   const [selectedLocationPlace, setSelectedLocationPlace] = useState<Place | null>(null);
+  const [isTypesModalOpen, setIsTypesModalOpen] = useState(false);
+  const [selectedTypesPlace, setSelectedTypesPlace] = useState<Place | null>(null);
   const [icpBreakdownModal, setIcpBreakdownModal] = useState<{
     isOpen: boolean;
     type: 'midmarket' | 'independent' | null;
@@ -81,13 +84,27 @@ const PlacesPage: React.FC = () => {
     isOpen: boolean;
     title: string;
     message: string;
-    type: 'success' | 'error' | 'confirm';
+    type: 'success' | 'error' | 'confirm' | 'info';
+    confirmText?: string;
+    cancelText?: string;
     onConfirm?: () => void;
   }>({
     isOpen: false,
     title: '',
     message: '',
     type: 'success'
+  });
+
+  const [progressModal, setProgressModal] = useState<{
+    isOpen: boolean;
+    stage: 'enriching' | 'calculating' | 'complete';
+    businessName: string;
+    midmarketScore?: number;
+    independentScore?: number;
+  }>({
+    isOpen: false,
+    stage: 'enriching',
+    businessName: ''
   });
 
   useEffect(() => {
@@ -114,11 +131,18 @@ const PlacesPage: React.FC = () => {
           setIsLocationsModalOpen(false);
           setSelectedLocationPlace(null);
         }
+        if (isTypesModalOpen) {
+          setIsTypesModalOpen(false);
+          setSelectedTypesPlace(null);
+        }
         if (icpBreakdownModal.isOpen) {
           setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false });
         }
         if (alertModal.isOpen) {
           setAlertModal({ ...alertModal, isOpen: false });
+        }
+        if (progressModal.isOpen && progressModal.stage === 'complete') {
+          setProgressModal({ ...progressModal, isOpen: false });
         }
       }
     };
@@ -127,7 +151,7 @@ const PlacesPage: React.FC = () => {
     return () => {
       document.removeEventListener('keydown', handleEscKey);
     };
-  }, [isModalOpen, isLocationsModalOpen, icpBreakdownModal, alertModal]);
+  }, [isModalOpen, isLocationsModalOpen, isTypesModalOpen, icpBreakdownModal, alertModal, progressModal]);
 
   const fetchPlaces = async () => {
     try {
@@ -157,7 +181,7 @@ const PlacesPage: React.FC = () => {
     }
   };
 
-  const handleRefresh = async () => {
+  const handleRefresh = async (): Promise<Place[] | null> => {
     try {
       setRefreshing(true);
       const response = await fetch('/api/dashboard');
@@ -165,17 +189,20 @@ const PlacesPage: React.FC = () => {
         throw new Error('Failed to fetch places');
       }
       const data = await response.json();
-      setPlaces(data.businesses || []);
+      const updatedPlaces = data.businesses || [];
+      setPlaces(updatedPlaces);
       setError(null);
+      return updatedPlaces;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch places');
+      return null;
     } finally {
       setRefreshing(false);
     }
   };
 
   // Perform the actual ICP calculation
-  const performICPCalculation = async (businessId: string) => {
+  const performICPCalculation = async (businessId: string, showAlert: boolean = true) => {
     try {
       // Calculate for both ICP types
       const [midmarketRes, independentRes] = await Promise.all([
@@ -192,15 +219,57 @@ const PlacesPage: React.FC = () => {
       ]);
 
       if (midmarketRes.ok && independentRes.ok) {
+        // Parse the responses to get the scores
+        const midmarketData = await midmarketRes.json();
+        const independentData = await independentRes.json();
+        
         // Refresh the places list to show updated scores
         await handleRefresh();
-        setAlertModal({
-          isOpen: true,
-          title: 'Success',
-          message: 'ICP scores calculated successfully!',
-          type: 'success'
-        });
+
+        // Return scores for programmatic use
+        const result = {
+          midmarket: midmarketData,
+          independent: independentData
+        };
+
+        // Only show alert if requested
+        if (showAlert) {
+          // Format scores with color indicators
+          const mmScore = midmarketData.score?.toFixed(1) || 'N/A';
+          const indScore = independentData.score?.toFixed(1) || 'N/A';
+          
+          const getScoreColor = (score: number) => {
+            if (score >= 7) return '🟢';
+            if (score >= 5) return '🟡';
+            return '🔴';
+          };
+          
+          const mmEmoji = typeof midmarketData.score === 'number' ? getScoreColor(midmarketData.score) : '';
+          const indEmoji = typeof independentData.score === 'number' ? getScoreColor(independentData.score) : '';
+          
+          setAlertModal({
+            isOpen: true,
+            title: 'ICP Scores Calculated Successfully! 🎉',
+            message: `MidMarket: ${mmEmoji} ${mmScore}/10\nIndependent: ${indEmoji} ${indScore}/10`,
+            type: 'success'
+          });
+        }
+
+        return result;
       } else {
+        if (showAlert) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Error',
+            message: 'Failed to calculate ICP scores. Please try again.',
+            type: 'error'
+          });
+        }
+        return null;
+      }
+    } catch (error) {
+      console.error('Error calculating ICP:', error);
+      if (showAlert) {
         setAlertModal({
           isOpen: true,
           title: 'Error',
@@ -208,14 +277,103 @@ const PlacesPage: React.FC = () => {
           type: 'error'
         });
       }
+      return null;
+    }
+  };
+
+  // Enrich a business
+  const handleEnrichBusiness = async (placeId: string): Promise<boolean> => {
+    try {
+      setRefreshing(true);
+      const response = await fetch(`/api/business/enrich/${placeId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.ok) {
+        // Refresh the places list to show updated data
+        await handleRefresh();
+        return true;
+      } else {
+        setAlertModal({
+          isOpen: true,
+          title: 'Error',
+          message: 'Failed to enrich business. Please try again.',
+          type: 'error'
+        });
+        return false;
+      }
     } catch (error) {
-      console.error('Error calculating ICP:', error);
+      console.error('Error enriching business:', error);
       setAlertModal({
         isOpen: true,
         title: 'Error',
-        message: 'Failed to calculate ICP scores. Please try again.',
+        message: 'Failed to enrich business. Please try again.',
         type: 'error'
       });
+      return false;
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Enrich places data with confirmation
+  const enrichPlacesData = async (place: Place) => {
+    // Check if business was already enriched
+    if (place.enriched) {
+      // Show confirmation modal
+      setAlertModal({
+        isOpen: true,
+        title: 'Confirm Re-enrichment',
+        message: 'This business was already enriched. Do you want to re-enrich it? This will re-scrape the website and may update location counts, emails, and other data.',
+        type: 'confirm',
+        onConfirm: async () => {
+          setRefreshing(true);
+          try {
+            const success = await handleEnrichBusiness(place.placeId);
+            if (success) {
+              setAlertModal({
+                isOpen: true,
+                title: 'Success',
+                message: 'Business enriched successfully and ICP scores have been recalculated!',
+                type: 'success'
+              });
+            }
+          } catch (error) {
+            setAlertModal({
+              isOpen: true,
+              title: 'Error',
+              message: 'Failed to enrich business. Please try again.',
+              type: 'error'
+            });
+          } finally {
+            setRefreshing(false);
+          }
+        }
+      });
+    } else {
+      // No existing enrichment, enrich directly
+      setRefreshing(true);
+      try {
+        const success = await handleEnrichBusiness(place.placeId);
+        if (success) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Success',
+            message: 'Business enriched successfully and ICP scores have been recalculated!',
+            type: 'success'
+          });
+        }
+      } catch (error) {
+        setAlertModal({
+          isOpen: true,
+          title: 'Error',
+          message: 'Failed to enrich business. Please try again.',
+          type: 'error'
+        });
+      } finally {
+        setRefreshing(false);
+      }
     }
   };
 
@@ -227,6 +385,69 @@ const PlacesPage: React.FC = () => {
         title: 'Error',
         message: 'Business not found in database. Please ensure the business is saved.',
         type: 'error'
+      });
+      return;
+    }
+
+    // Check if business has been enriched
+    if (!place.enriched) {
+      setAlertModal({
+        isOpen: true,
+        title: 'Enrichment Required',
+        message: 'This business needs to be enriched first to get accurate ICP scores. Enrichment will analyze the website for locations, SEO practices, WhatsApp, reservations, and ordering systems.',
+        type: 'confirm',
+        confirmText: 'Enrich Now',
+        cancelText: 'Cancel',
+        onConfirm: async () => {
+          // Close alert modal and open progress modal
+          setAlertModal({ ...alertModal, isOpen: false });
+          setProgressModal({
+            isOpen: true,
+            stage: 'enriching',
+            businessName: place.name
+          });
+
+          const enriched = await handleEnrichBusiness(place.placeId);
+          if (enriched) {
+            // Update to calculating stage
+            setProgressModal(prev => ({
+              ...prev,
+              stage: 'calculating'
+            }));
+
+            // After successful enrichment, automatically calculate ICP
+            // Get the updated place data
+            const updatedPlaces = await handleRefresh();
+            const updatedPlace = updatedPlaces?.find((p: Place) => p.placeId === place.placeId);
+            if (updatedPlace) {
+              // Now calculate ICP with the enriched data (showAlert = false)
+              const result = await performICPCalculation(updatedPlace.id, false);
+              
+              if (result) {
+                // Show completion with scores
+                setProgressModal({
+                  isOpen: true,
+                  stage: 'complete',
+                  businessName: place.name,
+                  midmarketScore: result.midmarket?.score,
+                  independentScore: result.independent?.score
+                });
+              } else {
+                // Failed to calculate
+                setProgressModal({ isOpen: false, stage: 'enriching', businessName: '' });
+                setAlertModal({
+                  isOpen: true,
+                  title: 'Error',
+                  message: 'Enrichment succeeded but ICP calculation failed. Please try calculating ICP again.',
+                  type: 'error'
+                });
+              }
+            }
+          } else {
+            // Enrichment failed
+            setProgressModal({ isOpen: false, stage: 'enriching', businessName: '' });
+          }
+        }
       });
       return;
     }
@@ -361,7 +582,7 @@ const PlacesPage: React.FC = () => {
     const headers = [
       'Name', 'Address', 'Website', 'Phone', 'Emails', 'Types', 
       'Rating', 'Total Ratings', 'Number of Locations', 'Location Names',
-      'Enriched', 'Added At'
+      'Country', 'Enriched', 'Added At'
     ];
 
     const csvData = filteredPlaces.map(place => [
@@ -374,6 +595,7 @@ const PlacesPage: React.FC = () => {
       place.userRatingsTotal || '',
       place.numLocations || '',
       place.locationNames?.join(', ') || '',
+      place.country || '',
       place.enriched ? 'Yes' : 'No',
       new Date(place.addedAt).toLocaleDateString()
     ]);
@@ -425,6 +647,16 @@ const PlacesPage: React.FC = () => {
   const closeLocationsModal = () => {
     setIsLocationsModalOpen(false);
     setSelectedLocationPlace(null);
+  };
+
+  const openTypesModal = (place: Place) => {
+    setSelectedTypesPlace(place);
+    setIsTypesModalOpen(true);
+  };
+
+  const closeTypesModal = () => {
+    setIsTypesModalOpen(false);
+    setSelectedTypesPlace(null);
   };
 
   const paginatedPlaces = filteredPlaces.slice(
@@ -645,6 +877,14 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('country')}>
+                    <div className="flex items-center">
+                      Country
+                      {sortField === 'country' && (
+                        sortDirection === 'asc' ? <SortAsc className="w-4 h-4 ml-1" /> : <SortDesc className="w-4 h-4 ml-1" />
+                      )}
+                    </div>
+                  </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
                   {/* <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
                     <div className="flex items-center">
@@ -669,7 +909,14 @@ const PlacesPage: React.FC = () => {
                 {paginatedPlaces.map((place) => (
                   <tr key={place.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4" style={{ maxWidth: '250px' }}>
-                      <div className="text-sm font-medium text-gray-900 whitespace-nowrap overflow-hidden text-ellipsis">{place.name}</div>
+                      <a
+                        href={`https://www.google.com/maps/place/?q=place_id:${place.placeId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap overflow-hidden text-ellipsis block"
+                      >
+                        {place.name}
+                      </a>
                       <div className="text-sm text-gray-500 line-clamp-2">{place.address}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -768,21 +1015,28 @@ const PlacesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
+                        {place.country || '-'}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-900">
                         {place.types && place.types.length > 0 ? (
-                          <div className="flex flex-wrap gap-1">
-                            {place.types.slice(0, 3).map((type, index) => (
-                              <span
-                                key={index}
-                                className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-xs"
-                              >
-                                {type}
-                              </span>
-                            ))}
-                            {place.types.length > 3 && (
-                              <span className="text-gray-500 text-xs">+{place.types.length - 3}</span>
+                          <button
+                            onClick={() => openTypesModal(place)}
+                            className="text-left hover:bg-gray-50 rounded px-2 py-1 transition-colors cursor-pointer"
+                          >
+                            <div className="text-sm font-medium text-gray-900">
+                              {place.types[0]}
+                            </div>
+                            {place.types.length > 1 && (
+                              <div className="text-xs text-purple-600 font-medium mt-0.5">
+                                +{place.types.length - 1} more
+                              </div>
                             )}
-                          </div>
-                        ) : '-'}
+                          </button>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
                       </div>
                     </td>
                     {/* <td className="px-6 py-4 whitespace-nowrap">
@@ -806,10 +1060,29 @@ const PlacesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center gap-2">
+                        {/* Enrich Button */}
+                        <button
+                          onClick={() => enrichPlacesData(place)}
+                          disabled={refreshing}
+                          className={`p-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                            place.enriched 
+                              ? 'bg-green-100 text-green-600 hover:bg-green-200' 
+                              : 'bg-blue-100 text-blue-600 hover:bg-blue-200'
+                          }`}
+                          title={place.enriched ? "Re-enrich business" : "Enrich business"}
+                        >
+                          {refreshing ? (
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                          ) : (
+                            <Map className="h-5 w-5" />
+                          )}
+                        </button>
+                        
+                        {/* Calculate ICP Score Button */}
                         <button
                           onClick={() => handleCalculateICP(place)}
                           disabled={refreshing}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Calculate ICP Score"
                         >
                           <Calculator className="h-5 w-5" />
@@ -940,7 +1213,7 @@ const PlacesPage: React.FC = () => {
             <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
               <div className="flex items-center justify-between p-6 border-b border-gray-200">
                 <h2 className="text-xl font-semibold text-gray-900">
-                  Business Locations - {selectedLocationPlace.name}
+                  Brand Locations - {selectedLocationPlace.name}
                 </h2>
                 <button
                   onClick={closeLocationsModal}
@@ -979,6 +1252,53 @@ const PlacesPage: React.FC = () => {
           </div>
         )}
 
+        {/* Types Modal */}
+        {isTypesModalOpen && selectedTypesPlace && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  Business Types - {selectedTypesPlace.name}
+                </h2>
+                <button
+                  onClick={closeTypesModal}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-6">
+                {selectedTypesPlace.types && selectedTypesPlace.types.length > 0 ? (
+                  <div className="space-y-4">
+                    <div className="mb-4">
+                      <p className="text-sm text-gray-600">
+                        This business is categorized as <span className="font-medium">{selectedTypesPlace.types.length}</span> type(s):
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      {selectedTypesPlace.types.map((type: string, index: number) => (
+                        <div key={index} className="border border-gray-200 rounded-lg p-4">
+                          <div className="flex items-center">
+                            <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs mr-3 font-medium">
+                              {index + 1}
+                            </span>
+                            <span className="text-sm font-medium text-gray-900">{type}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <p className="text-gray-500">No type information available for this business.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ICP Breakdown Modal */}
         {icpBreakdownModal.isOpen && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -996,15 +1316,30 @@ const PlacesPage: React.FC = () => {
               </div>
               
               <div className="p-6">
-                <div className="grid grid-cols-4 gap-4 mb-6 pb-4 border-b border-gray-200">
-                  <div>
-                    <div className="text-sm text-gray-600 mb-1">Business</div>
-                    <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.businessName}</div>
+                <div className="mb-6 pb-4 border-b border-gray-200">
+                  {/* First Row: Business, Category, Total Score */}
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div>
+                      <div className="text-sm text-gray-600 mb-1">Business</div>
+                      <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.businessName}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 mb-1">Category</div>
+                      <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.category || 'N/A'}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 mb-1">Total Score</div>
+                      <div className={`inline-block px-3 py-1 rounded text-lg font-bold ${
+                        (icpBreakdownModal.score || 0) >= 7 ? 'bg-green-100 text-green-800' :
+                        (icpBreakdownModal.score || 0) >= 5 ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {icpBreakdownModal.score?.toFixed(1)}/10
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-sm text-gray-600 mb-1">Category</div>
-                    <div className="text-lg font-semibold text-gray-900">{icpBreakdownModal.category || 'N/A'}</div>
-                  </div>
+                  
+                  {/* Second Row: Website (full width) */}
                   <div>
                     <div className="text-sm text-gray-600 mb-1">Website</div>
                     {icpBreakdownModal.website ? (
@@ -1014,21 +1349,11 @@ const PlacesPage: React.FC = () => {
                         rel="noopener noreferrer"
                         className="text-lg font-semibold text-blue-600 hover:text-blue-800 hover:underline"
                       >
-                        {icpBreakdownModal.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+                        {icpBreakdownModal.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '').split('?')[0]}
                       </a>
                     ) : (
                       <div className="text-lg font-semibold text-gray-400">N/A</div>
                     )}
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-600 mb-1">Total Score</div>
-                    <div className={`inline-block px-3 py-1 rounded text-lg font-bold ${
-                      (icpBreakdownModal.score || 0) >= 7 ? 'bg-green-100 text-green-800' :
-                      (icpBreakdownModal.score || 0) >= 5 ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-red-100 text-red-800'
-                    }`}>
-                      {icpBreakdownModal.score?.toFixed(1)}/10
-                    </div>
                   </div>
                 </div>
                 
@@ -1153,6 +1478,88 @@ const PlacesPage: React.FC = () => {
         )}
       </div>
     </div>
+    {/* Progress Modal for Enrichment & ICP Calculation */}
+    {progressModal.isOpen && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+          {progressModal.stage === 'enriching' && (
+            <>
+              <div className="flex items-center justify-center mb-4">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 text-center mb-2">
+                Enriching Business Data
+              </h3>
+              <p className="text-sm text-gray-600 text-center">
+                Analyzing {progressModal.businessName}'s website for locations, SEO practices, WhatsApp, reservations, and ordering systems...
+              </p>
+            </>
+          )}
+
+          {progressModal.stage === 'calculating' && (
+            <>
+              <div className="flex items-center justify-center mb-4">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 text-center mb-2">
+                Calculating ICP Scores
+              </h3>
+              <p className="text-sm text-gray-600 text-center">
+                Enrichment complete! Now calculating ICP scores for {progressModal.businessName}...
+              </p>
+            </>
+          )}
+
+          {progressModal.stage === 'complete' && (
+            <>
+              <div className="flex items-center justify-center mb-4">
+                <div className="text-5xl">🎉</div>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 text-center mb-4">
+                ICP Scores Calculated Successfully!
+              </h3>
+              <div className="space-y-3 mb-6">
+                {progressModal.midmarketScore !== undefined && progressModal.midmarketScore !== null && (
+                  <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
+                    <span className="font-medium text-gray-700">MidMarket:</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl">
+                        {progressModal.midmarketScore >= 7 ? '🟢' : 
+                         progressModal.midmarketScore >= 5 ? '🟡' : '🔴'}
+                      </span>
+                      <span className="text-lg font-bold text-gray-900">
+                        {progressModal.midmarketScore.toFixed(1)}/10
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {progressModal.independentScore !== undefined && progressModal.independentScore !== null && (
+                  <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
+                    <span className="font-medium text-gray-700">Independent:</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl">
+                        {progressModal.independentScore >= 7 ? '🟢' : 
+                         progressModal.independentScore >= 5 ? '🟡' : '🔴'}
+                      </span>
+                      <span className="text-lg font-bold text-gray-900">
+                        {progressModal.independentScore.toFixed(1)}/10
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setProgressModal({ ...progressModal, isOpen: false })}
+                className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              >
+                Close
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    )}
+
     <AlertModal
       isOpen={alertModal.isOpen}
       onClose={() => setAlertModal({ ...alertModal, isOpen: false })}
@@ -1160,6 +1567,8 @@ const PlacesPage: React.FC = () => {
       title={alertModal.title}
       message={alertModal.message}
       type={alertModal.type}
+      confirmText={alertModal.confirmText}
+      cancelText={alertModal.cancelText}
     />
     </>
   );

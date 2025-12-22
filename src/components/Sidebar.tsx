@@ -11,6 +11,12 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, onToggleCollapse }) => {
   const menuItems = [
     {
+      id: 'places' as const,
+      label: 'Places DB',
+      icon: Database,
+      description: 'View saved businesses'
+    },
+    {
       id: 'search' as const,
       label: 'Search',
       icon: Search,
@@ -27,12 +33,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, isCollapsed, 
       label: 'Email Templates',
       icon: Mail,
       description: 'Manage email templates'
-    },
-    {
-      id: 'places' as const,
-      label: 'Places DB',
-      icon: Database,
-      description: 'View saved businesses'
     },
     {
       id: 'contacts' as const,

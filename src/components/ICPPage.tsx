@@ -531,9 +531,6 @@ const ICPPage: React.FC = () => {
                             </>
                           )}
                         </div>
-                        <p className="text-xs text-gray-500">
-                          0 = No impact, 10 = Maximum impact
-                        </p>
                       </div>
                     )}
                   </div>

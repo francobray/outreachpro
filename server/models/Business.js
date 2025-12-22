@@ -103,7 +103,9 @@ const businessSchema = new mongoose.Schema({
     default: null
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
 
 // Indexes for better query performance
@@ -114,6 +116,11 @@ businessSchema.index({ addedAt: -1 });
 // Virtual property to check if the business is enriched
 businessSchema.virtual('isEnriched').get(function() {
   return !!this.enrichedAt || !!this.website || this.numLocations !== null;
+});
+
+// Add 'enriched' virtual for frontend compatibility
+businessSchema.virtual('enriched').get(function() {
+  return !!this.enrichedAt;
 });
 
 const Business = mongoose.model('Business', businessSchema);
