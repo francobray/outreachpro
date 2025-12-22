@@ -203,8 +203,10 @@ const PlacesPage: React.FC = () => {
 
   // Perform the actual ICP calculation
   const performICPCalculation = async (businessId: string, showAlert: boolean = true) => {
+    console.log('[PlacesPage] Starting ICP calculation for business:', businessId);
     try {
       // Calculate for both ICP types
+      console.log('[PlacesPage] Making fetch requests to /api/icp-score...');
       const [midmarketRes, independentRes] = await Promise.all([
         fetch(`/api/icp-score/${businessId}`, {
           method: 'POST',
@@ -217,6 +219,7 @@ const PlacesPage: React.FC = () => {
           body: JSON.stringify({ icpType: 'independent' })
         })
       ]);
+      console.log('[PlacesPage] Fetch responses received:', { midmarketOk: midmarketRes.ok, independentOk: independentRes.ok });
 
       if (midmarketRes.ok && independentRes.ok) {
         // Parse the responses to get the scores
@@ -465,6 +468,9 @@ const PlacesPage: React.FC = () => {
         message: 'ICP scores already exist for this business. Do you want to recalculate them? This will overwrite the existing scores.',
         type: 'confirm',
         onConfirm: async () => {
+          console.log('[PlacesPage] onConfirm called for ICP recalculation, place.id:', place.id);
+          // Close the alert modal first
+          setAlertModal({ ...alertModal, isOpen: false });
           setRefreshing(true);
           await performICPCalculation(place.id);
           setRefreshing(false);
@@ -1393,11 +1399,12 @@ const PlacesPage: React.FC = () => {
                         };
                         
                         // Get ideal range for numLocations
-                        const getIdealRange = (key: string) => {
-                          if (key === 'numLocations') {
-                            // MidMarket: 2-30, Independent: 1 location
-                            return icpBreakdownModal.type === 'midmarket' ? 
-                              'Ideal: 2-30 locations' : 'Ideal: 1 location';
+                        const getIdealRange = (key: string, data: any) => {
+                          if (key === 'numLocations' && data.minIdeal !== undefined && data.maxIdeal !== undefined) {
+                            if (data.minIdeal === data.maxIdeal) {
+                              return `Ideal: ${data.minIdeal} location${data.minIdeal === 1 ? '' : 's'}`;
+                            }
+                            return `Ideal: ${data.minIdeal}-${data.maxIdeal} locations`;
                           }
                           return null;
                         };
@@ -1441,9 +1448,9 @@ const PlacesPage: React.FC = () => {
                             <div className="text-xs text-gray-500 mb-1">
                               Value: <span className="font-semibold text-gray-700">{formatValue(value.value, key)}</span>
                             </div>
-                            {getIdealRange(key) && (
+                            {getIdealRange(key, value) && (
                               <div className="text-xs text-blue-600 mb-1">
-                                {getIdealRange(key)}
+                                {getIdealRange(key, value)}
                               </div>
                             )}
                             <div className="text-xs text-gray-500 mb-2">

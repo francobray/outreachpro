@@ -232,29 +232,17 @@ async function enrichBusinessData(placeId, options = {}) {
     console.log('[Enrichment] Force re-enrichment requested. Bypassing cache.');
   }
 
-  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   const apolloApiKey = process.env.APOLLO_API_KEY;
 
-  // Always fetch from Google Places to get formatted_address and other details
-  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,formatted_phone_number&key=${apiKey}`;
-  try {
-    const response = await fetch(detailsUrl);
-    const data = await response.json();
-    if (data.result) {
-      console.log('[Enrichment] Google Place API data:', {
-        name: data.result.name,
-        formatted_address: data.result.formatted_address,
-        website: data.result.website,
-        formatted_phone_number: data.result.formatted_phone_number
-      });
-      existingBusiness.website = data.result.website || existingBusiness.website;
-      existingBusiness.phone = data.result.formatted_phone_number || existingBusiness.phone;
-      existingBusiness.address = data.result.formatted_address || existingBusiness.address;
-    }
-    // TODO: Log API call
-  } catch (e) {
-    console.log('[Enrichment] Google API error:', e.message);
-  }
+  // No need to fetch from Google Places API again - we already have complete data from the initial search
+  console.log('[Enrichment] Using existing business data (already fetched during search):', {
+    name: existingBusiness.name,
+    formatted_address: existingBusiness.address,
+    website: existingBusiness.website,
+    formatted_phone_number: existingBusiness.phone,
+    primaryType: existingBusiness.primaryType,
+    category: existingBusiness.category
+  });
 
   let website = existingBusiness.website;
   if (testUrl) {
@@ -350,6 +338,55 @@ async function enrichBusinessData(placeId, options = {}) {
       console.log(`[Enrichment] Refined location names:`, locationNames);
     } else {
       console.log('[Enrichment] No distinct locations detected on homepage.');
+    }
+    
+    // If we couldn't find locations from website (no website or scraping failed),
+    // search Google Places API for other locations with the same business name
+    if (numLocations === 1 && existingBusiness) {
+      try {
+        console.log(`[Enrichment] Searching Google Places for other "${existingBusiness.name}" locations...`);
+        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+        
+        // Get the country/region from the existing business address
+        const country = existingBusiness.country || 'Argentina';
+        const searchQuery = `${existingBusiness.name} ${country}`;
+        
+        const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(searchQuery)}&key=${apiKey}`;
+        const searchRes = await fetch(searchUrl);
+        const searchData = await searchRes.json();
+        
+        if (searchData.status === 'OK' && searchData.results && searchData.results.length > 0) {
+          // Filter results to match the business name closely
+          const matchingLocations = searchData.results.filter(place => {
+            const placeName = place.name.toLowerCase();
+            const businessName = existingBusiness.name.toLowerCase();
+            // Check if names are similar (allows for slight variations)
+            return placeName.includes(businessName) || businessName.includes(placeName);
+          });
+          
+          if (matchingLocations.length > 1) {
+            console.log(`[Enrichment] Found ${matchingLocations.length} locations via Google Places API`);
+            
+            // Extract location names from addresses
+            const apiLocationNames = matchingLocations.map(place => {
+              // Extract city/neighborhood from formatted_address
+              const address = place.formatted_address || place.vicinity || '';
+              const parts = address.split(',');
+              return parts[0]?.trim() || address;
+            }).filter(name => name);
+            
+            numLocations = matchingLocations.length;
+            locationNames = apiLocationNames;
+            
+            console.log(`[Enrichment] ✅ Updated locations from Google Places API:`, {
+              numLocations,
+              locationNames
+            });
+          }
+        }
+      } catch (error) {
+        console.log(`[Enrichment] Error searching Google Places for locations:`, error.message);
+      }
     }
 
     // 2. Extract emails
@@ -727,6 +764,31 @@ async function enrichBusinessData(placeId, options = {}) {
     existingBusiness.decisionMakers = decisionMakers;
     existingBusiness.websiteAnalysis = websiteAnalysis;
     
+    // Update category from primaryType or types if we have better information
+    console.log(`[Enrichment] Current category: "${existingBusiness.category}", primaryType: ${existingBusiness.primaryType || 'N/A'}, types: [${existingBusiness.types?.join(', ')}]`);
+    
+    let updatedCategory = null;
+    
+    // Prefer primaryType from new Places API if available
+    if (existingBusiness.primaryType) {
+      updatedCategory = existingBusiness.primaryType
+        .split('_')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      console.log(`[Enrichment] Using primaryType: ${existingBusiness.primaryType} → ${updatedCategory}`);
+    } else if (existingBusiness.types && existingBusiness.types.length > 0) {
+      updatedCategory = extractCategoryFromTypes(existingBusiness.types);
+      console.log(`[Enrichment] Using extracted category from types: ${updatedCategory}`);
+    }
+    
+    if (updatedCategory && updatedCategory !== existingBusiness.category) {
+      const oldCategory = existingBusiness.category;
+      existingBusiness.category = updatedCategory;
+      console.log(`[Enrichment] ✅ Updated category from "${oldCategory}" to: ${updatedCategory}`);
+    } else {
+      console.log(`[Enrichment] Category unchanged: ${existingBusiness.category}`);
+    }
+    
     // Update country if we now have more information (website, phone)
     console.log(`[Enrichment] Current country: ${existingBusiness.country}, checking if update needed...`);
     if (!existingBusiness.country || existingBusiness.country === 'United States') {
@@ -873,6 +935,8 @@ router.post('/search', async (req, res) => {
     // Map Google results to business format without additional API calls
     const businessesFound = (placesData.results || []).map(place => {
       const address = place.vicinity || place.formatted_address || '';
+      const extractedCategory = extractCategoryFromTypes(place.types);
+      console.log(`[Search] Business: ${place.name}, Types: [${place.types?.join(', ')}], Extracted Category: ${extractedCategory}`);
       const business = {
         id: place.place_id,
         name: place.name,
@@ -885,7 +949,7 @@ router.post('/search', async (req, res) => {
         emailStatus: 'pending',
         addedAt: new Date().toISOString(),
         types: place.types || [],
-        category: extractCategoryFromTypes(place.types),
+        category: extractedCategory,
         rating: place.rating || null,
         userRatingsTotal: place.user_ratings_total || null,
         country: extractCountryFromAddress(address, place.website, place.formatted_phone_number),
@@ -952,22 +1016,72 @@ router.post('/search-by-place-id', async (req, res) => {
   }
 
   try {
-    // Get place details from Google Places API
-    const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=place_id,name,formatted_address,website,formatted_phone_number,types,rating,user_ratings_total&key=${apiKey}`;
-    console.log('[Search by Place ID] Fetching place details...');
+    // Try new Google Places API (v1) first for better category data
+    console.log('[Search by Place ID] Trying new Places API (v1)...');
+    const newApiUrl = `https://places.googleapis.com/v1/places/${placeId}`;
+    const newApiHeaders = {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,websiteUri,nationalPhoneNumber,types,primaryType,rating,userRatingCount,businessStatus,googleMapsUri'
+    };
     
-    const detailsRes = await fetch(detailsUrl);
-    const detailsData = await detailsRes.json();
+    let place = null;
+    let usedNewAPI = false;
     
-    if (detailsData.status !== 'OK' || !detailsData.result) {
-      console.log('[Search by Place ID] Place not found:', detailsData.status);
+    try {
+      const newApiRes = await fetch(newApiUrl, { headers: newApiHeaders });
+      if (newApiRes.ok) {
+        const newApiData = await newApiRes.json();
+        console.log('[Search by Place ID] New API Response:', JSON.stringify(newApiData, null, 2));
+        
+        // Map new API response to legacy format
+        place = {
+          place_id: newApiData.id?.replace('places/', ''),
+          name: newApiData.displayName?.text || newApiData.displayName,
+          formatted_address: newApiData.formattedAddress,
+          website: newApiData.websiteUri,
+          formatted_phone_number: newApiData.nationalPhoneNumber,
+          types: newApiData.types || [],
+          primaryType: newApiData.primaryType, // NEW: Primary category field
+          rating: newApiData.rating,
+          user_ratings_total: newApiData.userRatingCount,
+          business_status: newApiData.businessStatus,
+          url: newApiData.googleMapsUri
+        };
+        usedNewAPI = true;
+        console.log('[Search by Place ID] ✅ Using NEW Places API with primaryType:', newApiData.primaryType);
+      }
+    } catch (newApiError) {
+      console.log('[Search by Place ID] New API failed, falling back to legacy API:', newApiError.message);
+    }
+    
+    // Fallback to legacy API if new API failed
+    if (!place) {
+      console.log('[Search by Place ID] Fetching from legacy API...');
+      const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=place_id,name,formatted_address,website,formatted_phone_number,types,rating,user_ratings_total,business_status,url,editorial_summary&key=${apiKey}`;
+      
+      const detailsRes = await fetch(detailsUrl);
+      const detailsData = await detailsRes.json();
+      
+      console.log('[Search by Place ID] Legacy API Response:', JSON.stringify(detailsData, null, 2));
+      
+      if (detailsData.status !== 'OK' || !detailsData.result) {
+        console.log('[Search by Place ID] Place not found:', detailsData.status);
+        return res.status(404).json({ 
+          error: 'Place not found',
+          message: 'The selected business could not be found. It may no longer exist or may have been removed.'
+        });
+      }
+      
+      place = detailsData.result;
+    }
+    
+    if (!place) {
       return res.status(404).json({ 
         error: 'Place not found',
-        message: 'The selected business could not be found. It may no longer exist or may have been removed.'
+        message: 'The selected business could not be found.'
       });
     }
-
-    const place = detailsData.result;
     console.log('[Search by Place ID] Found place:', place.name);
 
     // Track Google Places Details API call
@@ -988,6 +1102,21 @@ router.post('/search-by-place-id', async (req, res) => {
 
     // Create business object
     const address = place.formatted_address || '';
+    
+    // Use primaryType from new API if available, otherwise extract from types
+    let extractedCategory;
+    if (place.primaryType) {
+      extractedCategory = place.primaryType
+        .split('_')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      console.log(`[Search by Place ID] ✅ Using primaryType: ${place.primaryType} → ${extractedCategory}`);
+    } else {
+      extractedCategory = extractCategoryFromTypes(place.types);
+      console.log(`[Search by Place ID] Using extracted category from types: ${extractedCategory}`);
+    }
+    
+    console.log(`[Search by Place ID] Business: ${place.name}, Types: [${place.types?.join(', ')}], Primary Type: ${place.primaryType || 'N/A'}, Extracted Category: ${extractedCategory}`);
     const business = {
       id: place.place_id,
       name: place.name,
@@ -1000,7 +1129,8 @@ router.post('/search-by-place-id', async (req, res) => {
       emailStatus: 'pending',
       addedAt: new Date().toISOString(),
       types: place.types || [],
-      category: extractCategoryFromTypes(place.types),
+      primaryType: place.primaryType || null, // Store primaryType from new API
+      category: extractedCategory,
       rating: place.rating || null,
       userRatingsTotal: place.user_ratings_total || null,
       country: extractCountryFromAddress(address, place.website, place.formatted_phone_number),
@@ -1088,60 +1218,21 @@ router.post('/business/enrich/:placeId', async (req, res) => {
     // The enrichBusinessData function already updates enrichedAt timestamp
     console.log(`[Business Enrich] Enrichment completed for placeId: ${placeId}`);
     
-    // Automatically recalculate ICP scores after enrichment to reflect new data
-    console.log(`[Business Enrich] Recalculating ICP scores for ${enrichedBusiness.name}...`);
-    try {
-      const icpConfigs = await ICPConfig.find();
-      const updatedScores = {};
-      
-      for (const config of icpConfigs) {
-        const icpType = config.name === 'MidMarket Brands' ? 'midmarket' : 'independent';
-        const score = calculateICPScore(enrichedBusiness, config);
-        updatedScores[icpType] = score;
-        console.log(`[Business Enrich] ${config.name} ICP score: ${score.score.toFixed(1)}/10`);
+    // Return enriched business data (ICP calculation is done separately via the calculate ICP action)
+    console.log(`[Business Enrich] Enrichment completed successfully for ${enrichedBusiness.name}`);
+    res.json({
+      success: true,
+      message: 'Business enriched successfully',
+      business: {
+        id: enrichedBusiness.id,
+        name: enrichedBusiness.name,
+        website: enrichedBusiness.website,
+        emails: enrichedBusiness.emails,
+        numLocations: enrichedBusiness.numLocations,
+        locationNames: enrichedBusiness.locationNames,
+        enrichedAt: enrichedBusiness.enrichedAt
       }
-      
-      // Update ICP scores in database using atomic update
-      await Business.updateOne(
-        { _id: enrichedBusiness._id },
-        { $set: { icpScores: updatedScores } }
-      );
-      
-      console.log(`[Business Enrich] ICP scores recalculated successfully`);
-      
-      // Return enriched business with updated ICP scores
-      res.json({
-        success: true,
-        message: 'Business enriched and ICP scores recalculated successfully',
-        business: {
-          id: enrichedBusiness.id,
-          name: enrichedBusiness.name,
-          website: enrichedBusiness.website,
-          emails: enrichedBusiness.emails,
-          numLocations: enrichedBusiness.numLocations,
-          locationNames: enrichedBusiness.locationNames,
-          enrichedAt: enrichedBusiness.enrichedAt,
-          icpScores: updatedScores
-        }
-      });
-    } catch (icpError) {
-      console.error(`[Business Enrich] Error recalculating ICP scores:`, icpError);
-      // Still return success for enrichment, but note ICP error
-      res.json({
-        success: true,
-        message: 'Business enriched successfully, but ICP recalculation failed',
-        business: {
-          id: enrichedBusiness.id,
-          name: enrichedBusiness.name,
-          website: enrichedBusiness.website,
-          emails: enrichedBusiness.emails,
-          numLocations: enrichedBusiness.numLocations,
-          locationNames: enrichedBusiness.locationNames,
-          enrichedAt: enrichedBusiness.enrichedAt
-        },
-        icpWarning: icpError.message
-      });
-    }
+    });
   } catch (error) {
     console.error(`[Business Enrich] Error for placeId ${placeId}:`, error);
     res.status(500).json({ 
@@ -2378,46 +2469,6 @@ router.post('/icp-configs/reset', async (req, res) => {
     });
   } catch (error) {
     console.error('[ICP] Error resetting ICP configs:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Migrate ICP configurations from isArgentina to geography
-router.post('/icp-configs/migrate', async (req, res) => {
-  try {
-    console.log('[ICP Migration] Starting migration from isArgentina to geography...');
-    
-    const configs = await ICPConfig.find({});
-    let migrated = 0;
-    
-    for (const config of configs) {
-      // Check if config has isArgentina but not geography
-      if (config.factors.isArgentina && !config.factors.geography) {
-        console.log(`[ICP Migration] Migrating config: ${config.name}`);
-        
-        // Copy isArgentina settings to geography
-        config.factors.geography = {
-          enabled: config.factors.isArgentina.enabled,
-          weight: config.factors.isArgentina.weight
-        };
-        
-        // Disable isArgentina
-        config.factors.isArgentina.enabled = false;
-        config.factors.isArgentina.weight = 0;
-        
-        await config.save();
-        migrated++;
-      }
-    }
-    
-    console.log(`[ICP Migration] Migrated ${migrated} configurations`);
-    
-    res.json({ 
-      message: 'ICP configurations migrated successfully',
-      migrated
-    });
-  } catch (error) {
-    console.error('[ICP Migration] Error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

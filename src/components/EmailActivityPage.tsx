@@ -272,8 +272,8 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <div className="w-[90%] mx-auto">
+    <div className="min-h-screen bg-gray-50 p-3">
+      <div className="w-[98%] mx-auto">
         {/* Header */}
         <div className="flex items-center justify-end mb-6">
           <div className="flex items-center space-x-3">
@@ -424,22 +424,22 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Business
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Decision Maker
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Subject
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Template
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sentAt')}>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sentAt')}>
                     <div className="flex items-center">
                       Sent At
                       {sortField === 'sentAt' && (
@@ -447,13 +447,13 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
                       )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Opens
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Clicks
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Type
                   </th>
                 </tr>
@@ -461,7 +461,7 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
               <tbody className="bg-white divide-y divide-gray-200">
                 {activities.map((activity) => (
                   <tr key={activity._id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <div className="flex items-center">
                         {getStatusIcon(activity.status)}
                         <span className={`ml-2 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(activity.status)}`}>
@@ -469,13 +469,13 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
                         </span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <div className="flex items-center">
                         <Building className="w-4 h-4 text-gray-400 mr-2" />
                         <span className="text-sm font-medium text-gray-900">{activity.businessName}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <div className="flex items-center">
                         <User className="w-4 h-4 text-gray-400 mr-2" />
                         <div>
@@ -484,18 +484,18 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-4">
                       <div className="text-sm text-gray-900 max-w-xs truncate" title={activity.subject}>
                         {activity.subject}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <span className="text-sm text-gray-900">{activity.templateName}</span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">{formatDate(activity.sentAt)}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
                         {activity.openCount > 0 ? (
                           <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">
@@ -506,7 +506,7 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
                         )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
                         {activity.clickCount > 0 ? (
                           <span className="bg-orange-100 text-orange-800 px-2 py-1 rounded text-xs">
@@ -517,7 +517,7 @@ const EmailActivityPage: React.FC<EmailActivityPageProps> = ({ onBack }) => {
                         )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-4 whitespace-nowrap">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                         activity.emailType === 'test' 
                           ? 'bg-yellow-100 text-yellow-800' 

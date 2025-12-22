@@ -100,6 +100,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     message: '',
     type: 'info'
   });
+  const [progressModal, setProgressModal] = useState<{
+    isOpen: boolean;
+    stage: 'enriching' | 'calculating' | 'complete';
+    businessName: string;
+    midmarketScore?: number;
+    independentScore?: number;
+  }>({
+    isOpen: false,
+    stage: 'enriching',
+    businessName: ''
+  });
   const [databaseBusinesses, setDatabaseBusinesses] = useState<{[key: string]: any}>({});
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
   const [colWidths, setColWidths] = useState({
@@ -153,6 +164,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         if (icpBreakdownModal.isOpen) {
           setIcpBreakdownModal({ ...icpBreakdownModal, isOpen: false });
         }
+        if (progressModal.isOpen && progressModal.stage === 'complete') {
+          setProgressModal({ ...progressModal, isOpen: false });
+        }
       }
     };
 
@@ -160,7 +174,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     return () => {
       document.removeEventListener('keydown', handleEscKey);
     };
-  }, [alertModal, icpBreakdownModal]);
+  }, [alertModal, icpBreakdownModal, progressModal]);
 
   const resizingCol = useRef<keyof typeof colWidths | null>(null);
   const startX = useRef(0);
@@ -749,9 +763,11 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   };
 
   // Perform the actual ICP calculation
-  const performICPCalculation = async (businessId: string) => {
+  const performICPCalculation = async (businessId: string, showAlert: boolean = true) => {
+    console.log('[BusinessTable] Starting ICP calculation for business:', businessId);
     try {
       // Calculate for both ICP types
+      console.log('[BusinessTable] Making fetch requests to /api/icp-score...');
       const [midmarketRes, independentRes] = await Promise.all([
         fetch(`/api/icp-score/${businessId}`, {
           method: 'POST',
@@ -764,44 +780,68 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
           body: JSON.stringify({ icpType: 'independent' })
         })
       ]);
+      console.log('[BusinessTable] Fetch responses received:', { midmarketOk: midmarketRes.ok, independentOk: independentRes.ok });
 
       if (midmarketRes.ok && independentRes.ok) {
         // Parse the responses to get the scores
         const midmarketData = await midmarketRes.json();
         const independentData = await independentRes.json();
         
-        // Format scores with color indicators
-        const mmScore = midmarketData.score?.toFixed(1) || 'N/A';
-        const indScore = independentData.score?.toFixed(1) || 'N/A';
-        
-        const getScoreColor = (score: number) => {
-          if (score >= 7) return '🟢';
-          if (score >= 5) return '🟡';
-          return '🔴';
-        };
-        
-        const mmEmoji = typeof midmarketData.score === 'number' ? getScoreColor(midmarketData.score) : '';
-        const indEmoji = typeof independentData.score === 'number' ? getScoreColor(independentData.score) : '';
-        
         // Refresh database state to show updated scores
         await refreshDatabaseState();
-        setAlertModal({
-          isOpen: true,
-          title: 'ICP Scores Calculated Successfully! 🎉',
-          message: `MidMarket: ${mmEmoji} ${mmScore}/10\nIndependent: ${indEmoji} ${indScore}/10`,
-          type: 'success'
-        });
+
+        // Return scores for programmatic use
+        const result = {
+          midmarket: midmarketData,
+          independent: independentData
+        };
+
+        // Only show alert if requested
+        if (showAlert) {
+          // Format scores with color indicators
+          const mmScore = midmarketData.score?.toFixed(1) || 'N/A';
+          const indScore = independentData.score?.toFixed(1) || 'N/A';
+          
+          const getScoreColor = (score: number) => {
+            if (score >= 7) return '🟢';
+            if (score >= 5) return '🟡';
+            return '🔴';
+          };
+          
+          const mmEmoji = typeof midmarketData.score === 'number' ? getScoreColor(midmarketData.score) : '';
+          const indEmoji = typeof independentData.score === 'number' ? getScoreColor(independentData.score) : '';
+          
+          setAlertModal({
+            isOpen: true,
+            title: 'ICP Scores Calculated Successfully! 🎉',
+            message: `MidMarket: ${mmEmoji} ${mmScore}/10\nIndependent: ${indEmoji} ${indScore}/10`,
+            type: 'success'
+          });
+        }
+
+        return result;
       } else {
-        throw new Error('Failed to calculate ICP scores');
+        if (showAlert) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Error',
+            message: 'Failed to calculate ICP scores. Please try again.',
+            type: 'error'
+          });
+        }
+        return null;
       }
     } catch (error) {
       console.error('Failed to calculate ICP:', error);
-      setAlertModal({
-        isOpen: true,
-        title: 'Error',
-        message: 'Failed to calculate ICP scores. Please try again.',
-        type: 'error'
-      });
+      if (showAlert) {
+        setAlertModal({
+          isOpen: true,
+          title: 'Error',
+          message: 'Failed to calculate ICP scores. Please try again.',
+          type: 'error'
+        });
+      }
+      return null;
     }
   };
 
@@ -823,8 +863,84 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
       setAlertModal({
         isOpen: true,
         title: 'Enrichment Required',
-        message: 'This business needs to be enriched first to get accurate ICP scores. Enrichment will analyze the website for locations, SEO practices, WhatsApp, reservations, and ordering systems.\n\nPlease click the "Enrich" button first.',
-        type: 'info'
+        message: 'This business needs to be enriched first to get accurate ICP scores. Enrichment will analyze the website for locations, SEO practices, WhatsApp, reservations, and ordering systems.',
+        type: 'confirm',
+        confirmText: 'Enrich Now',
+        cancelText: 'Cancel',
+        onConfirm: async () => {
+          console.log('[BusinessTable] Starting enrichment flow for ICP calculation');
+          // Close alert modal and open progress modal
+          setAlertModal({ ...alertModal, isOpen: false });
+          setProgressModal({
+            isOpen: true,
+            stage: 'enriching',
+            businessName: business.name
+          });
+          
+          try {
+            // Start enrichment (performEnrichment already shows success alert, we'll suppress it)
+            const url = `/api/business/enrich/${business.placeId}`;
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await res.json();
+            
+            if (!data.success) {
+              throw new Error(data.message || 'Enrichment failed');
+            }
+            
+            // Refresh database state to get updated business
+            await refreshDatabaseState();
+            
+            // Update to calculating stage
+            setProgressModal(prev => ({
+              ...prev,
+              stage: 'calculating'
+            }));
+
+            // Get the updated database business
+            const updatedDbBusiness = databaseBusinesses[business.placeId];
+            
+            if (updatedDbBusiness && updatedDbBusiness.id) {
+              // Now calculate ICP with the enriched data (showAlert = false)
+              const result = await performICPCalculation(updatedDbBusiness.id, false);
+              
+              if (result) {
+                // Show completion with scores
+                setProgressModal({
+                  isOpen: true,
+                  stage: 'complete',
+                  businessName: business.name,
+                  midmarketScore: result.midmarket?.score,
+                  independentScore: result.independent?.score
+                });
+              } else {
+                // Failed to calculate
+                setProgressModal({ isOpen: false, stage: 'enriching', businessName: '' });
+                setAlertModal({
+                  isOpen: true,
+                  title: 'Error',
+                  message: 'Enrichment succeeded but ICP calculation failed. Please try calculating ICP again.',
+                  type: 'error'
+                });
+              }
+            } else {
+              throw new Error('Failed to get updated business data');
+            }
+          } catch (error) {
+            console.error('[BusinessTable] Enrichment flow error:', error);
+            // Enrichment failed
+            setProgressModal({ isOpen: false, stage: 'enriching', businessName: '' });
+            setAlertModal({
+              isOpen: true,
+              title: 'Error',
+              message: 'Failed to enrich business. Please try again.',
+              type: 'error'
+            });
+          }
+        }
       });
       return;
     }
@@ -842,6 +958,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         message: 'ICP scores already exist for this business. Do you want to recalculate them? This will overwrite the existing scores.',
         type: 'confirm',
         onConfirm: async () => {
+          console.log('[BusinessTable] onConfirm called for ICP recalculation, dbBusiness.id:', dbBusiness.id);
           updateLoadingState(business.id, 'icp');
           await performICPCalculation(dbBusiness.id);
           updateLoadingState(business.id, '');
@@ -1542,6 +1659,88 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
         message={alertModal.message}
         type={alertModal.type}
       />
+
+      {/* Progress Modal */}
+      {progressModal.isOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+            {progressModal.stage === 'enriching' && (
+              <>
+                <div className="flex items-center justify-center mb-4">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 text-center mb-2">
+                  Enriching Business Data
+                </h3>
+                <p className="text-sm text-gray-600 text-center">
+                  Analyzing {progressModal.businessName}'s website for locations, SEO practices, WhatsApp, reservations, and ordering systems...
+                </p>
+              </>
+            )}
+
+            {progressModal.stage === 'calculating' && (
+              <>
+                <div className="flex items-center justify-center mb-4">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 text-center mb-2">
+                  Calculating ICP Scores
+                </h3>
+                <p className="text-sm text-gray-600 text-center">
+                  Enrichment complete! Now calculating ICP scores for {progressModal.businessName}...
+                </p>
+              </>
+            )}
+
+            {progressModal.stage === 'complete' && (
+              <>
+                <div className="flex items-center justify-center mb-4">
+                  <div className="text-5xl">🎉</div>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 text-center mb-4">
+                  ICP Scores Calculated Successfully!
+                </h3>
+                <div className="space-y-3 mb-6">
+                  {progressModal.midmarketScore !== undefined && progressModal.midmarketScore !== null && (
+                    <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
+                      <span className="font-medium text-gray-700">MidMarket:</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">
+                          {progressModal.midmarketScore >= 7 ? '🟢' : 
+                           progressModal.midmarketScore >= 5 ? '🟡' : '🔴'}
+                        </span>
+                        <span className="text-lg font-bold text-gray-900">
+                          {progressModal.midmarketScore.toFixed(1)}/10
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {progressModal.independentScore !== undefined && progressModal.independentScore !== null && (
+                    <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
+                      <span className="font-medium text-gray-700">Independent:</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">
+                          {progressModal.independentScore >= 7 ? '🟢' : 
+                           progressModal.independentScore >= 5 ? '🟡' : '🔴'}
+                        </span>
+                        <span className="text-lg font-bold text-gray-900">
+                          {progressModal.independentScore.toFixed(1)}/10
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => setProgressModal({ ...progressModal, isOpen: false })}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+                >
+                  Close
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       
       {/* ICP Breakdown Modal */}
       {icpBreakdownModal.isOpen && (
@@ -1637,11 +1836,12 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       };
                       
                       // Get ideal range for numLocations
-                      const getIdealRange = (key: string) => {
-                        if (key === 'numLocations') {
-                          // MidMarket: 2-30, Independent: 1 location
-                          return icpBreakdownModal.type === 'midmarket' ? 
-                            'Ideal: 2-30 locations' : 'Ideal: 1 location';
+                      const getIdealRange = (key: string, data: any) => {
+                        if (key === 'numLocations' && data.minIdeal !== undefined && data.maxIdeal !== undefined) {
+                          if (data.minIdeal === data.maxIdeal) {
+                            return `Ideal: ${data.minIdeal} location${data.minIdeal === 1 ? '' : 's'}`;
+                          }
+                          return `Ideal: ${data.minIdeal}-${data.maxIdeal} locations`;
                         }
                         return null;
                       };
@@ -1685,9 +1885,9 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                           <div className="text-xs text-gray-500 mb-1">
                             Value: <span className="font-semibold text-gray-700">{formatValue(value.value, key)}</span>
                           </div>
-                          {getIdealRange(key) && (
+                          {getIdealRange(key, value) && (
                             <div className="text-xs text-blue-600 mb-1">
-                              {getIdealRange(key)}
+                              {getIdealRange(key, value)}
                             </div>
                           )}
                           <div className="text-xs text-gray-500 mb-2">
