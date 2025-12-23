@@ -190,11 +190,18 @@ export async function fetchHtmlWithPuppeteer(url) {
       '--disable-web-security', // Disable CORS
       '--disable-features=BlockInsecurePrivateNetworkRequests', // Allow insecure requests
       '--disable-blink-features=AutomationControlled', // Hide automation
-    ]
+      '--ignore-certificate-errors', // Allow HTTPS errors
+      '--allow-insecure-localhost', // Allow HTTP connections
+      '--unsafely-treat-insecure-origin-as-secure=http://*', // Treat HTTP as secure
+    ],
+    ignoreHTTPSErrors: true // Also set at the browser level
   });
   
   try {
     const page = await browser.newPage();
+    
+    // Bypass SSL/certificate errors at page level
+    await page.setBypassCSP(true);
     
     // Enable request interception to handle blocked resources gracefully
     await page.setRequestInterception(true);
@@ -1147,10 +1154,37 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
           
           usedPuppeteer = true;
           console.log(`[PlaceDetails] Puppeteer rendered the page, re-analyzing...`);
+          console.log(`[PlaceDetails] HTML length: ${puppeteerHtml.length} bytes`);
           
           const $$$ = cheerio.load(puppeteerHtml);
           
-          // Try structured search again on Puppeteer-rendered content
+          // Debug: Log sample of visible text to understand page structure
+          const sampleText = $$$('body').text().substring(0, 500);
+          console.log(`[PlaceDetails] Sample of page text: ${sampleText.substring(0, 200)}...`);
+          
+          // Debug: Check for data attributes that might contain locations
+          const elementsWithData = $$$('[data-address], [data-location], [data-lat], [data-lng]').length;
+          console.log(`[PlaceDetails] Found ${elementsWithData} elements with location data attributes`);
+          
+          // Extract from data attributes first
+          $$$('[data-address]').each((i, el) => {
+            const address = $$$(el).attr('data-address');
+            if (address && address.length > 10 && address.length < 150) {
+              locationSet.add(address.trim());
+            }
+          });
+          $$$('[data-location]').each((i, el) => {
+            const location = $$$(el).attr('data-location');
+            if (location && location.length > 10 && location.length < 150) {
+              locationSet.add(location.trim());
+            }
+          });
+          
+          if (locationSet.size > 0) {
+            console.log(`[PlaceDetails] Found ${locationSet.size} locations from data attributes`);
+          }
+          
+          // Try structured search on Puppeteer-rendered content
           $$$(locationSelectors.join(', ')).each((i, el) => {
             const elementText = $$$(el).text().trim();
             const lines = elementText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
@@ -1194,12 +1228,14 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
               // If no JSON data, try aggressive regex on full HTML text
               const bodyText = puppeteerHtml;
               
-              // More aggressive regex patterns for addresses
+              // Stricter regex patterns for addresses - require street keywords
               const addressPatterns = [
-                /(?:Av\.|Avenida|Calle|Street|St\.|Route|Ruta|Camino|Paseo|Boulevard|Blvd\.?)\s+[A-Za-zÀ-ÿ\s]+\d+(?:,\s*[A-Za-zÀ-ÿ\s]+)?/gi,
-                /\b\d{1,5}\s+[A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,4}\s+(?:Street|St|Avenue|Ave|Av|Road|Rd|Boulevard|Blvd|Calle|Avenida)\b/gi,
-                /(?:Av\.|Avenue|Avenida)\s+[^\n,]{3,50}\s+\d{2,5}/gi,
-                /\b[A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)*\s+\d{2,5}(?:,\s*[A-Za-zÀ-ÿ\s]+)?/g
+                // Spanish/Latin addresses: "Av. Corrientes 1234" or "Calle Florida 567"
+                /(?:Av\.|Avenida|Calle|Paseo|Boulevard|Blvd\.?)\s+[A-Za-zÀ-ÿ\s\.]+\s+\d{2,5}(?:,\s*[A-Za-zÀ-ÿ\s]+)?/gi,
+                // English addresses: "123 Main Street" or "456 Park Avenue"
+                /\b\d{1,5}\s+[A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,4}\s+(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.)\b/gi,
+                // Ruta/Route addresses
+                /(?:Ruta|Route|Camino)\s+\d+\s+(?:km|Km|KM)?\s*\d*(?:,\s*[A-Za-zÀ-ÿ\s]+)?/gi
               ];
               
               addressPatterns.forEach(pattern => {
@@ -1207,8 +1243,16 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
                 if (matches) {
                   matches.forEach(match => {
                     const cleaned = match.trim();
+                    
+                    // Filter out false positives
+                    const isCopyright = /copyright/i.test(cleaned);
+                    const isDateOnly = /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}$/i.test(cleaned);
+                    const isYearOnly = /^\d{4}$/i.test(cleaned);
+                    const hasInvalidWords = /(copyright|®|™|all rights|reserved|privacy|terms|cookie)/i.test(cleaned);
+                    
                     // More lenient for Puppeteer results - accept shorter matches
-                    if (cleaned.length > 8 && cleaned.length < 150) {
+                    if (cleaned.length > 8 && cleaned.length < 150 && 
+                        !isCopyright && !isDateOnly && !isYearOnly && !hasInvalidWords) {
                       locationSet.add(cleaned);
                     }
                   });
@@ -1231,8 +1275,15 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
               const hasAddressKeyword = /(av\.|avenue|avenida|calle|street|st\.|ruta|route|camino|paseo|boulevard|blvd|road|rd)/i.test(line);
               const hasCommaOrCoordinates = /[,|]/.test(line);
               
+              // Filter out false positives
+              const isCopyright = /copyright/i.test(line);
+              const isDateOnly = /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}$/i.test(line);
+              const hasInvalidWords = /(copyright|®|™|all rights|reserved|privacy|terms|cookie|subscribe|follow|social|chrome:\/\/|attackers|secure connection)/i.test(line);
+              
               if (hasNumber && (hasAddressKeyword || hasCommaOrCoordinates)) {
-                if (line.length > 8 && line.length < 150 && !line.includes('http') && !line.includes('www')) {
+                if (line.length > 8 && line.length < 150 && 
+                    !line.includes('http') && !line.includes('www') &&
+                    !isCopyright && !isDateOnly && !hasInvalidWords) {
                   locationSet.add(line);
                 }
               }
