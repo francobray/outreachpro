@@ -221,7 +221,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     updateLoadingState(business.id, 'audit');
     
     try {
-      const response = await fetch(`http://localhost:3001/api/audit/${business.id}`, {
+      const response = await fetch(`/api/audit/${business.id}`, {
         method: 'POST',
       });
       const data = await response.json();
@@ -323,7 +323,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     const htmlBody = body.replace(/\n/g, '<br />');
     
     try {
-      const response = await fetch('http://localhost:3001/api/send-email', {
+      const response = await fetch('/api/send-email', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -359,7 +359,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
 
   const downloadReport = async (reportId: string, businessName: string) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/reports/${reportId}/download`);
+      const response = await fetch(`/api/reports/${reportId}/download`);
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -928,7 +928,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     
     try {
       // Call the server endpoint to grade the business
-      const response = await fetch('http://localhost:3001/api/grade-business', {
+      const response = await fetch('/api/grade-business', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -965,7 +965,7 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     
     try {
       // Open the report in a new tab
-      window.open(`http://localhost:3001/api/grade-report/${reportId}`, '_blank');
+      window.open(`/api/grade-report/${reportId}`, '_blank');
     } catch (error) {
       console.error('Failed to view report:', error);
     }

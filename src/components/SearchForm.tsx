@@ -50,7 +50,7 @@ const SearchForm: React.FC<SearchFormProps> = ({
       (window as any).__googleMapsLoading = true;
 
       // Fetch API key from backend
-      fetch('http://localhost:3001/api/google-api-key')
+      fetch('/api/google-api-key')
         .then(res => res.json())
         .then(data => {
           if (data.apiKey) {
@@ -137,7 +137,7 @@ const SearchForm: React.FC<SearchFormProps> = ({
       
       if (searchMode === 'name' && selectedPlace) {
         // Search by place ID
-        response = await fetch(`http://localhost:3001/api/search-by-place-id`, {
+        response = await fetch(`/api/search-by-place-id`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -146,7 +146,7 @@ const SearchForm: React.FC<SearchFormProps> = ({
         });
       } else {
         // Search by type and location
-        response = await fetch(`http://localhost:3001/api/search`, {
+        response = await fetch(`/api/search`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
