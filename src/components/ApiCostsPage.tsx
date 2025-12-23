@@ -37,7 +37,7 @@ const ApiCostsPage: React.FC = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch('http://localhost:3001/api/costs');
+      const response = await fetch('/api/costs');
       if (!response.ok) {
         throw new Error('Failed to fetch costs data');
       }
@@ -54,7 +54,7 @@ const ApiCostsPage: React.FC = () => {
 
   const fetchLogs = async () => {
     try {
-      const response = await fetch('http://localhost:3001/api/costs/history');
+      const response = await fetch('/api/costs/history');
       const data = await response.json();
       setLogs({
         google: [...data.googlePlacesSearch, ...data.googlePlacesDetails],
