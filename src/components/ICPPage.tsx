@@ -140,6 +140,10 @@ const ICPPage: React.FC = () => {
 
   const calculateTotalWeight = (config: ICPConfig) => {
     const total = Object.entries(config.factors).reduce((sum, [factorKey, f]: [string, any]) => {
+      // Skip poorSEO for independent (it's not applicable)
+      if (factorKey === 'poorSEO' && config.type === 'independent') {
+        return sum;
+      }
       const weight = f.enabled ? Number(f.weight) : 0;
       return sum + weight;
     }, 0);
