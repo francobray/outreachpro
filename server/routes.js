@@ -15,6 +15,8 @@ import {
   detectLocations,
   analyzeWebsiteForICP,
   normalizeAndDeduplicateEmails,
+  findSimilarBusinesses,
+  cloneEnrichmentData,
 } from './utils.js';
 
 import Business from './models/Business.js';
@@ -1337,6 +1339,36 @@ router.post('/business/enrich/:placeId', async (req, res) => {
     // The enrichBusinessData function already updates enrichedAt timestamp
     console.log(`[Business Enrich] Enrichment completed for placeId: ${placeId}`);
     
+    // Find similar businesses for potential enrichment cloning
+    console.log(`[Business Enrich] Searching for similar businesses to clone enrichment...`);
+    const allBusinesses = await Business.find({});
+    const { exactMatches, fuzzyMatches } = findSimilarBusinesses(enrichedBusiness, allBusinesses, {
+      minSimilarity: 0.8,
+      sameCountryOnly: true
+    });
+    
+    console.log(`[Business Enrich] Found ${exactMatches.length} exact prefix matches and ${fuzzyMatches.length} fuzzy matches`);
+    
+    // Auto-clone for exact prefix matches
+    const clonedBusinesses = [];
+    for (const match of exactMatches) {
+      try {
+        const clonedData = cloneEnrichmentData(enrichedBusiness, match.business);
+        await Business.updateOne(
+          { placeId: match.business.placeId },
+          { $set: clonedData }
+        );
+        clonedBusinesses.push({
+          placeId: match.business.placeId,
+          name: match.business.name,
+          matchType: 'exact_prefix'
+        });
+        console.log(`[Business Enrich] Auto-cloned to: ${match.business.name}`);
+      } catch (cloneError) {
+        console.error(`[Business Enrich] Error cloning to ${match.business.name}:`, cloneError);
+      }
+    }
+    
     // Return enriched business data (ICP calculation is done separately via the calculate ICP action)
     console.log(`[Business Enrich] Enrichment completed successfully for ${enrichedBusiness.name}`);
     res.json({
@@ -1350,12 +1382,82 @@ router.post('/business/enrich/:placeId', async (req, res) => {
         numLocations: enrichedBusiness.numLocations,
         locationNames: enrichedBusiness.locationNames,
         enrichedAt: enrichedBusiness.enrichedAt
-      }
+      },
+      clonedBusinesses: clonedBusinesses,
+      fuzzyMatches: fuzzyMatches.map(m => ({
+        placeId: m.business.placeId,
+        name: m.business.name,
+        address: m.business.formatted_address,
+        similarity: Math.round(m.similarity * 100),
+        matchType: 'fuzzy'
+      }))
     });
   } catch (error) {
     console.error(`[Business Enrich] Error for placeId ${placeId}:`, error);
     res.status(500).json({ 
       error: 'Failed to enrich business',
+      message: error.message 
+    });
+  }
+});
+
+// Manual enrichment cloning endpoint - for fuzzy matches that need user confirmation
+router.post('/business/clone-enrichment', async (req, res) => {
+  const { sourcePlaceId, targetPlaceIds } = req.body;
+  
+  try {
+    console.log(`[Enrichment Clone] Manual clone requested from ${sourcePlaceId} to ${targetPlaceIds.length} businesses`);
+    
+    // Get source business
+    const sourceBusiness = await Business.findOne({ placeId: sourcePlaceId });
+    if (!sourceBusiness) {
+      return res.status(404).json({ error: 'Source business not found' });
+    }
+    
+    if (!sourceBusiness.enrichedAt) {
+      return res.status(400).json({ error: 'Source business is not enriched' });
+    }
+    
+    const clonedBusinesses = [];
+    const errors = [];
+    
+    // Clone to each target business
+    for (const targetPlaceId of targetPlaceIds) {
+      try {
+        const targetBusiness = await Business.findOne({ placeId: targetPlaceId });
+        if (!targetBusiness) {
+          errors.push({ placeId: targetPlaceId, error: 'Business not found' });
+          continue;
+        }
+        
+        const clonedData = cloneEnrichmentData(sourceBusiness, targetBusiness);
+        await Business.updateOne(
+          { placeId: targetPlaceId },
+          { $set: clonedData }
+        );
+        
+        clonedBusinesses.push({
+          placeId: targetBusiness.placeId,
+          name: targetBusiness.name
+        });
+        
+        console.log(`[Enrichment Clone] Successfully cloned to: ${targetBusiness.name}`);
+      } catch (cloneError) {
+        console.error(`[Enrichment Clone] Error cloning to ${targetPlaceId}:`, cloneError);
+        errors.push({ placeId: targetPlaceId, error: cloneError.message });
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Successfully cloned enrichment to ${clonedBusinesses.length} business(es)`,
+      clonedBusinesses,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error(`[Enrichment Clone] Error:`, error);
+    res.status(500).json({ 
+      error: 'Failed to clone enrichment',
       message: error.message 
     });
   }

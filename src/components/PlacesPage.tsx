@@ -107,6 +107,25 @@ const PlacesPage: React.FC = () => {
     businessName: ''
   });
 
+  const [cloneModal, setCloneModal] = useState<{
+    isOpen: boolean;
+    sourceName: string;
+    sourcePlaceId: string;
+    fuzzyMatches: Array<{
+      placeId: string;
+      name: string;
+      address: string;
+      similarity: number;
+    }>;
+    selectedMatches: string[];
+  }>({
+    isOpen: false,
+    sourceName: '',
+    sourcePlaceId: '',
+    fuzzyMatches: [],
+    selectedMatches: []
+  });
+
   useEffect(() => {
     fetchPlaces();
   }, []);
@@ -285,7 +304,7 @@ const PlacesPage: React.FC = () => {
   };
 
   // Enrich a business
-  const handleEnrichBusiness = async (placeId: string): Promise<boolean> => {
+  const handleEnrichBusiness = async (placeId: string, businessName?: string): Promise<boolean> => {
     try {
       setRefreshing(true);
       const response = await fetch(`/api/business/enrich/${placeId}`, {
@@ -294,8 +313,34 @@ const PlacesPage: React.FC = () => {
       });
 
       if (response.ok) {
+        const data = await response.json();
+        console.log('[Enrichment] Response:', data);
+        
         // Refresh the places list to show updated data
         await handleRefresh();
+        
+        // Check if there are fuzzy matches that need user confirmation
+        if (data.fuzzyMatches && data.fuzzyMatches.length > 0) {
+          console.log('[Enrichment] Found fuzzy matches:', data.fuzzyMatches);
+          setCloneModal({
+            isOpen: true,
+            sourceName: businessName || data.business.name,
+            sourcePlaceId: placeId,
+            fuzzyMatches: data.fuzzyMatches,
+            selectedMatches: [] // Start with none selected
+          });
+        }
+        
+        // Show success message with auto-clone info
+        if (data.clonedBusinesses && data.clonedBusinesses.length > 0) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Success',
+            message: `Business enriched successfully! Auto-cloned enrichment to ${data.clonedBusinesses.length} similar business(es): ${data.clonedBusinesses.map((b: { name: string }) => b.name).join(', ')}`,
+            type: 'success'
+          });
+        }
+        
         return true;
       } else {
         setAlertModal({
@@ -320,6 +365,73 @@ const PlacesPage: React.FC = () => {
     }
   };
 
+  // Handle manual cloning for fuzzy matches
+  const handleCloneEnrichment = async () => {
+    if (cloneModal.selectedMatches.length === 0) {
+      setAlertModal({
+        isOpen: true,
+        title: 'No Selection',
+        message: 'Please select at least one business to clone enrichment to.',
+        type: 'error'
+      });
+      return;
+    }
+
+    try {
+      setRefreshing(true);
+      const response = await fetch('/api/business/clone-enrichment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourcePlaceId: cloneModal.sourcePlaceId,
+          targetPlaceIds: cloneModal.selectedMatches
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[Clone] Response:', data);
+        
+        // Close the clone modal
+        setCloneModal({
+          isOpen: false,
+          sourceName: '',
+          sourcePlaceId: '',
+          fuzzyMatches: [],
+          selectedMatches: []
+        });
+        
+        // Refresh the places list
+        await handleRefresh();
+        
+        // Show success message
+        setAlertModal({
+          isOpen: true,
+          title: 'Success',
+          message: `Successfully cloned enrichment to ${data.clonedBusinesses.length} business(es)!`,
+          type: 'success'
+        });
+      } else {
+        setAlertModal({
+          isOpen: true,
+          title: 'Error',
+          message: 'Failed to clone enrichment. Please try again.',
+          type: 'error'
+        });
+      }
+    } catch (error) {
+      console.error('Error cloning enrichment:', error);
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Failed to clone enrichment. Please try again.',
+        type: 'error'
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   // Enrich places data with confirmation
   const enrichPlacesData = async (place: Place) => {
     // Check if business was already enriched
@@ -333,7 +445,7 @@ const PlacesPage: React.FC = () => {
         onConfirm: async () => {
           setRefreshing(true);
           try {
-            const success = await handleEnrichBusiness(place.placeId);
+            const success = await handleEnrichBusiness(place.placeId, place.name);
             if (success) {
               setAlertModal({
                 isOpen: true,
@@ -358,7 +470,7 @@ const PlacesPage: React.FC = () => {
       // No existing enrichment, enrich directly
       setRefreshing(true);
       try {
-        const success = await handleEnrichBusiness(place.placeId);
+        const success = await handleEnrichBusiness(place.placeId, place.name);
         if (success) {
           setAlertModal({
             isOpen: true,
@@ -410,7 +522,7 @@ const PlacesPage: React.FC = () => {
             businessName: place.name
           });
 
-          const enriched = await handleEnrichBusiness(place.placeId);
+          const enriched = await handleEnrichBusiness(place.placeId, place.name);
           if (enriched) {
             // Update to calculating stage
             setProgressModal(prev => ({
@@ -1569,6 +1681,83 @@ const PlacesPage: React.FC = () => {
               </button>
             </>
           )}
+        </div>
+      </div>
+    )}
+
+    {/* Clone Enrichment Confirmation Modal */}
+    {cloneModal.isOpen && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+          <div className="flex items-center justify-between p-6 border-b border-gray-200">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Clone Enrichment Data
+            </h2>
+            <button
+              onClick={() => setCloneModal({ ...cloneModal, isOpen: false })}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+          
+          <div className="p-6">
+            <p className="text-sm text-gray-600 mb-4">
+              Found similar businesses that might be part of the same brand as <span className="font-semibold">{cloneModal.sourceName}</span>. Select which businesses should have the enrichment data cloned to them:
+            </p>
+            
+            <div className="space-y-3 mb-6">
+              {cloneModal.fuzzyMatches.map((match) => (
+                <div key={match.placeId} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                  <label className="flex items-start cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cloneModal.selectedMatches.includes(match.placeId)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setCloneModal({
+                            ...cloneModal,
+                            selectedMatches: [...cloneModal.selectedMatches, match.placeId]
+                          });
+                        } else {
+                          setCloneModal({
+                            ...cloneModal,
+                            selectedMatches: cloneModal.selectedMatches.filter(id => id !== match.placeId)
+                          });
+                        }
+                      }}
+                      className="mt-1 mr-3 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium text-gray-900">{match.name}</span>
+                        <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs font-medium rounded">
+                          {match.similarity}% match
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-600">{match.address}</p>
+                    </div>
+                  </label>
+                </div>
+              ))}
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setCloneModal({ ...cloneModal, isOpen: false })}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCloneEnrichment}
+                disabled={cloneModal.selectedMatches.length === 0}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                Clone to {cloneModal.selectedMatches.length} business{cloneModal.selectedMatches.length !== 1 ? 'es' : ''}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     )}

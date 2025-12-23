@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import ApiCallLog from './models/ApiCallLog.js';
+import { compareTwoStrings } from 'string-similarity';
 
 let puppeteer, puppeteerExtra, StealthPlugin, robotsParser;
 
@@ -1353,4 +1354,92 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   const locations = Array.from(locationSet);
   console.log(`[PlaceDetails] Found ${locations.length} locations:`, locations);
   return { numLocations: locations.length, locationNames: locations, hasLocationsPage, usedPuppeteer };
-}; 
+};
+
+// Helper function to find similar business names
+export function findSimilarBusinesses(enrichedBusiness, allBusinesses, options = {}) {
+  const {
+    minSimilarity = 0.8,
+    sameCountryOnly = true
+  } = options;
+
+  const enrichedName = enrichedBusiness.name.toLowerCase().trim();
+  const exactMatches = [];
+  const fuzzyMatches = [];
+
+  allBusinesses.forEach(business => {
+    // Skip the enriched business itself
+    if (business.placeId === enrichedBusiness.placeId) {
+      return;
+    }
+
+    // Skip already enriched businesses
+    if (business.enrichedAt) {
+      return;
+    }
+
+    // Filter by country if enabled
+    if (sameCountryOnly && business.country !== enrichedBusiness.country) {
+      return;
+    }
+
+    const businessName = business.name.toLowerCase().trim();
+
+    // Check for exact prefix match
+    if (businessName.startsWith(enrichedName) || enrichedName.startsWith(businessName)) {
+      exactMatches.push({
+        business,
+        matchType: 'exact_prefix',
+        similarity: 1.0
+      });
+      return;
+    }
+
+    // Check for fuzzy match
+    const similarity = compareTwoStrings(enrichedName, businessName);
+    if (similarity >= minSimilarity) {
+      fuzzyMatches.push({
+        business,
+        matchType: 'fuzzy',
+        similarity
+      });
+    }
+  });
+
+  return { exactMatches, fuzzyMatches };
+}
+
+// Helper function to clone enrichment data from one business to another
+export function cloneEnrichmentData(sourceBusiness, targetBusiness) {
+  const clonedData = {
+    emails: sourceBusiness.emails || [],
+    decisionMakers: sourceBusiness.decisionMakers || [],
+    website: sourceBusiness.website,
+    phone: sourceBusiness.phone || sourceBusiness.formatted_phone_number,
+    category: sourceBusiness.category,
+    primaryType: sourceBusiness.primaryType,
+    enrichedAt: new Date(),
+    websiteAnalysis: sourceBusiness.websiteAnalysis ? {
+      hasSEO: sourceBusiness.websiteAnalysis.hasSEO,
+      hasWhatsApp: sourceBusiness.websiteAnalysis.hasWhatsApp,
+      hasReservation: sourceBusiness.websiteAnalysis.hasReservation,
+      hasDirectOrdering: sourceBusiness.websiteAnalysis.hasDirectOrdering,
+      hasThirdPartyDelivery: sourceBusiness.websiteAnalysis.hasThirdPartyDelivery,
+      analyzedAt: new Date()
+    } : null,
+    // Note: We do NOT clone numLocations or locationNames as those are location-specific
+    clonedFrom: sourceBusiness.placeId,
+    clonedAt: new Date()
+  };
+
+  console.log(`[Enrichment Clone] Cloning from ${sourceBusiness.name} to ${targetBusiness.name}`);
+  console.log(`[Enrichment Clone] Data to clone:`, {
+    emails: clonedData.emails.length,
+    decisionMakers: clonedData.decisionMakers.length,
+    website: clonedData.website,
+    category: clonedData.category,
+    hasWebsiteAnalysis: !!clonedData.websiteAnalysis
+  });
+
+  return clonedData;
+} 
