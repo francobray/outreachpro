@@ -181,6 +181,8 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const startWidth = useRef(0);
   const pendingUpdates = useRef<{[key: string]: Business}>({});
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
+  const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
+  const [selectedLocationsBusiness, setSelectedLocationsBusiness] = useState<Business | null>(null);
 
   const sortedBusinesses = getSortedBusinesses(businesses, sortBy, sortOrder, contactInfo);
 
@@ -520,6 +522,17 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   // Add a function to toggle tooltip visibility
   const toggleTooltip = (placeId: string | null) => {
     setActiveTooltip(activeTooltip === placeId ? null : placeId);
+  };
+
+  // Functions to open/close locations modal
+  const openLocationsModal = (business: Business) => {
+    setSelectedLocationsBusiness(business);
+    setIsLocationsModalOpen(true);
+  };
+
+  const closeLocationsModal = () => {
+    setIsLocationsModalOpen(false);
+    setSelectedLocationsBusiness(null);
   };
 
   // Helper method to get the best website URL for a business
@@ -1371,29 +1384,12 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       {typeof contactInfo[business.placeId]?.numLocations === 'number' ? (
                         <div className="relative">
                           {hasMultipleLocations(business.placeId) ? (
-                            <div className="relative inline-block">
-                              <button 
-                                className="flex items-center justify-center space-x-1 text-blue-600 hover:text-blue-800 hover:underline" 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleTooltip(business.placeId);
-                                }}
-                              >
-                                <span>{contactInfo[business.placeId]?.numLocations}</span>
-                                <LocationIcon className="h-3 w-3" />
-                              </button>
-                              
-                              {activeTooltip === business.placeId && getLocationNames(business.placeId).length > 0 && (
-                                <div className="absolute left-0 z-50 mt-2 bg-white rounded-md shadow-lg py-2 px-3 text-left border border-gray-200 w-48 sm:w-64 whitespace-normal">
-                                  <div className="text-sm font-medium text-gray-800 mb-1">Locations:</div>
-                                  <ul className="list-disc list-inside text-xs space-y-1 text-gray-700 max-h-40 overflow-y-auto">
-                                    {getLocationNames(business.placeId).map((location, idx) => (
-                                      <li key={idx} className="truncate" title={location}>{location}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-                            </div>
+                            <button
+                              onClick={() => openLocationsModal(business)}
+                              className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs hover:bg-blue-200 cursor-pointer transition-colors"
+                            >
+                              {contactInfo[business.placeId]?.numLocations} locations
+                            </button>
                           ) : (
                             contactInfo[business.placeId]?.numLocations
                           )}
@@ -1837,10 +1833,16 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                       
                       // Get ideal range for numLocations
                       const getIdealRange = (key: string, data: any) => {
-                        if (key === 'numLocations' && data.minIdeal !== undefined && data.maxIdeal !== undefined) {
+                        if (key === 'numLocations' && data.minIdeal !== undefined) {
+                          // If no maxIdeal or it's null, show "more than X"
+                          if (data.maxIdeal === null || data.maxIdeal === undefined) {
+                            return `Ideal: more than ${data.minIdeal} location${data.minIdeal === 1 ? '' : 's'}`;
+                          }
+                          // If minIdeal equals maxIdeal, show exact number
                           if (data.minIdeal === data.maxIdeal) {
                             return `Ideal: ${data.minIdeal} location${data.minIdeal === 1 ? '' : 's'}`;
                           }
+                          // Otherwise show range
                           return `Ideal: ${data.minIdeal}-${data.maxIdeal} locations`;
                         }
                         return null;
@@ -1916,6 +1918,51 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Locations Modal */}
+      {isLocationsModalOpen && selectedLocationsBusiness && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-900">
+                Brand Locations - {selectedLocationsBusiness.name}
+              </h2>
+              <button
+                onClick={closeLocationsModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6">
+              {contactInfo[selectedLocationsBusiness.placeId]?.locationNames && contactInfo[selectedLocationsBusiness.placeId].locationNames!.length > 0 ? (
+                <div className="space-y-4">
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600">
+                      This business has <span className="font-medium">{contactInfo[selectedLocationsBusiness.placeId]?.numLocations}</span> location(s):
+                    </p>
+                  </div>
+                  {contactInfo[selectedLocationsBusiness.placeId].locationNames!.map((location: string, index: number) => (
+                    <div key={index} className="border border-gray-200 rounded-lg p-4">
+                      <div className="flex items-center">
+                        <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs mr-3">
+                          {index + 1}
+                        </span>
+                        <span className="text-sm font-medium text-gray-900">{location}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-gray-500">No location details available for this business.</p>
+                </div>
+              )}
             </div>
           </div>
         </div>

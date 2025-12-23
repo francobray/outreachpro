@@ -196,6 +196,16 @@ export async function fetchHtmlWithPuppeteer(url) {
   try {
     const page = await browser.newPage();
     
+    // Enable request interception to handle blocked resources gracefully
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      // Allow all requests to continue, even if they might be blocked
+      // This prevents ERR_BLOCKED_BY_CLIENT from stopping page navigation
+      request.continue().catch(() => {
+        // Silently ignore if request was already handled
+      });
+    });
+    
     // Set a realistic viewport with slight randomization
     const width = 1920 + Math.floor(Math.random() * 100);
     const height = 1080 + Math.floor(Math.random() * 50);
@@ -257,27 +267,55 @@ export async function fetchHtmlWithPuppeteer(url) {
     // Add random delay before navigation to simulate human behavior
     await new Promise(r => setTimeout(r, Math.floor(Math.random() * 2000) + 500));
     
-    // Navigate with timeout and wait until network is idle
+    // Navigate with timeout and wait until DOM is loaded
     console.log(`[Puppeteer] Navigating to ${url}`);
-    await page.goto(url, {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
+    try {
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded', // More forgiving than networkidle2
+        timeout: 30000
+      });
+    } catch (navError) {
+      // If navigation fails due to blocked resources, that's okay - the page might have loaded anyway
+      if (navError.message.includes('ERR_BLOCKED_BY_CLIENT')) {
+        console.log(`[Puppeteer] Some resources were blocked, but proceeding to extract content...`);
+        // Don't throw - the page might have loaded enough content for us to scrape
+        // We'll check if we got valid HTML below
+      } else if (navError.message.includes('Timeout') || navError.message.includes('timeout')) {
+        console.log(`[Puppeteer] Navigation timeout, but page may have loaded. Proceeding...`);
+        // Also don't throw on timeout - page might have partial content
+      } else {
+        throw navError;
+      }
+    }
     
     // Wait a bit to ensure all content is loaded with random timing
     await new Promise(r => setTimeout(r, Math.floor(Math.random() * 2000) + 1000));
     
     // Perform random mouse movements to simulate human behavior
-    await simulateHumanBehavior(page);
+    try {
+      await simulateHumanBehavior(page);
+    } catch (behaviorError) {
+      console.log(`[Puppeteer] Behavior simulation skipped: ${behaviorError.message}`);
+    }
     
     // Scroll down to trigger any lazy-loaded content
-    await autoScroll(page);
+    try {
+      await autoScroll(page);
+    } catch (scrollError) {
+      console.log(`[Puppeteer] Auto-scroll skipped: ${scrollError.message}`);
+    }
     
     // Wait for potential dynamic content
     await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1500) + 500));
     
     // Get the page content
     const html = await page.content();
+    
+    // Validate we got some content
+    if (!html || html.length < 100) {
+      throw new Error(`Page loaded but got insufficient content: ${html.length} bytes`);
+    }
+    
     console.log(`[Puppeteer] Successfully fetched HTML: ${html.length} bytes`);
     
     return html;
@@ -845,23 +883,24 @@ export const analyzeWebsiteForICP = (html, website) => {
   const directOrderingKeywords = [
     // English
     'order online', 'order now', 'online ordering', 'place order', 'order pickup',
-    'order delivery', 'add to cart', 'checkout', 'buy now', 'shop now',
+    'order delivery', 'add to cart', 'checkout', 'buy now', 'shop now', 'delivery',
     // Spanish
     'pedir online', 'pedir ahora', 'hacer pedido', 'ordenar', 'pedido online',
     'añadir al carrito', 'agregar al carrito', 'comprar ahora', 'pedir delivery',
-    'pedir domicilio', 'takeaway', 'take away', 'para llevar',
+    'pedir domicilio', 'takeaway', 'take away', 'para llevar', 'delivery', 'envíos',
+    'envios', 'pedí', 'pedi', 'comprá', 'compra',
     // Italian
     'ordina online', 'ordina ora', 'fare ordine', 'aggiungi al carrello',
-    'acquista ora', 'asporto',
+    'acquista ora', 'asporto', 'consegna',
     // Portuguese
-    'pedir online', 'fazer pedido', 'adicionar ao carrinho', 'comprar agora',
+    'pedir online', 'fazer pedido', 'adicionar ao carrinho', 'comprar agora', 'entrega',
     // General
     'menu', 'carta', 'menú'
   ];
   // Look for ordering keywords combined with form elements or buttons
   const hasOrderingKeywords = directOrderingKeywords.some(kw => htmlLower.includes(kw));
   const buttonText = $('button, a').text().toLowerCase();
-  const hasOrderingUI = /(order|menu|cart|checkout|pedir|pedido|ordenar|carrito|ordina|compra)/i.test(buttonText);
+  const hasOrderingUI = /(order|menu|cart|checkout|pedir|pedido|ordenar|carrito|ordina|compra|delivery|envío|envio|takeaway)/i.test(buttonText);
   const hasMenuItems = $('.menu-item, .product, .dish, .carta, .plato').length > 0 || 
                        htmlLower.includes('add to cart') || 
                        htmlLower.includes('añadir al carrito') ||
@@ -885,10 +924,10 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   // Try to find a 'locations' page link or section (multilingual: English, Spanish, Italian, Portuguese)
   const locationPageKeywords = [
     // English
-    'location', 'locations', 'contact', 'store', 'stores', 'find-us', 'branches', 
-    'contact-us', 'retail-store-locations', 'our-locations', 'find-a-store',
+    'location', 'locations', 'contact', 'store', 'stores', 'shop', 'shops', 'find-us', 'branches', 
+    'contact-us', 'retail-store-locations', 'our-locations', 'find-a-store', 'our-shops',
     // Spanish
-    'ubicacion', 'ubicaciones', 'sucursal', 'sucursales', 'locales', 'local',
+    'ubicacion', 'ubicaciones', 'sucursal', 'sucursales', 'locales', 'local', 'tiendas', 'tienda',
     'nuestras-ubicaciones', 'nuestros-locales', 'donde-estamos', 'encuentranos', 
     'puntos-de-venta', 'nuestras-sucursales',
     // Italian
@@ -898,39 +937,121 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   ];
   let locationsPageUrl = null;
 
-  // First, check for location buttons on the same page (common in single-page apps)
-  const locationButtons = $('[data-location-id], [data-location], .location-item, .location-card, [class*="location-"]');
-  if (locationButtons.length > 2) { // If we have 3+ location elements, it's likely a multi-location business
-    console.log(`[PlaceDetails] Found ${locationButtons.length} location elements on the homepage`);
-    
-    locationButtons.each((i, el) => {
-      const locationName = $(el).attr('data-location-id') || 
-                          $(el).attr('data-location') || 
-                          $(el).find('h2, h3, h4, .location-name, [class*="name"]').first().text().trim() ||
-                          $(el).text().trim();
+  // First, check for location cards/sections on the homepage
+  // Look for common patterns: cards, location items, address blocks, etc.
+  const locationSelectors = [
+    '[data-location-id]', '[data-location]', 
+    '.location-item', '.location-card', '.location', '.address-block',
+    '.card', '.sucursal', '.sede', '.local', '.branch', '.store',
+    '[class*="location"]', '[class*="sucursal"]', '[class*="address"]', '[class*="card"]'
+  ];
+  
+  const locationElements = $(locationSelectors.join(', '));
+  console.log(`[PlaceDetails] Found ${locationElements.length} potential location elements on homepage`);
+  
+  if (locationElements.length >= 3) { // If we have 3+ location elements
+    locationElements.each((i, el) => {
+      // Try to extract location info from the card/element
+      const $el = $(el);
+      const elementText = $el.text().trim();
       
-      if (locationName && locationName.length > 2 && locationName.length < 100) {
-        locationSet.add(locationName);
+      // Split by lines and look for address-like content
+      const lines = elementText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+      
+      lines.forEach(line => {
+        const hasNumber = /\d+/.test(line);
+        const hasCommaOrDelimiter = /[,|]/.test(line);
+        const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|mitre|callao|santa fe|corrientes)/i;
+        
+        // If it looks like an address or location name
+        if ((hasNumber && (hasCommaOrDelimiter || addressKeywords.test(line)))) {
+          if (line.length > 10 && line.length < 150) {
+            locationSet.add(line);
+          }
+        }
+      });
+      
+      // Also check for data attributes
+      const locationId = $el.attr('data-location-id') || $el.attr('data-location');
+      if (locationId && locationId.length > 2 && locationId.length < 100) {
+        locationSet.add(locationId);
       }
     });
     
-    if (locationSet.size > 0) {
+    if (locationSet.size >= 3) { // Confirmed multi-location
       console.log(`[PlaceDetails] Detected ${locationSet.size} locations from homepage elements`);
       return { numLocations: locationSet.size, locationNames: Array.from(locationSet), usedPuppeteer };
     }
   }
 
   // If no location elements found, try to find a 'locations' page link
+  // But exclude external social media and other domains
+  const excludedDomains = ['facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com', 'youtube.com', 'tiktok.com', 'whatsapp.com'];
+  
   $('a').each((i, el) => {
     const href = $(el).attr('href');
     if (href) {
       const lowerHref = href.toLowerCase();
+      
+      // Skip external social media links
+      if (excludedDomains.some(domain => lowerHref.includes(domain))) {
+        return true; // Continue to next link
+      }
+      
+      // Only consider internal links or relative paths
+      if (lowerHref.startsWith('http') && !lowerHref.includes(new URL(baseUrl).hostname)) {
+        return true; // Skip external links
+      }
+      
       if (locationPageKeywords.some(keyword => lowerHref.includes(keyword))) {
         locationsPageUrl = href;
         return false; // Stop searching once a likely candidate is found
       }
     }
   });
+
+  // If no locations page link found, try common URL patterns directly
+  if (!locationsPageUrl) {
+    console.log(`[PlaceDetails] No locations page link found. Trying common URL patterns...`);
+    const commonPaths = [
+      '/locales', '/locations', '/shops', '/sucursales', '/tiendas',
+      '/donde-estamos', '/our-locations', '/our-shops', '/store-locator',
+      '/find-us', '/puntos-de-venta'
+    ];
+    
+    for (const path of commonPaths) {
+      try {
+        const testUrl = new URL(path, baseUrl).href;
+        console.log(`[PlaceDetails] Trying: ${testUrl}`);
+        
+        // Try to fetch the page
+        const { html: testHtml, usedPuppeteer: testUsedPuppeteer } = await fetchHtmlWithFallback(testUrl, { noPuppeteer, debugMode });
+        
+        if (testUsedPuppeteer) {
+          usedPuppeteer = true;
+        }
+        
+        // Check if the page exists and has content (not a 404 page)
+        const $test = cheerio.load(testHtml);
+        const bodyText = $test('body').text().toLowerCase();
+        
+        // Simple heuristic: if page has location-related words and addresses, it's probably a locations page
+        const hasLocationContent = (bodyText.includes('location') || bodyText.includes('sucursal') || 
+                                   bodyText.includes('tienda') || bodyText.includes('local')) &&
+                                  (bodyText.length > 500); // Must have substantial content
+        
+        if (hasLocationContent) {
+          console.log(`[PlaceDetails] ✅ Found locations page at: ${testUrl}`);
+          locationsPageUrl = testUrl;
+          hasLocationsPage = true;
+          break; // Stop trying other patterns
+        }
+      } catch (error) {
+        // Ignore errors and try next pattern
+        console.log(`[PlaceDetails] Pattern ${path} failed, trying next...`);
+      }
+    }
+  }
 
   if (locationsPageUrl) {
     try {
@@ -944,28 +1065,185 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
       }
       
       const $$ = cheerio.load(locationsPageHtml);
-      // This regex is more flexible and handles formats with or without commas, and with pipes.
-      const addressRegex = /\d+[\w\s.'#()-]+(?:\s*[,|]\s*|\s+)\s*[\w\s.'-]+,?\s*[A-Z]{2}\s+\d{5}/g;
- 
-      // Strategy 1: Look for common layout patterns like Elementor columns
-      $$('.elementor-column, .elementor-widget-wrap, .location, .address-block').each((i, el) => {
-        const elementHtml = $$(el).html();
-        // Sanitize text by replacing <br> and other tags with spaces
-        const elementText = elementHtml.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-        const matches = elementText.match(addressRegex);
-        if (matches) {
-          matches.forEach(match => locationSet.add(match));
-        }
+      
+      // Strategy 1: Look for location/address cards and sections
+      // Common patterns: card, location, address, sucursal (Spanish for branch), sede, local
+      const locationSelectors = [
+        '.card', '.location', '.location-card', '.location-item', '.address', '.address-block',
+        '.sucursal', '.sede', '.local', '.branch', '.store', '.store-location',
+        '[class*="location"]', '[class*="sucursal"]', '[class*="address"]', '[class*="store"]',
+        '.elementor-column', '.elementor-widget-wrap'
+      ];
+      
+      $$(locationSelectors.join(', ')).each((i, el) => {
+        // Get all text content from this element
+        const elementText = $$(el).text().trim();
+        
+        // Look for patterns that suggest this is a location:
+        // - Contains a number followed by text (street address)
+        // - Contains city/neighborhood names
+        // - Has comma-separated components
+        
+        // International address pattern (more flexible):
+        // Examples:
+        // - "Av. Callao 1402, C1024AAN CABA, Argentina"
+        // - "Mitre 202, Bariloche, Río Negro"
+        // - "123 Main St, New York, NY 10001"
+        const lines = elementText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+        
+        // Look for lines that look like addresses (contain numbers and commas, or typical address keywords)
+        lines.forEach(line => {
+          // Check if line contains address-like patterns
+          const hasNumber = /\d+/.test(line);
+          const hasCommaOrDelimiter = /[,|]/.test(line);
+          const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|camino|paseo|boulevard|blvd)/i;
+          
+          // If it looks like an address or location name, add it
+          if ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line)) {
+            if (line.length > 10 && line.length < 150) { // Reasonable length
+              locationSet.add(line);
+            }
+          }
+        });
       });
  
-      // Strategy 2: If the structured search fails, fall back to searching the whole body
-      if (locationSet.size === 0) {
-        console.log(`[PlaceDetails] Structured search failed. Falling back to full-page text search.`);
-        const bodyHtml = $$('body').html();
-        const bodyText = bodyHtml.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-        const matches = bodyText.match(addressRegex);
-        if (matches) {
-          matches.forEach(match => locationSet.add(match));
+      // Strategy 2: If structured search found locations, use them
+      if (locationSet.size > 0) {
+        console.log(`[PlaceDetails] Found ${locationSet.size} locations from structured search`);
+      } else {
+        // Strategy 3: Fall back to regex patterns on full page
+        console.log(`[PlaceDetails] Structured search failed. Trying regex patterns on full page.`);
+        const bodyText = $$('body').text();
+        
+        // More flexible international address patterns
+        const addressPatterns = [
+          // Argentine/Latin American style: "Street Name Number, City, Province"
+          /(?:Av\.|Avenida|Calle|C\.|Ruta|Paseo|Boulevard)[\s\w.]+\d+[\s\w.,#()-]{5,80}/gi,
+          // US style: "123 Street Name, City, ST 12345"
+          /\d+\s+[\w\s.]+(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Drive|Dr\.|Boulevard|Blvd\.)[,\s]+[\w\s]+,\s*[A-Z]{2}\s+\d{5}/gi,
+          // General: Number + street name + comma + location
+          /\d+\s+[A-Za-zÀ-ÿ\s.'-]+[,]\s*[A-Za-zÀ-ÿ\s,'-]+/g
+        ];
+        
+        addressPatterns.forEach(pattern => {
+          const matches = bodyText.match(pattern);
+          if (matches) {
+            matches.forEach(match => {
+              const cleaned = match.trim();
+              if (cleaned.length > 10 && cleaned.length < 150) {
+                locationSet.add(cleaned);
+              }
+            });
+          }
+        });
+      }
+      
+      // Strategy 4: If still no locations and we haven't used Puppeteer yet, try with JavaScript rendering
+      if (locationSet.size === 0 && !noPuppeteer && !locationsPageUsedPuppeteer) {
+        console.log(`[PlaceDetails] No locations found with regular fetch. Trying with Puppeteer to render JavaScript...`);
+        try {
+          // Directly use Puppeteer to render JavaScript content
+          const { html: puppeteerHtml, usedPuppeteer: didUsePuppeteer } = await fallbackToPuppeteer(absoluteLocationsUrl, debugMode, false);
+          
+          usedPuppeteer = true;
+          console.log(`[PlaceDetails] Puppeteer rendered the page, re-analyzing...`);
+          
+          const $$$ = cheerio.load(puppeteerHtml);
+          
+          // Try structured search again on Puppeteer-rendered content
+          $$$(locationSelectors.join(', ')).each((i, el) => {
+            const elementText = $$$(el).text().trim();
+            const lines = elementText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+            
+            lines.forEach(line => {
+              const hasNumber = /\d+/.test(line);
+              const hasCommaOrDelimiter = /[,|]/.test(line);
+              const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|camino|paseo|boulevard|blvd)/i;
+              
+              if ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line)) {
+                if (line.length > 10 && line.length < 150) {
+                  locationSet.add(line);
+                }
+              }
+            });
+          });
+          
+          // If structured search still found nothing, try aggressive regex on full HTML
+          if (locationSet.size === 0) {
+            console.log(`[PlaceDetails] Structured search on Puppeteer HTML failed. Trying regex patterns on full page...`);
+            
+            // First, try to extract data from script tags containing JSON
+            $$$('script').each((i, el) => {
+              const scriptContent = $$$(el).html();
+              if (scriptContent && (scriptContent.includes('location') || scriptContent.includes('address') || scriptContent.includes('sucursal'))) {
+                // Try to find address-like strings in JSON data
+                const jsonAddressPattern = /["'](?:address|direccion|ubicacion|location)["']:\s*["']([^"']+)["']/gi;
+                let match;
+                while ((match = jsonAddressPattern.exec(scriptContent)) !== null) {
+                  const address = match[1].trim();
+                  if (address.length > 10 && address.length < 150) {
+                    locationSet.add(address);
+                  }
+                }
+              }
+            });
+            
+            if (locationSet.size > 0) {
+              console.log(`[PlaceDetails] Found ${locationSet.size} locations in script tags`);
+            } else {
+              // If no JSON data, try aggressive regex on full HTML text
+              const bodyText = puppeteerHtml;
+              
+              // More aggressive regex patterns for addresses
+              const addressPatterns = [
+                /(?:Av\.|Avenida|Calle|Street|St\.|Route|Ruta|Camino|Paseo|Boulevard|Blvd\.?)\s+[A-Za-zÀ-ÿ\s]+\d+(?:,\s*[A-Za-zÀ-ÿ\s]+)?/gi,
+                /\b\d{1,5}\s+[A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,4}\s+(?:Street|St|Avenue|Ave|Av|Road|Rd|Boulevard|Blvd|Calle|Avenida)\b/gi,
+                /(?:Av\.|Avenue|Avenida)\s+[^\n,]{3,50}\s+\d{2,5}/gi,
+                /\b[A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)*\s+\d{2,5}(?:,\s*[A-Za-zÀ-ÿ\s]+)?/g
+              ];
+              
+              addressPatterns.forEach(pattern => {
+                const matches = bodyText.match(pattern);
+                if (matches) {
+                  matches.forEach(match => {
+                    const cleaned = match.trim();
+                    // More lenient for Puppeteer results - accept shorter matches
+                    if (cleaned.length > 8 && cleaned.length < 150) {
+                      locationSet.add(cleaned);
+                    }
+                  });
+                }
+              });
+              
+              console.log(`[PlaceDetails] After regex on Puppeteer HTML: found ${locationSet.size} locations`);
+            }
+          }
+          
+          // Last resort: Extract all visible text and look for addresses
+          if (locationSet.size === 0) {
+            console.log(`[PlaceDetails] Still no locations. Extracting all visible text...`);
+            const allText = $$$('body').text();
+            const lines = allText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            
+            lines.forEach(line => {
+              // Look for lines that look like addresses
+              const hasNumber = /\d+/.test(line);
+              const hasAddressKeyword = /(av\.|avenue|avenida|calle|street|st\.|ruta|route|camino|paseo|boulevard|blvd|road|rd)/i.test(line);
+              const hasCommaOrCoordinates = /[,|]/.test(line);
+              
+              if (hasNumber && (hasAddressKeyword || hasCommaOrCoordinates)) {
+                if (line.length > 8 && line.length < 150 && !line.includes('http') && !line.includes('www')) {
+                  locationSet.add(line);
+                }
+              }
+            });
+            
+            console.log(`[PlaceDetails] After all visible text extraction: found ${locationSet.size} locations`);
+          }
+          
+          console.log(`[PlaceDetails] After Puppeteer: found ${locationSet.size} locations`);
+        } catch (puppeteerError) {
+          console.log(`[PlaceDetails] Puppeteer failed: ${puppeteerError.message}`);
         }
       }
     } catch (error) {
@@ -973,11 +1251,51 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
     }
   } else {
     console.log(`[PlaceDetails] No locations page link found. Analyzing homepage for location details.`);
-    const addressRegex = /\d+\s+[a-zA-Z0-9\s]+,\s+[a-zA-Z\s]+,\s*[A-Z]{2}\s+\d{5}/g;
-    const bodyText = $('body').text();
-    const matches = bodyText.match(addressRegex);
-    if (matches) {
-      matches.forEach(match => locationSet.add(match));
+    
+    // Try to find location sections on the homepage itself
+    const locationSelectors = [
+      '.card', '.location', '.location-card', '.location-item', '.address', '.address-block',
+      '.sucursal', '.sede', '.local', '.branch', '.store', '.store-location',
+      '[class*="location"]', '[class*="sucursal"]', '[class*="address"]', '[class*="store"]'
+    ];
+    
+    $(locationSelectors.join(', ')).each((i, el) => {
+      const elementText = $(el).text().trim();
+      const lines = elementText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+      
+      lines.forEach(line => {
+        const hasNumber = /\d+/.test(line);
+        const hasCommaOrDelimiter = /[,|]/.test(line);
+        const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|camino|paseo|boulevard|blvd)/i;
+        
+        if ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line)) {
+          if (line.length > 10 && line.length < 150) {
+            locationSet.add(line);
+          }
+        }
+      });
+    });
+    
+    // If still no locations, try regex on full body text
+    if (locationSet.size === 0) {
+      const bodyText = $('body').text();
+      const addressPatterns = [
+        /(?:Av\.|Avenida|Calle|C\.|Ruta|Paseo|Boulevard)[\s\w.]+\d+[\s\w.,#()-]{5,80}/gi,
+        /\d+\s+[\w\s.]+(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Drive|Dr\.|Boulevard|Blvd\.)[,\s]+[\w\s]+,\s*[A-Z]{2}\s+\d{5}/gi,
+        /\d+\s+[A-Za-zÀ-ÿ\s.'-]+[,]\s*[A-Za-zÀ-ÿ\s,'-]+/g
+      ];
+      
+      addressPatterns.forEach(pattern => {
+        const matches = bodyText.match(pattern);
+        if (matches) {
+          matches.forEach(match => {
+            const cleaned = match.trim();
+            if (cleaned.length > 10 && cleaned.length < 150) {
+              locationSet.add(cleaned);
+            }
+          });
+        }
+      });
     }
   }
   

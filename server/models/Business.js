@@ -48,6 +48,10 @@ const businessSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  primaryType: {
+    type: String,
+    default: null
+  },
   rating: {
     type: Number,
     default: null

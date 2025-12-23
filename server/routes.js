@@ -907,13 +907,118 @@ router.post('/search', async (req, res) => {
     const { lat, lng } = geoData.results[0].geometry.location;
     console.log('[Search] Geocoded coordinates:', { lat, lng });
 
-    // Search for places - use fields parameter to get as much data as possible in one request
-    const placesUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=5000&keyword=${encodeURIComponent(keyword)}&key=${apiKey}`;
-    console.log('[Search] Places search request URL:', placesUrl.replace(apiKey, 'API_KEY_HIDDEN'));
+    // Try new Google Places API (v1) first for better category data (primaryType)
+    console.log('[Search] Trying new Places API (v1)...');
+    const newApiUrl = 'https://places.googleapis.com/v1/places:searchNearby';
+    const newApiHeaders = {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.types,places.primaryType,places.rating,places.userRatingCount'
+    };
     
-    const placesRes = await fetch(placesUrl);
-    const placesData = await placesRes.json();
-    console.log('[Search] Places search response status:', placesRes.status);
+    let placesData = null;
+    let usedNewAPI = false;
+    
+    try {
+      const newApiBody = {
+        includedTypes: ['restaurant', 'food', 'cafe', 'store', 'establishment'],
+        maxResultCount: 20,
+        locationRestriction: {
+          circle: {
+            center: {
+              latitude: lat,
+              longitude: lng
+            },
+            radius: 5000.0
+          }
+        }
+      };
+      
+      // If keyword is provided, use searchText instead
+      if (keyword) {
+        const searchTextUrl = 'https://places.googleapis.com/v1/places:searchText';
+        const searchTextBody = {
+          textQuery: keyword,
+          maxResultCount: 20,
+          locationBias: {
+            circle: {
+              center: {
+                latitude: lat,
+                longitude: lng
+              },
+              radius: 5000.0
+            }
+          }
+        };
+        
+        const searchTextRes = await fetch(searchTextUrl, {
+          method: 'POST',
+          headers: newApiHeaders,
+          body: JSON.stringify(searchTextBody)
+        });
+        
+        if (searchTextRes.ok) {
+          const searchTextData = await searchTextRes.json();
+          placesData = {
+            results: (searchTextData.places || []).map(place => ({
+              place_id: place.id?.replace('places/', ''),
+              name: place.displayName?.text || place.displayName,
+              formatted_address: place.formattedAddress,
+              website: place.websiteUri || null,
+              formatted_phone_number: place.nationalPhoneNumber || '',
+              types: place.types || [],
+              primaryType: place.primaryType,
+              rating: place.rating,
+              user_ratings_total: place.userRatingCount,
+              vicinity: place.formattedAddress
+            }))
+          };
+          usedNewAPI = true;
+          console.log('[Search] ✅ Using NEW Places API (searchText) with primaryType support');
+        }
+      } else {
+        // Use searchNearby when no keyword
+        const newApiRes = await fetch(newApiUrl, {
+          method: 'POST',
+          headers: newApiHeaders,
+          body: JSON.stringify(newApiBody)
+        });
+        
+        if (newApiRes.ok) {
+          const newApiData = await newApiRes.json();
+          placesData = {
+            results: (newApiData.places || []).map(place => ({
+              place_id: place.id?.replace('places/', ''),
+              name: place.displayName?.text || place.displayName,
+              formatted_address: place.formattedAddress,
+              website: place.websiteUri || null,
+              formatted_phone_number: place.nationalPhoneNumber || '',
+              types: place.types || [],
+              primaryType: place.primaryType,
+              rating: place.rating,
+              user_ratings_total: place.userRatingCount,
+              vicinity: place.formattedAddress
+            }))
+          };
+          usedNewAPI = true;
+          console.log('[Search] ✅ Using NEW Places API (searchNearby) with primaryType support');
+        }
+      }
+    } catch (newApiError) {
+      console.log('[Search] New API failed, falling back to legacy API:', newApiError.message);
+    }
+    
+    // Fallback to legacy API if new API failed
+    if (!placesData) {
+      console.log('[Search] Falling back to legacy API...');
+      const placesUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=5000&keyword=${encodeURIComponent(keyword || '')}&key=${apiKey}`;
+      console.log('[Search] Places search request URL:', placesUrl.replace(apiKey, 'API_KEY_HIDDEN'));
+      
+      const placesRes = await fetch(placesUrl);
+      placesData = await placesRes.json();
+      console.log('[Search] Places search response status:', placesRes.status);
+    }
+    
     console.log('[Search] Found places:', placesData.results?.length || 0);
     
     // Track Google Places Search API call in the database
@@ -922,9 +1027,10 @@ router.post('/search', async (req, res) => {
         api: 'google_places_search',
         timestamp: new Date(),
         details: {
-          endpoint: 'nearbysearch',
+          endpoint: usedNewAPI ? 'places:searchText' : 'nearbysearch',
           keyword: keyword,
-          location: location
+          location: location,
+          usedNewAPI: usedNewAPI
         }
       });
       console.log('[Tracking] Google Places Search API call tracked in database.');
@@ -935,20 +1041,33 @@ router.post('/search', async (req, res) => {
     // Map Google results to business format without additional API calls
     const businessesFound = (placesData.results || []).map(place => {
       const address = place.vicinity || place.formatted_address || '';
-      const extractedCategory = extractCategoryFromTypes(place.types);
-      console.log(`[Search] Business: ${place.name}, Types: [${place.types?.join(', ')}], Extracted Category: ${extractedCategory}`);
+      
+      // Prefer primaryType from new API, fallback to extractCategoryFromTypes
+      let extractedCategory = null;
+      if (place.primaryType) {
+        extractedCategory = place.primaryType
+          .split('_')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ');
+        console.log(`[Search] Business: ${place.name}, PrimaryType: ${place.primaryType}, Category: ${extractedCategory}`);
+      } else {
+        extractedCategory = extractCategoryFromTypes(place.types);
+        console.log(`[Search] Business: ${place.name}, Types: [${place.types?.join(', ')}], Extracted Category: ${extractedCategory}`);
+      }
+      
       const business = {
         id: place.place_id,
         name: place.name,
         address: address,
-        website: null, // Will be populated on demand with the place-details endpoint
+        website: place.website || null, // From new Places API or legacy API
         placeId: place.place_id,
-        phone: '', // Will be populated on demand with the place-details endpoint
+        phone: place.formatted_phone_number || '', // From new Places API or legacy API
         emails: [],
         auditReport: null,
         emailStatus: 'pending',
         addedAt: new Date().toISOString(),
         types: place.types || [],
+        primaryType: place.primaryType || null, // Store primaryType for future use
         category: extractedCategory,
         rating: place.rating || null,
         userRatingsTotal: place.user_ratings_total || null,

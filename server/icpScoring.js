@@ -524,8 +524,8 @@ export function getDefaultICPConfigs() {
           weight: 1
         },
         poorSEO: {
-          enabled: true,
-          weight: 1
+          enabled: false,
+          weight: 0
         },
         hasWhatsApp: {
           enabled: true,

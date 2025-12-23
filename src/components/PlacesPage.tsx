@@ -1400,10 +1400,16 @@ const PlacesPage: React.FC = () => {
                         
                         // Get ideal range for numLocations
                         const getIdealRange = (key: string, data: any) => {
-                          if (key === 'numLocations' && data.minIdeal !== undefined && data.maxIdeal !== undefined) {
+                          if (key === 'numLocations' && data.minIdeal !== undefined) {
+                            // If no maxIdeal or it's null, show "more than X"
+                            if (data.maxIdeal === null || data.maxIdeal === undefined) {
+                              return `Ideal: more than ${data.minIdeal} location${data.minIdeal === 1 ? '' : 's'}`;
+                            }
+                            // If minIdeal equals maxIdeal, show exact number
                             if (data.minIdeal === data.maxIdeal) {
                               return `Ideal: ${data.minIdeal} location${data.minIdeal === 1 ? '' : 's'}`;
                             }
+                            // Otherwise show range
                             return `Ideal: ${data.minIdeal}-${data.maxIdeal} locations`;
                           }
                           return null;
