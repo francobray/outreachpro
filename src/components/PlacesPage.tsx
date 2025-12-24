@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2, Trash2 } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2, Trash2, Star, FileText } from 'lucide-react';
 import AlertModal from './AlertModal';
 
 interface Place {
@@ -32,6 +32,8 @@ interface Place {
       lastCalculated: string;
     };
   };
+  graderScore?: number;
+  reportId?: string;
 }
 
 const PlacesPage: React.FC = () => {
@@ -130,6 +132,7 @@ const PlacesPage: React.FC = () => {
   // Selection state for bulk delete
   const [selectedPlaceIds, setSelectedPlaceIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  const [gradingPlaceId, setGradingPlaceId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchPlaces();
@@ -598,6 +601,69 @@ const PlacesPage: React.FC = () => {
       setRefreshing(true);
       await performICPCalculation(place.id);
       setRefreshing(false);
+    }
+  };
+
+  // Grader function to score the business
+  const gradeBusinessQuality = async (place: Place) => {
+    setGradingPlaceId(place.placeId);
+    
+    try {
+      // Call the server endpoint to grade the business
+      const response = await fetch('/api/grade-business', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ placeId: place.placeId })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to grade business: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      // The API returns score as a decimal between 0 and 1
+      const scoreAsPercentage = Math.round(data.score || 0);
+      
+      // Update the place in the list with the grader score
+      setPlaces(prevPlaces => prevPlaces.map(p => 
+        p.placeId === place.placeId 
+          ? { ...p, graderScore: scoreAsPercentage, reportId: data.reportId }
+          : p
+      ));
+      
+      setAlertModal({
+        isOpen: true,
+        title: 'Success',
+        message: `Business graded successfully! Score: ${scoreAsPercentage}%`,
+        type: 'success'
+      });
+      
+      return data;
+    } catch (error) {
+      console.error('Failed to grade business:', error);
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Failed to grade business. Please try again.',
+        type: 'error'
+      });
+    } finally {
+      setGradingPlaceId(null);
+    }
+  };
+
+  // Function to open/view the grader report
+  const viewGraderReport = async (reportId: string, businessName: string) => {
+    if (!reportId) return;
+    
+    try {
+      // Open the report in a new tab
+      window.open(`/api/grade-report/${reportId}`, '_blank');
+    } catch (error) {
+      console.error('Failed to view report:', error);
     }
   };
 
@@ -1207,7 +1273,6 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Website</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('rating')}>
                     <div className="flex items-center">
@@ -1233,6 +1298,7 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Grader</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
                   {/* <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
                     <div className="flex items-center">
@@ -1274,6 +1340,16 @@ const PlacesPage: React.FC = () => {
                         {place.name}
                       </a>
                       <div className="text-xs text-gray-500 line-clamp-2">{place.address}</div>
+                      {place.website && (
+                        <a
+                          href={place.website}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline block mt-1"
+                        >
+                          🌐 Website
+                        </a>
+                      )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex flex-col gap-1">
@@ -1326,20 +1402,6 @@ const PlacesPage: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
-                      {place.website ? (
-                        <a
-                          href={place.website}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
-                        >
-                          Website
-                        </a>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
                       <div className="text-xs text-gray-900">{place.phone || '-'}</div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
@@ -1373,6 +1435,30 @@ const PlacesPage: React.FC = () => {
                       <div className="text-xs text-gray-900">
                         {place.country || '-'}
                       </div>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      {place.graderScore !== undefined && place.graderScore !== null ? (
+                        <div className="flex flex-row items-center justify-center gap-2">
+                          <span className={`text-xs font-medium ${
+                            place.graderScore >= 70 ? 'text-green-600' : 
+                            place.graderScore >= 40 ? 'text-amber-600' : 
+                            'text-red-600'
+                          }`}>
+                            {place.graderScore}%
+                          </span>
+                          {place.reportId && (
+                            <button
+                              onClick={() => viewGraderReport(place.reportId!, place.name)}
+                              className="text-xs text-blue-600 hover:underline flex items-center"
+                              title="View Report"
+                            >
+                              <FileText className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">-</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <div className="text-xs text-gray-900">
@@ -1442,6 +1528,20 @@ const PlacesPage: React.FC = () => {
                           title="Calculate ICP Score"
                         >
                           <Calculator className="h-4 w-4" />
+                        </button>
+
+                        {/* Grader Button */}
+                        <button
+                          onClick={() => gradeBusinessQuality(place)}
+                          disabled={gradingPlaceId === place.placeId}
+                          className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Grade business quality"
+                        >
+                          {gradingPlaceId === place.placeId ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Star className="h-4 w-4" />
+                          )}
                         </button>
 
                         {/* Delete Button */}
@@ -1728,6 +1828,11 @@ const PlacesPage: React.FC = () => {
                   {icpBreakdownModal.breakdown && Object.keys(icpBreakdownModal.breakdown).length > 0 ? (
                     <div className="grid grid-cols-3 gap-3">
                       {Object.entries(icpBreakdownModal.breakdown).map(([key, value]: [string, any]) => {
+                        // Skip "No Website" for Independent breakdown
+                        if (key === 'noWebsite' && icpBreakdownModal.type === 'independent') {
+                          return null;
+                        }
+                        
                         // Convert technical names to human-readable labels
                         const factorLabels: { [key: string]: string } = {
                           numLocations: 'Number of Locations',

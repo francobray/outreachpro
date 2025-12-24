@@ -140,10 +140,6 @@ const ICPPage: React.FC = () => {
 
   const calculateTotalWeight = (config: ICPConfig) => {
     const total = Object.entries(config.factors).reduce((sum, [factorKey, f]: [string, any]) => {
-      // Skip poorSEO for independent (it's not applicable)
-      if (factorKey === 'poorSEO' && config.type === 'independent') {
-        return sum;
-      }
       const weight = f.enabled ? Number(f.weight) : 0;
       return sum + weight;
     }, 0);
@@ -152,7 +148,8 @@ const ICPPage: React.FC = () => {
 
   const isValidWeight = (config: ICPConfig) => {
     const total = calculateTotalWeight(config);
-    return total === 10;
+    // Allow small floating point tolerance (within 0.05 of 10)
+    return Math.abs(total - 10) < 0.05;
   };
 
   const handleSave = async () => {
@@ -164,7 +161,7 @@ const ICPPage: React.FC = () => {
 
     // Validate total weight
     if (!isValidWeight(selectedConfig)) {
-      alert(`Cannot save: Total weight must equal 10. Current total: ${currentTotal}`);
+      alert(`Cannot save: Total weight must equal 10. Current total: ${currentTotal.toFixed(1)}`);
       return;
     }
 
@@ -409,12 +406,12 @@ const ICPPage: React.FC = () => {
                   </button>
                 </div>
                 <p className="text-sm text-gray-600 mt-1">
-                  Total Weight: <span className={`font-semibold ${
-                    isValidWeight(selectedConfig)
+                  Total Weight:                   <span className={`font-semibold ${
+                    isValidWeight(selectedConfig) 
                       ? 'text-green-600' 
                       : 'text-red-600'
                   }`}>
-                    {Math.round(calculateTotalWeight(selectedConfig))} / 10
+                    {calculateTotalWeight(selectedConfig).toFixed(1)} / 10
                   </span>
                   {!isValidWeight(selectedConfig) && (
                     <span className="ml-2 text-red-600 text-xs">
@@ -435,16 +432,11 @@ const ICPPage: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {Object.entries(selectedConfig.factors).map(([factorKey, factor]) => {
-                // Skip noWebsite for midmarket
-                if (factorKey === 'noWebsite' && selectedConfig.type === 'midmarket') {
+                // Skip noWebsite - not used anymore
+                if (factorKey === 'noWebsite') {
                   return null;
                 }
                 
-                // Skip poorSEO for independent
-                if (factorKey === 'poorSEO' && selectedConfig.type === 'independent') {
-                  return null;
-                }
-
                 return (
                   <div key={factorKey} className="border border-gray-200 rounded-lg p-4 flex flex-col">
                     <div className="flex items-start justify-between mb-4">
@@ -497,12 +489,14 @@ const ICPPage: React.FC = () => {
                               type="number"
                               min="0"
                               max="10"
-                              step="1"
-                              value={Math.round(factor.weight)}
+                              step="0.1"
+                              value={factor.weight}
                               onChange={(e) => {
-                                const value = parseInt(e.target.value);
+                                const value = parseFloat(e.target.value);
                                 if (!isNaN(value) && value >= 0 && value <= 10) {
-                                  updateFactor(factorKey, 'weight', value);
+                                  // Round to 1 decimal place
+                                  const rounded = Math.round(value * 10) / 10;
+                                  updateFactor(factorKey, 'weight', rounded);
                                 }
                               }}
                               className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-center"
@@ -1006,7 +1000,7 @@ const ICPPage: React.FC = () => {
                             if (!factor.enabled) return null;
                             
                             const label = factorLabels[factorKey] || factorKey;
-                            let weightText = `Weight: ${factor.weight}`;
+                            let weightText = `Weight: ${Number(factor.weight).toFixed(1)}`;
                             
                             if (factorKey === 'numLocations') {
                               if (factor.minIdeal) {

@@ -3,7 +3,6 @@ import {
   Globe, 
   MapPin, 
   Phone, 
-  FileText, 
   Mail, 
   Download, 
   Loader2, 
@@ -17,7 +16,6 @@ import {
   Shield,
   ShieldCheck,
   MapPin as LocationIcon,
-  Star,
   Send,
   Calculator,
   X
@@ -46,9 +44,6 @@ const getSortedBusinesses = (businesses: Business[], sortBy: string, sortOrder: 
     if (sortBy === 'numLocations') {
       aValue = contactInfo[a.placeId]?.numLocations;
       bValue = contactInfo[b.placeId]?.numLocations;
-    } else if (sortBy === 'graderScore') {
-      aValue = a.graderScore ?? -1;
-      bValue = b.graderScore ?? -1;
     } else {
       aValue = a[sortBy as keyof Business];
       bValue = b[sortBy as keyof Business];
@@ -137,7 +132,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
     phone: 120,
     emails: 200,
     locations: 120,
-    grader: 100,
     icpScore: 100,
     actions: 140
   });
@@ -1183,75 +1177,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
   const websiteEmailsCount = getSelectedWebsiteEmailsCount();
   const apolloEmailsCount = getSelectedApolloEmailsCount();
 
-  // Add a grader function to score the business
-  const gradeBusinessQuality = async (business: Business) => {
-    updateLoadingState(business.id, 'grader');
-    
-    try {
-      // Call the server endpoint to grade the business
-      const response = await fetch('/api/grade-business', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ placeId: business.placeId })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to grade business: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      
-      // The API returns score as a decimal between 0 and 1
-      const scoreAsPercentage = Math.round(data.score || 0);
-      
-      // Update the business with the grader score from the API
-      updateBusinessData(business.id, { 
-        graderScore: scoreAsPercentage,
-        reportId: data.reportId  // Store the report ID for viewing later
-      });
-      
-      return data;
-    } catch (error) {
-      console.error('Failed to grade business:', error);
-    } finally {
-      updateLoadingState(business.id, '');
-    }
-  };
-
-  // Function to open/view the grader report
-  const viewGraderReport = async (reportId: string, businessName: string) => {
-    if (!reportId) return;
-    
-    try {
-      // Open the report in a new tab
-      window.open(`/api/grade-report/${reportId}`, '_blank');
-    } catch (error) {
-      console.error('Failed to view report:', error);
-    }
-  };
-
-  // Batch grader function for multiple businesses
-  const batchGradeBusinesses = async () => {
-    if (selectedBusinesses.size === 0) return;
-    
-    try {
-      const selectedBusinessList = businesses.filter(b => selectedBusinesses.has(b.id));
-      
-      // Grade each selected business
-      for (const business of selectedBusinessList) {
-        updateLoadingState(business.id, 'grader');
-        await gradeBusinessQuality(business);
-        // Small delay to show progression
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-      
-    } catch (error) {
-      console.error('Failed to batch grade businesses:', error);
-    }
-  };
-
   if (isLoading) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 h-full flex items-center justify-center">
@@ -1331,17 +1256,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                     )}
                     Find Apollo DMs
                   </button>
-                  
-                  {/* Grade Businesses Button */}
-                  <button
-                    onClick={batchGradeBusinesses}
-                    disabled={isEnrichingPlaces || isEnrichingApollo || isExecuting}
-                    className="flex items-center px-3 py-1.5 bg-amber-100 text-amber-700 rounded-md hover:bg-amber-200 disabled:opacity-50 transition-all duration-200"
-                    title="Grade selected businesses"
-                  >
-                    <Star className="h-4 w-4 mr-1" />
-                    Grade Businesses
-                  </button>
                 </div>
               )}
             </div>
@@ -1373,10 +1287,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                 </th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Website ✉️</th>
                 <th style={{ width: 120 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Apollo ✉️</th>
-                <th style={{ width: 80 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer whitespace-nowrap" onClick={() => handleSort('graderScore')}>
-                  Grader
-                  <span className="ml-1">{sortBy === 'graderScore' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span>
-                </th>
                 <th style={{ width: 100 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">ICP Score</th>
                 <th style={{ width: 140 }} className="px-2 py-1 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-10">Actions</th>
               </tr>
@@ -1574,30 +1484,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                         }
                       })()}
                     </td>
-                    <td style={{ width: 80 }} className="px-2 py-1 text-xs text-center">
-                      {enrichedBusiness.graderScore !== undefined && enrichedBusiness.graderScore !== null ? (
-                        <div className="flex flex-row items-center justify-center gap-2">
-                          <span className={`text-sm font-medium ${
-                            enrichedBusiness.graderScore >= 70 ? 'text-green-600' : 
-                            enrichedBusiness.graderScore >= 40 ? 'text-amber-600' : 
-                            'text-red-600'
-                          }`}>
-                            {enrichedBusiness.graderScore}%
-                          </span>
-                          {enrichedBusiness.reportId && (
-                            <button
-                              onClick={() => viewGraderReport(enrichedBusiness.reportId!, enrichedBusiness.name)}
-                              className="text-xs text-blue-600 hover:underline flex items-center"
-                              title="View Report"
-                            >
-                              <FileText className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
-                    </td>
                     <td style={{ width: 100 }} className="px-2 py-1 text-xs text-center">
                       {(() => {
                         const dbBusiness = databaseBusinesses[business.placeId];
@@ -1700,19 +1586,6 @@ const BusinessTable: React.FC<BusinessTableProps> = ({ businesses, isLoading, on
                           )}
                         </button>
                         
-                        {/* Grader Button */}
-                        <button
-                          onClick={() => gradeBusinessQuality(business)}
-                          disabled={loading === 'grader'}
-                          className="flex items-center justify-center w-6 h-6 bg-amber-100 hover:bg-amber-200 rounded-full text-amber-600 hover:text-amber-800 transition-colors disabled:opacity-50"
-                          title="Grade business quality"
-                        >
-                          {loading === 'grader' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <Star className="h-3 w-3" />
-                          )}
-                        </button>
                         <button
                           onClick={() => openEmailModal(enrichedBusiness)}
                           className="flex items-center justify-center w-6 h-6 bg-green-100 hover:bg-green-200 rounded-full text-green-600 hover:text-green-800 transition-colors disabled:opacity-50"

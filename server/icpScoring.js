@@ -445,17 +445,15 @@ function getBookingCategoryType(business) {
 
 /**
  * Calculate booking category score
- * Returns: 100 for booking-intensive, 0 for coffee/ice cream, 50 for other
+ * Returns: 100 for booking-intensive, 0 for everything else
  */
 function calculateBookingCategoryScore(business) {
   const categoryType = getBookingCategoryType(business);
   
   if (categoryType === 'booking-intensive') {
-    return 100; // Will contribute full weight (2)
-  } else if (categoryType === 'no-booking') {
-    return 0; // Will contribute 0
+    return 100; // Will contribute full weight
   } else {
-    return 50; // Will contribute half weight (1 if weight is 2)
+    return 0; // No points for non-booking categories
   }
 }
 
@@ -522,12 +520,12 @@ export function getDefaultICPConfigs() {
           maxIdeal: 9
         },
         noWebsite: {
-          enabled: true,
-          weight: 1
-        },
-        poorSEO: {
           enabled: false,
           weight: 0
+        },
+        poorSEO: {
+          enabled: true,
+          weight: 1
         },
         hasWhatsApp: {
           enabled: true,

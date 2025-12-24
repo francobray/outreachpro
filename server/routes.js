@@ -2737,9 +2737,24 @@ async function gradeBusiness(placeId) {
       };
     }
     
-    let apiUrl = process.env.GRADER_BACKEND_URL || 'https://grader.rayapp.io/api/generate-report-v2';
-    if (apiUrl && !apiUrl.endsWith('/api/generate-report-v2')) {
-      apiUrl = apiUrl.replace(/\/$/, '') + '/api/generate-report-v2';
+    // Construct the API URL
+    let apiUrl;
+    if (process.env.GRADER_BACKEND_URL) {
+      // Remove trailing slash and ensure the path is correct
+      const baseUrl = process.env.GRADER_BACKEND_URL.replace(/\/$/, '');
+      // If the base URL already includes the full path, use it as is
+      if (baseUrl.endsWith('/generate-report-v2')) {
+        apiUrl = baseUrl;
+      } else if (baseUrl.endsWith('/api')) {
+        // If it ends with /api, just append the endpoint
+        apiUrl = baseUrl + '/generate-report-v2';
+      } else {
+        // Otherwise, append the full path
+        apiUrl = baseUrl + '/api/generate-report-v2';
+      }
+    } else {
+      // Default URL
+      apiUrl = 'https://grader.rayapp.io/api/generate-report-v2';
     }
     console.log(`[Grader] Full API URL: ${apiUrl}`);
     
@@ -2748,7 +2763,7 @@ async function gradeBusiness(placeId) {
       apiKey: process.env.RAY_GRADER_API_KEY
     };
     
-    console.log(`[Grader] Request body: ${JSON.stringify(requestBody, null, 2)}`);
+    console.log(`[Grader] Request body: { placeId: "${placeId}", apiKey: "***" }`);
     
     const graderResponse = await fetch(apiUrl, {
       method: 'POST',
@@ -2826,7 +2841,7 @@ async function gradeBusiness(placeId) {
 }
 
 // Endpoint to grade business quality
-router.post('/api/grade-business', async (req, res) => {
+router.post('/grade-business', async (req, res) => {
   const { placeId } = req.body;
 
   if (!placeId) {
@@ -2837,13 +2852,13 @@ router.post('/api/grade-business', async (req, res) => {
     const report = await gradeBusiness(placeId);
     res.json(report);
   } catch (error) {
-    console.error('[Grader] Error in /api/grade-business endpoint:', error);
+    console.error('[Grader] Error in /grade-business endpoint:', error);
     res.status(500).json({ error: 'Failed to grade business' });
   }
 });
 
 // Endpoint to get a grade report by ID
-router.get('/api/grade-report/:reportId', async (req, res) => {
+router.get('/grade-report/:reportId', async (req, res) => {
   try {
     const { reportId } = req.params;
     
