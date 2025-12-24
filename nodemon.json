@@ -1,0 +1,12 @@
+{
+  "watch": ["server/**/*.js", ".env"],
+  "ignore": ["node_modules", "src", "dist", "build"],
+  "ext": "js,json",
+  "exec": "node server/server.js",
+  "delay": "1000",
+  "verbose": false,
+  "env": {
+    "NODE_ENV": "development"
+  }
+}
+

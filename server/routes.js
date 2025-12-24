@@ -2247,6 +2247,26 @@ router.delete('/clear', async (req, res) => {
   }
 });
 
+// Bulk delete businesses
+router.post('/businesses/delete', async (req, res) => {
+  const { placeIds } = req.body;
+  try {
+    if (!placeIds || !Array.isArray(placeIds) || placeIds.length === 0) {
+      return res.status(400).json({ error: 'placeIds array is required' });
+    }
+
+    const result = await Business.deleteMany({ placeId: { $in: placeIds } });
+    
+    res.json({ 
+      message: `Successfully deleted ${result.deletedCount} business(es)`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error('[Bulk Delete] Error deleting businesses:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Delete enrichment data for a single business
 router.delete('/business/:placeId', async (req, res) => {
   const { placeId } = req.params;

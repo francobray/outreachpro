@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2 } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2, Trash2 } from 'lucide-react';
 import AlertModal from './AlertModal';
 
 interface Place {
@@ -47,9 +47,10 @@ const PlacesPage: React.FC = () => {
   const [ratingFilter, setRatingFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
   const [enrichedFilter, setEnrichedFilter] = useState('');
+  const [icpScoreFilter, setIcpScoreFilter] = useState('');
   
   // Sort states
-  const [sortField, setSortField] = useState<keyof Place>('addedAt');
+  const [sortField, setSortField] = useState<keyof Place | 'icpScore'>('addedAt');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   
   // Pagination
@@ -126,13 +127,17 @@ const PlacesPage: React.FC = () => {
     selectedMatches: []
   });
 
+  // Selection state for bulk delete
+  const [selectedPlaceIds, setSelectedPlaceIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
+
   useEffect(() => {
     fetchPlaces();
   }, []);
 
   useEffect(() => {
     applyFilters();
-  }, [places, searchTerm, typeFilter, ratingFilter, locationFilter, enrichedFilter, sortField, sortDirection]);
+  }, [places, searchTerm, typeFilter, ratingFilter, locationFilter, enrichedFilter, icpScoreFilter, sortField, sortDirection]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -605,6 +610,7 @@ const PlacesPage: React.FC = () => {
       ratingFilter,
       locationFilter,
       enrichedFilter,
+      icpScoreFilter,
       totalPlaces: places.length
     });
 
@@ -662,10 +668,71 @@ const PlacesPage: React.FC = () => {
       console.log(`[PlacesPage] Enriched filter: ${beforeEnriched} -> ${filtered.length} results (enriched=${isEnriched})`);
     }
 
+    // ICP Score filter
+    if (icpScoreFilter) {
+      const beforeIcp = filtered.length;
+      if (icpScoreFilter === 'has_score') {
+        filtered = filtered.filter(place => 
+          (place.icpScores?.midmarket?.score !== undefined && place.icpScores.midmarket.score !== null) ||
+          (place.icpScores?.independent?.score !== undefined && place.icpScores.independent.score !== null)
+        );
+      } else if (icpScoreFilter === 'no_score') {
+        filtered = filtered.filter(place => 
+          (!place.icpScores?.midmarket || place.icpScores.midmarket.score === null || place.icpScores.midmarket.score === undefined) &&
+          (!place.icpScores?.independent || place.icpScores.independent.score === null || place.icpScores.independent.score === undefined)
+        );
+      } else if (icpScoreFilter === 'high') {
+        // High score >= 7
+        filtered = filtered.filter(place => {
+          const mmScore = place.icpScores?.midmarket?.score;
+          const indScore = place.icpScores?.independent?.score;
+          const maxScore = Math.max(mmScore ?? -1, indScore ?? -1);
+          return maxScore >= 7;
+        });
+      } else if (icpScoreFilter === 'medium') {
+        // Medium score 5-7
+        filtered = filtered.filter(place => {
+          const mmScore = place.icpScores?.midmarket?.score;
+          const indScore = place.icpScores?.independent?.score;
+          const maxScore = Math.max(mmScore ?? -1, indScore ?? -1);
+          return maxScore >= 5 && maxScore < 7;
+        });
+      } else if (icpScoreFilter === 'low') {
+        // Low score < 5
+        filtered = filtered.filter(place => {
+          const mmScore = place.icpScores?.midmarket?.score;
+          const indScore = place.icpScores?.independent?.score;
+          const maxScore = Math.max(mmScore ?? -1, indScore ?? -1);
+          return maxScore >= 0 && maxScore < 5;
+        });
+      }
+      console.log(`[PlacesPage] ICP Score filter: ${beforeIcp} -> ${filtered.length} results (filter=${icpScoreFilter})`);
+    }
+
     // Sort
     filtered.sort((a, b) => {
-      const aValue = a[sortField];
-      const bValue = b[sortField];
+      // Handle ICP Score sorting separately
+      if (sortField === 'icpScore') {
+        // Get the highest ICP score for each place (considering both midmarket and independent)
+        const aMaxScore = Math.max(
+          a.icpScores?.midmarket?.score ?? -1,
+          a.icpScores?.independent?.score ?? -1
+        );
+        const bMaxScore = Math.max(
+          b.icpScores?.midmarket?.score ?? -1,
+          b.icpScores?.independent?.score ?? -1
+        );
+        
+        // Places without scores go to the end
+        if (aMaxScore === -1 && bMaxScore === -1) return 0;
+        if (aMaxScore === -1) return 1;
+        if (bMaxScore === -1) return -1;
+        
+        return sortDirection === 'asc' ? aMaxScore - bMaxScore : bMaxScore - aMaxScore;
+      }
+      
+      const aValue = a[sortField as keyof Place];
+      const bValue = b[sortField as keyof Place];
       
       if (aValue === null || aValue === undefined) return 1;
       if (bValue === null || bValue === undefined) return -1;
@@ -687,13 +754,138 @@ const PlacesPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  const handleSort = (field: keyof Place) => {
+  const handleSort = (field: keyof Place | 'icpScore') => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
       setSortField(field);
       setSortDirection('asc');
     }
+  };
+
+  // Checkbox handlers
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      const allIds = new Set(paginatedPlaces.map(place => place.placeId));
+      setSelectedPlaceIds(allIds);
+    } else {
+      setSelectedPlaceIds(new Set());
+    }
+  };
+
+  const handleSelectPlace = (placeId: string, checked: boolean) => {
+    const newSelected = new Set(selectedPlaceIds);
+    if (checked) {
+      newSelected.add(placeId);
+    } else {
+      newSelected.delete(placeId);
+    }
+    setSelectedPlaceIds(newSelected);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedPlaceIds.size === 0) return;
+
+    setAlertModal({
+      isOpen: true,
+      title: 'Confirm Deletion',
+      message: `Are you sure you want to delete ${selectedPlaceIds.size} business(es)? This action cannot be undone.`,
+      type: 'confirm',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      onConfirm: async () => {
+        setIsDeleting(true);
+        try {
+          const response = await fetch('/api/businesses/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ placeIds: Array.from(selectedPlaceIds) }),
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to delete businesses');
+          }
+
+          const result = await response.json();
+          
+          // Refresh the places list
+          await fetchPlaces();
+          
+          // Clear selection
+          setSelectedPlaceIds(new Set());
+          
+          setAlertModal({
+            isOpen: true,
+            title: 'Success',
+            message: result.message,
+            type: 'success'
+          });
+        } catch (error) {
+          console.error('Error deleting businesses:', error);
+          setAlertModal({
+            isOpen: true,
+            title: 'Error',
+            message: 'Failed to delete businesses. Please try again.',
+            type: 'error'
+          });
+        } finally {
+          setIsDeleting(false);
+        }
+      }
+    });
+  };
+
+  const handleDeleteBusiness = async (place: Place) => {
+    setAlertModal({
+      isOpen: true,
+      title: 'Confirm Deletion',
+      message: `Are you sure you want to delete "${place.name}"? This action cannot be undone.`,
+      type: 'confirm',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      onConfirm: async () => {
+        try {
+          const response = await fetch('/api/businesses/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ placeIds: [place.placeId] }),
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to delete business');
+          }
+
+          // Refresh the places list
+          await fetchPlaces();
+          
+          // Remove from selection if it was selected
+          if (selectedPlaceIds.has(place.placeId)) {
+            const newSelected = new Set(selectedPlaceIds);
+            newSelected.delete(place.placeId);
+            setSelectedPlaceIds(newSelected);
+          }
+          
+          setAlertModal({
+            isOpen: true,
+            title: 'Success',
+            message: `"${place.name}" has been deleted successfully.`,
+            type: 'success'
+          });
+        } catch (error) {
+          console.error('Error deleting business:', error);
+          setAlertModal({
+            isOpen: true,
+            title: 'Error',
+            message: 'Failed to delete business. Please try again.',
+            type: 'error'
+          });
+        }
+      }
+    });
   };
 
   const exportToCSV = () => {
@@ -867,10 +1059,18 @@ const PlacesPage: React.FC = () => {
                 <Download className="w-4 h-4 mr-2" />
                 Export CSV
               </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={selectedPlaceIds.size === 0 || isDeleting}
+                className="flex items-center px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete ({selectedPlaceIds.size})
+              </button>
             </div>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
             {/* Search */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -923,6 +1123,25 @@ const PlacesPage: React.FC = () => {
               </select>
             </div>
 
+            {/* ICP Score Filter */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                ICP Score
+              </label>
+              <select
+                value={icpScoreFilter}
+                onChange={(e) => setIcpScoreFilter(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All</option>
+                <option value="has_score">Has Score</option>
+                <option value="no_score">No Score</option>
+                <option value="high">High (≥7)</option>
+                <option value="medium">Medium (5-7)</option>
+                <option value="low">Low (&lt;5)</option>
+              </select>
+            </div>
+
             {/* Location Filter */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -964,7 +1183,15 @@ const PlacesPage: React.FC = () => {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('name')}>
+                  <th className="px-4 py-3 text-left">
+                    <input
+                      type="checkbox"
+                      checked={selectedPlaceIds.size > 0 && selectedPlaceIds.size === paginatedPlaces.length}
+                      onChange={(e) => handleSelectAll(e.target.checked)}
+                      className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('name')}>
                     <div className="flex items-center">
                       Name
                       {sortField === 'name' && (
@@ -972,14 +1199,17 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('icpScore')}>
                     <div className="flex items-center">
                       ICP Score
+                      {sortField === 'icpScore' && (
+                        sortDirection === 'asc' ? <SortAsc className="w-4 h-4 ml-1" /> : <SortDesc className="w-4 h-4 ml-1" />
+                      )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Website</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('rating')}>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Website</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('rating')}>
                     <div className="flex items-center">
                       Rating
                       {sortField === 'rating' && (
@@ -987,7 +1217,7 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('numLocations')}>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('numLocations')}>
                     <div className="flex items-center">
                       Locations
                       {sortField === 'numLocations' && (
@@ -995,7 +1225,7 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('country')}>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('country')}>
                     <div className="flex items-center">
                       Country
                       {sortField === 'country' && (
@@ -1003,8 +1233,8 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
-                  {/* <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
+                  {/* <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
                     <div className="flex items-center">
                       Apollo DMs
                       {sortField === 'enriched' && (
@@ -1012,7 +1242,7 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th> */}
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('addedAt')}>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('addedAt')}>
                     <div className="flex items-center">
                       Added
                       {sortField === 'addedAt' && (
@@ -1020,24 +1250,32 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {paginatedPlaces.map((place) => (
                   <tr key={place.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4" style={{ maxWidth: '250px' }}>
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedPlaceIds.has(place.placeId)}
+                        onChange={(e) => handleSelectPlace(place.placeId, e.target.checked)}
+                        className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                      />
+                    </td>
+                    <td className="px-4 py-3" style={{ maxWidth: '250px' }}>
                       <a
                         href={`https://www.google.com/maps/place/?q=place_id:${place.placeId}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap overflow-hidden text-ellipsis block"
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap overflow-hidden text-ellipsis block"
                       >
                         {place.name}
                       </a>
-                      <div className="text-sm text-gray-500 line-clamp-2">{place.address}</div>
+                      <div className="text-xs text-gray-500 line-clamp-2">{place.address}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex flex-col gap-1">
                         {place.icpScores?.midmarket?.score !== undefined && place.icpScores.midmarket.score !== null ? (
                           <button
@@ -1087,25 +1325,25 @@ const PlacesPage: React.FC = () => {
                         )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-4 py-3 whitespace-nowrap">
                       {place.website ? (
                         <a
                           href={place.website}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
+                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
                         >
                           Website
                         </a>
                       ) : (
-                        <span className="text-sm text-gray-400">-</span>
+                        <span className="text-xs text-gray-400">-</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{place.phone || '-'}</div>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">{place.phone || '-'}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">
                         {place.rating ? (
                           <span className="flex items-center">
                             <span className="text-yellow-500">★</span>
@@ -1117,8 +1355,8 @@ const PlacesPage: React.FC = () => {
                         ) : '-'}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">
                         {place.numLocations && place.numLocations >= 1 ? (
                           <button
                             onClick={() => openLocationsModal(place)}
@@ -1131,19 +1369,19 @@ const PlacesPage: React.FC = () => {
                         )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">
                         {place.country || '-'}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">
                         {place.types && place.types.length > 0 ? (
                           <button
                             onClick={() => openTypesModal(place)}
                             className="text-left hover:bg-gray-50 rounded px-2 py-1 transition-colors cursor-pointer"
                           >
-                            <div className="text-sm font-medium text-gray-900">
+                            <div className="text-xs font-medium text-gray-900">
                               {place.types[0]}
                             </div>
                             {place.types.length > 1 && (
@@ -1157,8 +1395,8 @@ const PlacesPage: React.FC = () => {
                         )}
                       </div>
                     </td>
-                    {/* <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    {/* <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">
                         {place.decisionMakers && place.decisionMakers.length > 0 ? (
                           <button
                             onClick={() => openDecisionMakersModal(place)}
@@ -1171,12 +1409,12 @@ const PlacesPage: React.FC = () => {
                         )}
                       </div>
                     </td> */}
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="text-xs text-gray-900">
                         {new Date(place.addedAt).toLocaleDateString()}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         {/* Enrich Button */}
                         <button
@@ -1190,9 +1428,9 @@ const PlacesPage: React.FC = () => {
                           title={place.enriched ? "Re-enrich business" : "Enrich business"}
                         >
                           {refreshing ? (
-                            <Loader2 className="h-5 w-5 animate-spin" />
+                            <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
-                            <Map className="h-5 w-5" />
+                            <Map className="h-4 w-4" />
                           )}
                         </button>
                         
@@ -1203,7 +1441,17 @@ const PlacesPage: React.FC = () => {
                           className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Calculate ICP Score"
                         >
-                          <Calculator className="h-5 w-5" />
+                          <Calculator className="h-4 w-4" />
+                        </button>
+
+                        {/* Delete Button */}
+                        <button
+                          onClick={() => handleDeleteBusiness(place)}
+                          disabled={refreshing}
+                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Delete business"
+                        >
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     </td>

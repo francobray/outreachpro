@@ -1352,8 +1352,81 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   }
   
   const locations = Array.from(locationSet);
-  console.log(`[PlaceDetails] Found ${locations.length} locations:`, locations);
-  return { numLocations: locations.length, locationNames: locations, hasLocationsPage, usedPuppeteer };
+  console.log(`[PlaceDetails] Found ${locations.length} locations (before validation):`, locations);
+  
+  // Filter out false positives with comprehensive validation
+  const validLocations = locations.filter(loc => {
+    const lower = loc.toLowerCase();
+    
+    // 1. Filter out business hours patterns (days + times)
+    const daysPattern = /(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lun|mar|mié|mie|jue|vie|sáb|sab|dom|mon|tue|wed|thu|fri|sat|sun)/i;
+    const timePattern = /(\d{1,2}\s*(?:am|pm|h|hs)|\d{1,2}:\d{2}|\d{1,2}\s*a\s*\d{1,2})/i;
+    if (daysPattern.test(lower) && timePattern.test(lower)) {
+      return false; // This looks like business hours
+    }
+    
+    // 2. Filter out CSS/JavaScript code patterns
+    const codePatterns = [
+      /\{[^}]*\}/,  // CSS braces
+      /rootmargin/i,
+      /px\s+\d+px/,
+      /function\s*\(/,
+      /class\s*=/,
+      /style\s*=/,
+      /var\s+/,
+      /const\s+/,
+      /let\s+/,
+      /=>/,
+      /\[object/i,
+      /undefined/,
+      /null\s*;/
+    ];
+    if (codePatterns.some(pattern => pattern.test(loc))) {
+      return false; // This looks like code
+    }
+    
+    // 3. Filter out standalone times without address information
+    if (/^\d{1,2}\s*(?:am|pm|h|hs)?\s*a\s*\d{1,2}/i.test(lower) && !/(calle|street|av\.|avenida|boulevard)/i.test(lower)) {
+      return false; // Time range without address
+    }
+    
+    // 4. Must have some address-like characteristics (numbers + address words, or commas for city/country)
+    const hasNumber = /\d/.test(loc);
+    const hasAddressWord = /(calle|street|st\.|av\.|avenue|avenida|boulevard|blvd|road|rd|ruta|camino|plaza|paseo)/i.test(lower);
+    const hasComma = /,/.test(loc);
+    const hasCity = /(buenos aires|argentina|madrid|barcelona|méxico|mexico|santiago|bogotá|lima|caracas)/i.test(lower);
+    
+    // Valid location should have either:
+    // - Numbers + address word, OR
+    // - Numbers + comma (suggests address format), OR
+    // - City/country name
+    if (!hasNumber && !hasCity) {
+      return false; // No numbers and no recognizable city
+    }
+    
+    if (hasNumber && !hasAddressWord && !hasComma && !hasCity) {
+      return false; // Has numbers but no address context
+    }
+    
+    return true;
+  });
+  
+  // Remove near-duplicates (same location with minor variations)
+  const uniqueLocations = [];
+  const seen = new Set();
+  
+  for (const loc of validLocations) {
+    // Normalize for comparison (remove spaces, punctuation, make lowercase)
+    const normalized = loc.toLowerCase().replace(/[,.\s]+/g, '');
+    
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      uniqueLocations.push(loc);
+    }
+  }
+  
+  console.log(`[PlaceDetails] Found ${uniqueLocations.length} valid locations (after filtering):`, uniqueLocations);
+  return { numLocations: uniqueLocations.length, locationNames: uniqueLocations, hasLocationsPage, usedPuppeteer };
 };
 
 // Helper function to find similar business names

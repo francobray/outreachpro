@@ -248,6 +248,8 @@ function isBusinessInTargetCountry(business, targetCountries) {
 const DELIVERY_INTENSIVE_CATEGORIES = [
   'pizza',
   'hamburguesas',
+  'hamburger',
+  'hamburger restaurant',
   'sushi',
   'comida mexicana',
   'comida healthy',
