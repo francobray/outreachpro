@@ -1515,4 +1515,109 @@ export function cloneEnrichmentData(sourceBusiness, targetBusiness) {
   });
 
   return clonedData;
+}
+
+// Helper function to scrape Linktree pages and extract real website or WhatsApp link
+export async function scrapeLinktree(linktreeUrl) {
+  try {
+    console.log(`[Linktree] Scraping ${linktreeUrl}`);
+    
+    const response = await fetch(linktreeUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      }
+    });
+
+    if (!response.ok) {
+      console.log(`[Linktree] Failed to fetch: ${response.status}`);
+      return { website: null, whatsapp: null };
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+    
+    let website = null;
+    let whatsapp = null;
+    
+    // Extract all links from the Linktree page
+    const links = [];
+    
+    // Look for links in common Linktree structures
+    $('a[href]').each((i, el) => {
+      const href = $(el).attr('href');
+      const text = $(el).text().trim().toLowerCase();
+      
+      if (href && href.startsWith('http')) {
+        links.push({ href, text });
+      }
+    });
+    
+    // Also check for data attributes that might contain links
+    $('[data-testid="LinkButton"]').each((i, el) => {
+      const href = $(el).attr('href');
+      const text = $(el).text().trim().toLowerCase();
+      
+      if (href && href.startsWith('http')) {
+        links.push({ href, text });
+      }
+    });
+    
+    console.log(`[Linktree] Found ${links.length} links`);
+    
+    // Filter out social media and unwanted platforms
+    const socialMediaDomains = [
+      'instagram.com', 'facebook.com', 'twitter.com', 'tiktok.com', 
+      'youtube.com', 'linkedin.com', 'snapchat.com', 'pinterest.com',
+      'linktr.ee', 'linktree.com'
+    ];
+    
+    const deliveryPlatforms = [
+      'ubereats.com', 'doordash.com', 'grubhub.com', 'rappi.com',
+      'pedidosya.com', 'foodpanda.com', 'swiggy.com', 'zomato.com', 'ifood.com'
+    ];
+    
+    // Look for WhatsApp links
+    for (const link of links) {
+      if (link.href.includes('wa.me') || link.href.includes('whatsapp.com') || 
+          link.href.includes('api.whatsapp.com') || link.text.includes('whatsapp') || 
+          link.text.includes('ws ')) {
+        whatsapp = link.href;
+        console.log(`[Linktree] Found WhatsApp link: ${whatsapp}`);
+        break;
+      }
+    }
+    
+    // Look for a real website (not social media or delivery platforms)
+    for (const link of links) {
+      const isSocialMedia = socialMediaDomains.some(domain => link.href.includes(domain));
+      const isDeliveryPlatform = deliveryPlatforms.some(domain => link.href.includes(domain));
+      const isWhatsApp = link.href.includes('wa.me') || link.href.includes('whatsapp');
+      
+      if (!isSocialMedia && !isDeliveryPlatform && !isWhatsApp) {
+        // This might be the real website
+        // Prefer links with text like "website", "menu", "sitio", etc.
+        const isLikelyWebsite = link.text.includes('website') || link.text.includes('sitio') ||
+                                link.text.includes('web') || link.text.includes('menu') ||
+                                link.text.includes('página') || link.text.includes('page');
+        
+        if (isLikelyWebsite || !website) {
+          website = link.href;
+          console.log(`[Linktree] Found potential website: ${website}`);
+          
+          if (isLikelyWebsite) {
+            break; // Stop if we found a likely website
+          }
+        }
+      }
+    }
+    
+    console.log(`[Linktree] Results - Website: ${website}, WhatsApp: ${whatsapp}`);
+    
+    return { website, whatsapp };
+  } catch (error) {
+    console.error(`[Linktree] Error scraping Linktree page:`, error.message);
+    return { website: null, whatsapp: null };
+  }
 } 

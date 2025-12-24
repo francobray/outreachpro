@@ -17,6 +17,7 @@ import {
   normalizeAndDeduplicateEmails,
   findSimilarBusinesses,
   cloneEnrichmentData,
+  scrapeLinktree,
 } from './utils.js';
 
 import Business from './models/Business.js';
@@ -205,12 +206,24 @@ function extractCategoryFromTypes(types) {
 }
 
 async function enrichBusinessData(placeId, options = {}) {
-  const { enrich = true, apollo = true, testUrl = '', disablePuppeteer = false, debug = false, force = false } = options;
+  const { enrich = true, apollo = true, testUrl = '', disablePuppeteer = false, debug = false, force = false, progressCallback } = options;
   const noPuppeteer = disablePuppeteer;
   const debugMode = debug || process.env.DEBUG_SCRAPER === 'true';
+  
+  // Helper to send progress updates
+  const sendProgress = (message) => {
+    if (progressCallback && typeof progressCallback === 'function') {
+      progressCallback(message);
+    }
+  };
 
   console.log(`[Enrichment] Starting for placeId: ${placeId}, force: ${force}`);
+  sendProgress('Looking up business in database...');
   const existingBusiness = await Business.findOne({ placeId });
+  
+  if (existingBusiness) {
+    sendProgress(`✓ Found: ${existingBusiness.name}`);
+  }
 
   if (!existingBusiness) {
     // This can happen if a business is deleted but an action is still triggered from the UI
@@ -264,17 +277,87 @@ async function enrichBusinessData(placeId, options = {}) {
     analyzedAt: null
   };
 
-  if (enrich && website) {
+  // Check if website is a third-party delivery platform (skip scraping)
+  const isThirdPartyPlatform = (url) => {
+    const thirdPartyDomains = [
+      'pedidosya.com',
+      'rappi.com',
+      'ubereats.com',
+      'doordash.com',
+      'grubhub.com',
+      'deliveroo.com',
+      'justeat.com',
+      'seamless.com',
+      'postmates.com',
+      'foodpanda.com',
+      'swiggy.com',
+      'zomato.com',
+      'ifood.com'
+    ];
+    return thirdPartyDomains.some(domain => url.toLowerCase().includes(domain));
+  };
+
+  // Check if the website is a Linktree URL and scrape it for the real website
+  if (enrich && website && (website.includes('linktr.ee') || website.includes('linktree.com'))) {
+    console.log(`[Enrichment] Detected Linktree URL: ${website}`);
+    sendProgress(`Detected Linktree page, extracting real website...`);
+    
+    const { website: realWebsite, whatsapp: whatsappLink } = await scrapeLinktree(website);
+    
+    if (realWebsite) {
+      console.log(`[Enrichment] Found real website from Linktree: ${realWebsite}`);
+      website = realWebsite;
+      sendProgress(`✓ Found real website: ${realWebsite}`);
+    } else if (whatsappLink) {
+      console.log(`[Enrichment] No website found, but found WhatsApp link: ${whatsappLink}`);
+      sendProgress(`✓ Found WhatsApp link: ${whatsappLink}`);
+    } else {
+      console.log(`[Enrichment] Could not extract website from Linktree`);
+      sendProgress(`Could not extract website from Linktree page`);
+      website = null; // Clear website so we don't try to scrape Linktree itself
+    }
+    
+    // Update the business with the found website/whatsapp
+    if (realWebsite || whatsappLink) {
+      const updateData = {};
+      if (realWebsite) updateData.website = realWebsite;
+      if (whatsappLink && !existingBusiness.websiteAnalysis?.hasWhatsApp) {
+        updateData['websiteAnalysis.hasWhatsApp'] = true;
+      }
+      
+      await Business.updateOne(
+        { placeId },
+        { $set: updateData }
+      );
+      
+      console.log(`[Enrichment] Updated business with Linktree data:`, updateData);
+    }
+  }
+
+  if (enrich && website && !isThirdPartyPlatform(website)) {
     // 1. Scrape homepage HTML using progressive strategy
     console.log(`[Enrichment] Fetching website: ${website}`);
+    sendProgress(`Fetching website: ${website}`);
     const { html: homepageHtml, usedPuppeteer: homepageUsedPuppeteer } = await fetchHtmlWithFallback(website, { noPuppeteer, debugMode });
+    sendProgress(`✓ Website loaded successfully (${homepageUsedPuppeteer ? 'using browser' : 'direct fetch'})`);
 
     // Analyze website for ICP variables
     console.log(`[Enrichment] Analyzing website for ICP variables`);
+    sendProgress('Analyzing website for SEO, WhatsApp, ordering systems...');
     websiteAnalysis = analyzeWebsiteForICP(homepageHtml, website);
+    
+    // Report analysis results
+    const features = [];
+    if (websiteAnalysis.hasSEO) features.push('SEO');
+    if (websiteAnalysis.hasWhatsApp) features.push('WhatsApp');
+    if (websiteAnalysis.hasReservation) features.push('Reservations');
+    if (websiteAnalysis.hasDirectOrdering) features.push('Direct Ordering');
+    if (websiteAnalysis.hasThirdPartyDelivery) features.push('3rd Party Delivery');
+    sendProgress(`✓ Analysis complete. Found: ${features.length > 0 ? features.join(', ') : 'No special features'}`);
 
     // Detect locations from the homepage HTML
     console.log(`[Enrichment] Detecting locations from homepage HTML`);
+    sendProgress('Scanning for business locations...');
     const { 
       numLocations: detectedNumLocations, 
       locationNames: detectedLocationNames, 
@@ -338,8 +421,10 @@ async function enrichBusinessData(placeId, options = {}) {
       numLocations = locationNames.length;
       
       console.log(`[Enrichment] Refined location names:`, locationNames);
+      sendProgress(`✓ Found ${numLocations} location(s) on website`);
     } else {
       console.log('[Enrichment] No distinct locations detected on homepage.');
+      sendProgress('✓ No additional locations found on website');
     }
     
     // If we couldn't find locations from website (no website or scraping failed),
@@ -347,6 +432,7 @@ async function enrichBusinessData(placeId, options = {}) {
     if (numLocations === 1 && existingBusiness) {
       try {
         console.log(`[Enrichment] Searching Google Places for other "${existingBusiness.name}" locations...`);
+        sendProgress('Searching Google Places for additional locations...');
         const apiKey = process.env.GOOGLE_PLACES_API_KEY;
         
         // Get the country/region from the existing business address
@@ -384,14 +470,21 @@ async function enrichBusinessData(placeId, options = {}) {
               numLocations,
               locationNames
             });
+            sendProgress(`✓ Found ${numLocations} total locations via Google Places`);
+          } else {
+            sendProgress('✓ No additional locations found via Google Places');
           }
+        } else {
+          sendProgress('✓ No additional locations found via Google Places');
         }
       } catch (error) {
         console.log(`[Enrichment] Error searching Google Places for locations:`, error.message);
+        sendProgress('✓ Google Places search completed');
       }
     }
 
     // 2. Extract emails
+    sendProgress('Extracting contact emails from website...');
     const allEmails = [];
     const scrapedPages = new Set([website]); // Keep track of scraped pages
 
@@ -517,6 +610,19 @@ async function enrichBusinessData(placeId, options = {}) {
     }
     
     console.log(`[Enrichment] Normalized emails:`, emails);
+    sendProgress(`✓ Found ${emails.length} email(s)`);
+  } else if (enrich && website && isThirdPartyPlatform(website)) {
+    // Website is a third-party delivery platform - skip scraping
+    console.log(`[Enrichment] Website is a third-party delivery platform (${website}). Skipping scraping.`);
+    sendProgress('✓ Detected third-party delivery platform - skipping website scraping');
+    
+    // Mark as having third-party delivery
+    websiteAnalysis.hasThirdPartyDelivery = true;
+    websiteAnalysis.analyzedAt = new Date();
+    
+    // Don't try to scrape for locations or emails from delivery platforms
+    console.log('[Enrichment] Skipping location and email detection for third-party platform.');
+    sendProgress('✓ Analysis complete. Found: 3rd Party Delivery');
   }
 
   // Call Apollo API to find decision makers - only if explicitly requested
@@ -1323,9 +1429,133 @@ router.post('/search-by-place-id', async (req, res) => {
 });
 
 // Business enrichment endpoint - called by the business enrichment button
+// SSE endpoint for enrichment progress (GET request required for EventSource)
+router.get('/business/enrich-stream/:placeId', async (req, res) => {
+  const { placeId } = req.params;
+  
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  
+  let currentStep = 0;
+  const totalSteps = 6;
+  
+  const sendProgress = (message, incrementStep = false) => {
+    if (incrementStep) {
+      currentStep++;
+      res.write(`data: ${JSON.stringify({ message, step: currentStep })}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify({ message })}\n\n`);
+    }
+  };
+  
+  // Step-aware progress callback wrapper
+  const progressCallback = (msg) => {
+    // Detect key milestones and increment steps
+    if (msg.includes('Looking up business')) {
+      sendProgress(msg, true); // Step 1: Database lookup
+    } else if (msg.includes('Fetching website:') || msg.includes('third-party delivery platform')) {
+      sendProgress(msg, true); // Step 2: Website fetch
+    } else if (msg.includes('Analyzing website') || msg.includes('Scanning for business locations')) {
+      sendProgress(msg, true); // Step 3: Website analysis
+    } else if (msg.includes('Searching Google Places') || msg.includes('Extracting contact emails')) {
+      sendProgress(msg, true); // Step 4: Data extraction
+    } else {
+      sendProgress(msg, false);
+    }
+  };
+  
+  try {
+    sendProgress('Starting enrichment...');
+    
+    // Call the enrichment method with progress callback
+    const enrichedBusiness = await enrichBusinessData(placeId, { 
+      enrich: true, 
+      apollo: false,
+      force: true,
+      progressCallback
+    });
+    
+    sendProgress('✓ Enrichment completed!', true); // Step 5
+    
+    // Send detailed summary
+    sendProgress(`  Total locations: ${enrichedBusiness.numLocations || 1}`);
+    sendProgress(`  Emails found: ${(enrichedBusiness.emails || []).length}`);
+    
+    // List website features
+    const summaryFeatures = [];
+    if (enrichedBusiness.websiteAnalysis) {
+      if (enrichedBusiness.websiteAnalysis.hasSEO) summaryFeatures.push('SEO');
+      if (enrichedBusiness.websiteAnalysis.hasWhatsApp) summaryFeatures.push('WhatsApp');
+      if (enrichedBusiness.websiteAnalysis.hasReservation) summaryFeatures.push('Reservations');
+      if (enrichedBusiness.websiteAnalysis.hasDirectOrdering) summaryFeatures.push('Direct Ordering');
+      if (enrichedBusiness.websiteAnalysis.hasThirdPartyDelivery) summaryFeatures.push('3rd Party Delivery');
+    }
+    if (summaryFeatures.length > 0) {
+      sendProgress(`  Features: ${summaryFeatures.join(', ')}`);
+    } else {
+      sendProgress(`  Features: None detected`);
+    }
+    
+    // Find similar businesses
+    sendProgress('Searching for similar businesses...', true); // Step 6
+    const allBusinesses = await Business.find({});
+    const { exactMatches, fuzzyMatches } = findSimilarBusinesses(enrichedBusiness, allBusinesses, {
+      minSimilarity: 0.8,
+      sameCountryOnly: true
+    });
+    
+    if (exactMatches.length > 0) {
+      sendProgress(`✓ Found ${exactMatches.length} similar business(es) - auto-cloning enrichment data...`);
+      
+      // Auto-clone for exact prefix matches
+      for (const match of exactMatches) {
+        try {
+          const clonedData = cloneEnrichmentData(enrichedBusiness, match.business);
+          await Business.updateOne(
+            { placeId: match.business.placeId },
+            { $set: clonedData }
+          );
+          sendProgress(`  Cloned to: ${match.business.name}`);
+        } catch (cloneError) {
+          console.error(`[Business Enrich] Error cloning to ${match.business.name}:`, cloneError);
+        }
+      }
+    } else {
+      sendProgress('✓ No similar businesses found for cloning');
+    }
+    
+    // Send fuzzy matches if any
+    if (fuzzyMatches && fuzzyMatches.length > 0) {
+      res.write(`data: ${JSON.stringify({ 
+        fuzzyMatches: fuzzyMatches.map(m => ({
+          placeId: m.business.placeId,
+          name: m.business.name,
+          address: m.business.formatted_address,
+          similarity: Math.round(m.similarity * 100),
+          matchType: 'fuzzy'
+        }))
+      })}\n\n`);
+    }
+    
+    sendProgress('✓ All done!', false);
+    // Send final step completion
+    res.write(`data: ${JSON.stringify({ step: totalSteps })}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
+  } catch (error) {
+    sendProgress(`✗ Error: ${error.message}`, false);
+    res.write(`data: ${JSON.stringify({ done: true, error: true })}\n\n`);
+    res.end();
+  }
+});
+
 router.post('/business/enrich/:placeId', async (req, res) => {
   const { placeId } = req.params;
   
+  // Regular non-streaming POST request
   try {
     console.log(`[Business Enrich] Starting enrichment for placeId: ${placeId}`);
     

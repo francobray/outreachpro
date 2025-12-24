@@ -133,6 +133,20 @@ const PlacesPage: React.FC = () => {
   const [selectedPlaceIds, setSelectedPlaceIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [gradingPlaceId, setGradingPlaceId] = useState<string | null>(null);
+  const [enrichingPlaceId, setEnrichingPlaceId] = useState<string | null>(null);
+  const [enrichmentProgress, setEnrichmentProgress] = useState<{
+    isOpen: boolean;
+    businessName: string;
+    messages: string[];
+    currentStep: number;
+    totalSteps: number;
+  }>({
+    isOpen: false,
+    businessName: '',
+    messages: [],
+    currentStep: 0,
+    totalSteps: 6
+  });
 
   useEffect(() => {
     fetchPlaces();
@@ -171,6 +185,9 @@ const PlacesPage: React.FC = () => {
         if (progressModal.isOpen && progressModal.stage === 'complete') {
           setProgressModal({ ...progressModal, isOpen: false });
         }
+        if (enrichmentProgress.isOpen) {
+          setEnrichmentProgress({ isOpen: false, businessName: '', messages: [], currentStep: 0, totalSteps: 6 });
+        }
       }
     };
 
@@ -178,7 +195,7 @@ const PlacesPage: React.FC = () => {
     return () => {
       document.removeEventListener('keydown', handleEscKey);
     };
-  }, [isModalOpen, isLocationsModalOpen, isTypesModalOpen, icpBreakdownModal, alertModal, progressModal]);
+  }, [isModalOpen, isLocationsModalOpen, isTypesModalOpen, icpBreakdownModal, alertModal, progressModal, enrichmentProgress]);
 
   const fetchPlaces = async () => {
     try {
@@ -314,51 +331,77 @@ const PlacesPage: React.FC = () => {
   // Enrich a business
   const handleEnrichBusiness = async (placeId: string, businessName?: string): Promise<boolean> => {
     try {
-      setRefreshing(true);
-      const response = await fetch(`/api/business/enrich/${placeId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+      setEnrichingPlaceId(placeId);
+      
+      // Open progress modal
+      setEnrichmentProgress({
+        isOpen: true,
+        businessName: businessName || 'Business',
+        messages: [],
+        currentStep: 0,
+        totalSteps: 6
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[Enrichment] Response:', data);
-        
-        // Refresh the places list to show updated data
-        await handleRefresh();
-        
-        // Check if there are fuzzy matches that need user confirmation
-        if (data.fuzzyMatches && data.fuzzyMatches.length > 0) {
-          console.log('[Enrichment] Found fuzzy matches:', data.fuzzyMatches);
-          setCloneModal({
-            isOpen: true,
-            sourceName: businessName || data.business.name,
-            sourcePlaceId: placeId,
-            fuzzyMatches: data.fuzzyMatches,
-            selectedMatches: [] // Start with none selected
-          });
+      // Use EventSource for SSE (must use GET, so we'll use query params)
+      const eventSource = new EventSource(`/api/business/enrich-stream/${placeId}`);
+      
+      let enrichmentComplete = false;
+      let fuzzyMatchesData: any[] = [];
+      
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.message) {
+          setEnrichmentProgress(prev => ({
+            ...prev,
+            messages: [...prev.messages, data.message]
+          }));
         }
-        
-        // Show success message with auto-clone info
-        if (data.clonedBusinesses && data.clonedBusinesses.length > 0) {
-          setAlertModal({
-            isOpen: true,
-            title: 'Success',
-            message: `Business enriched successfully! Auto-cloned enrichment to ${data.clonedBusinesses.length} similar business(es): ${data.clonedBusinesses.map((b: { name: string }) => b.name).join(', ')}`,
-            type: 'success'
-          });
+        if (data.step !== undefined) {
+          setEnrichmentProgress(prev => ({
+            ...prev,
+            currentStep: data.step
+          }));
         }
-        
-        return true;
-      } else {
-        setAlertModal({
+        if (data.fuzzyMatches) {
+          fuzzyMatchesData = data.fuzzyMatches;
+        }
+        if (data.done) {
+          enrichmentComplete = true;
+          eventSource.close();
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('SSE Error:', error);
+        eventSource.close();
+      };
+
+      // Wait for the enrichment to complete
+      await new Promise((resolve) => {
+        const checkComplete = setInterval(() => {
+          if (enrichmentComplete || !eventSource || eventSource.readyState === EventSource.CLOSED) {
+            clearInterval(checkComplete);
+            resolve(null);
+          }
+        }, 100);
+      });
+
+      // Refresh the places list to show updated data
+      await handleRefresh();
+      
+      // Check if there are fuzzy matches that need user confirmation
+      if (fuzzyMatchesData && fuzzyMatchesData.length > 0) {
+        console.log('[Enrichment] Found fuzzy matches:', fuzzyMatchesData);
+        setCloneModal({
           isOpen: true,
-          title: 'Error',
-          message: 'Failed to enrich business. Please try again.',
-          type: 'error'
+          sourceName: businessName || 'Business',
+          sourcePlaceId: placeId,
+          fuzzyMatches: fuzzyMatchesData,
+          selectedMatches: [] // Start with none selected
         });
-        return false;
       }
+      
+      return true;
     } catch (error) {
       console.error('Error enriching business:', error);
       setAlertModal({
@@ -369,7 +412,7 @@ const PlacesPage: React.FC = () => {
       });
       return false;
     } finally {
-      setRefreshing(false);
+      setEnrichingPlaceId(null);
     }
   };
 
@@ -451,52 +494,12 @@ const PlacesPage: React.FC = () => {
         message: 'This business was already enriched. Do you want to re-enrich it? This will re-scrape the website and may update location counts, emails, and other data.',
         type: 'confirm',
         onConfirm: async () => {
-          setRefreshing(true);
-          try {
-            const success = await handleEnrichBusiness(place.placeId, place.name);
-            if (success) {
-              setAlertModal({
-                isOpen: true,
-                title: 'Success',
-                message: 'Business enriched successfully and ICP scores have been recalculated!',
-                type: 'success'
-              });
-            }
-          } catch (error) {
-            setAlertModal({
-              isOpen: true,
-              title: 'Error',
-              message: 'Failed to enrich business. Please try again.',
-              type: 'error'
-            });
-          } finally {
-            setRefreshing(false);
-          }
+          await handleEnrichBusiness(place.placeId, place.name);
         }
       });
     } else {
       // No existing enrichment, enrich directly
-      setRefreshing(true);
-      try {
-        const success = await handleEnrichBusiness(place.placeId, place.name);
-        if (success) {
-          setAlertModal({
-            isOpen: true,
-            title: 'Success',
-            message: 'Business enriched successfully and ICP scores have been recalculated!',
-            type: 'success'
-          });
-        }
-      } catch (error) {
-        setAlertModal({
-          isOpen: true,
-          title: 'Error',
-          message: 'Failed to enrich business. Please try again.',
-          type: 'error'
-        });
-      } finally {
-        setRefreshing(false);
-      }
+      await handleEnrichBusiness(place.placeId, place.name);
     }
   };
 
@@ -1273,7 +1276,6 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('rating')}>
                     <div className="flex items-center">
                       Rating
@@ -1340,16 +1342,23 @@ const PlacesPage: React.FC = () => {
                         {place.name}
                       </a>
                       <div className="text-xs text-gray-500 line-clamp-2">{place.address}</div>
-                      {place.website && (
-                        <a
-                          href={place.website}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline block mt-1"
-                        >
-                          🌐 Website
-                        </a>
-                      )}
+                      <div className="flex items-center gap-3 mt-1">
+                        {place.website && (
+                          <a
+                            href={place.website}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            🌐 Website
+                          </a>
+                        )}
+                        {place.phone && (
+                          <span className="text-xs text-gray-600">
+                            📞 {place.phone}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex flex-col gap-1">
@@ -1400,9 +1409,6 @@ const PlacesPage: React.FC = () => {
                           <span className="text-gray-400 text-xs">N/A</span>
                         )}
                       </div>
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <div className="text-xs text-gray-900">{place.phone || '-'}</div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <div className="text-xs text-gray-900">
@@ -1505,7 +1511,7 @@ const PlacesPage: React.FC = () => {
                         {/* Enrich Button */}
                         <button
                           onClick={() => enrichPlacesData(place)}
-                          disabled={refreshing}
+                          disabled={enrichingPlaceId === place.placeId}
                           className={`p-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                             place.enriched 
                               ? 'bg-green-100 text-green-600 hover:bg-green-200' 
@@ -1513,7 +1519,7 @@ const PlacesPage: React.FC = () => {
                           }`}
                           title={place.enriched ? "Re-enrich business" : "Enrich business"}
                         >
-                          {refreshing ? (
+                          {enrichingPlaceId === place.placeId ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Map className="h-4 w-4" />
@@ -2111,6 +2117,144 @@ const PlacesPage: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    )}
+
+    {/* Enrichment Progress Modal */}
+    {enrichmentProgress.isOpen && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 p-6 h-[650px] flex flex-col">
+          <div className="mb-4 flex-shrink-0">
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {enrichmentProgress.currentStep === enrichmentProgress.totalSteps 
+                  ? `Successfully enriched ${enrichmentProgress.businessName}` 
+                  : `Enriching ${enrichmentProgress.businessName}`}
+              </h3>
+            </div>
+            
+            {/* Progress Bar */}
+            <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+              <div 
+                className={`h-3 rounded-full transition-all duration-300 ease-out ${
+                  enrichmentProgress.currentStep === enrichmentProgress.totalSteps 
+                    ? 'bg-green-600' 
+                    : 'bg-blue-600'
+                }`}
+                style={{ 
+                  width: `${(enrichmentProgress.currentStep / enrichmentProgress.totalSteps) * 100}%` 
+                }}
+              ></div>
+            </div>
+            
+            <div className="flex justify-between text-xs text-gray-600">
+              <span>
+                {enrichmentProgress.currentStep === enrichmentProgress.totalSteps 
+                  ? 'Complete!' 
+                  : `Step ${enrichmentProgress.currentStep} of ${enrichmentProgress.totalSteps}`}
+              </span>
+              <span>{Math.round((enrichmentProgress.currentStep / enrichmentProgress.totalSteps) * 100)}%</span>
+            </div>
+          </div>
+          
+          <div className="bg-gray-50 rounded-lg p-4 flex-1 overflow-y-auto">
+            <div className="space-y-3 font-mono text-sm">
+              {(() => {
+                // Filter out "Starting enrichment..." message
+                const filteredMessages = enrichmentProgress.messages.filter(msg => 
+                  !msg.toLowerCase().includes('starting enrichment')
+                );
+                
+                // Group messages into steps (main message + its result + indented sub-messages)
+                const steps: Array<{main: string; result?: string; details: string[]; isSuccess: boolean}> = [];
+                let currentStep: {main: string; result?: string; details: string[]; isSuccess: boolean} | null = null;
+                
+                filteredMessages.forEach((message) => {
+                  const isIndented = message.startsWith('  ');
+                  const cleanMessage = message.replace(/^[✓→\s]+/, '').trim();
+                  const isSuccess = message.includes('✓');
+                  
+                  // Check if this is a result/conclusion message (starts with "Found", "Total", "Analysis complete", etc.)
+                  const isResultMessage = isSuccess && (
+                    cleanMessage.startsWith('Found') || 
+                    cleanMessage.startsWith('Total') ||
+                    cleanMessage.startsWith('Analysis complete') ||
+                    cleanMessage.startsWith('Website loaded') ||
+                    cleanMessage.startsWith('Cloned to') ||
+                    cleanMessage.startsWith('Enrichment completed')
+                  );
+                  
+                  if (!isIndented) {
+                    if (isResultMessage && currentStep) {
+                      // This is a result for the current step
+                      currentStep.result = cleanMessage;
+                      currentStep.isSuccess = true; // Mark the step as successful
+                    } else {
+                      // Start a new step
+                      if (currentStep) {
+                        steps.push(currentStep);
+                      }
+                      currentStep = { main: cleanMessage, details: [], isSuccess };
+                    }
+                  } else if (currentStep) {
+                    // Add detail to current step
+                    currentStep.details.push(cleanMessage);
+                  }
+                });
+                
+                // Add the last step
+                if (currentStep) {
+                  steps.push(currentStep);
+                }
+                
+                // Render each step in its own container
+                return steps.map((step, index) => (
+                  <div key={index} className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm">
+                    {/* Main step message */}
+                    <div className="flex items-start gap-2">
+                      <span className={step.isSuccess ? 'text-green-600 mt-1' : 'text-blue-600 mt-1'}>
+                        {step.isSuccess ? '✓' : '→'}
+                      </span>
+                      <div className="flex-1">
+                        <div className="text-gray-900 font-medium">
+                          {step.main}
+                        </div>
+                        {/* Result message (if any) */}
+                        {step.result && (
+                          <div className="text-green-700 text-sm mt-1">
+                            {step.result}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Detail messages */}
+                    {step.details.length > 0 && (
+                      <div className="ml-6 mt-2 space-y-1">
+                        {step.details.map((detail, detailIndex) => (
+                          <div key={detailIndex} className="text-gray-600 text-xs">
+                            {detail}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+          
+          {enrichmentProgress.currentStep === enrichmentProgress.totalSteps && (
+            <div className="mt-4 flex justify-center flex-shrink-0">
+              <button
+                onClick={() => setEnrichmentProgress({ isOpen: false, businessName: '', messages: [], currentStep: 0, totalSteps: 6 })}
+                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+              >
+                Close
+              </button>
+            </div>
+          )}
         </div>
       </div>
     )}
