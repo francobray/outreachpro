@@ -2358,14 +2358,20 @@ const PlacesPage: React.FC = () => {
     {/* Enrichment Progress Modal */}
     {enrichmentProgress.isOpen && (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 p-6 h-[650px] flex flex-col">
+        <div className="bg-white rounded-lg shadow-xl max-w-[50rem] w-full mx-4 p-6 h-[650px] flex flex-col">
           <div className="mb-4 flex-shrink-0">
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center justify-between mb-3">
               <h3 className="text-lg font-semibold text-gray-900">
                 {enrichmentProgress.currentStep === enrichmentProgress.totalSteps 
                   ? `Successfully enriched ${enrichmentProgress.businessName}` 
                   : `Enriching ${enrichmentProgress.businessName}`}
               </h3>
+              <button
+                onClick={() => setEnrichmentProgress({ ...enrichmentProgress, isOpen: false })}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
             
             {/* Progress Bar */}

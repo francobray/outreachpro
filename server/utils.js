@@ -1645,14 +1645,45 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   const validLocations = locations.filter(loc => {
     const lower = loc.toLowerCase();
     
-    // 1. Filter out business hours patterns (days + times)
+    // 1. Filter out product/menu descriptions (portions, servings, food items)
+    const productPatterns = [
+      /\d+\s*porciones/i, // "8 PORCIONES", "12 PORCIONES"
+      /\d+\s*servings/i,
+      /\d+\s*persons/i,
+      /\d+\s*personas/i,
+      /(barra|rectangular|decorada|elaborado|fina capa)/i, // Product description terms
+      /(helado|ice cream|gelato|sorbet|cremolada)/i, // Ice cream terms
+      /(chocolate|vainilla|vanilla|frutilla|strawberry|cereza|cherry|dulce de leche|almendras|almonds|chantilly|crema|cream)/i, // Flavors/ingredients
+      /(pionono|bizcocho|cake|torta)/i, // Cake/dessert terms
+      /decorada con/i, // "decorada con chocolate"
+      /corazón de/i // "corazón de chocolate"
+    ];
+    if (productPatterns.some(pattern => pattern.test(lower))) {
+      return false; // This is a product/menu description
+    }
+    
+    // 2. Filter out historical/about us text
+    const historicalPatterns = [
+      /^\d{4}\s/i, // Starts with year like "1957"
+      /\d+\s*(años|years|generaciones|generations)/i, // "70 años", "tres generaciones"
+      /(tradición|tradition|historia|history|familia|family|comienza|comenzó|started|founded)/i,
+      /(artesanos|craftsmen|trabajaron|worked|utilizando|using|recetas|recipes)/i,
+      /(región|region|norte|sur|este|oeste|north|south|east|west)\s+(de|of)/i, // Geographic descriptions in stories
+      /se encuentra a unos/i,
+      /se habían pasado/i
+    ];
+    if (historicalPatterns.some(pattern => pattern.test(lower))) {
+      return false; // This is historical/about us text
+    }
+    
+    // 3. Filter out business hours patterns (days + times)
     const daysPattern = /(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lun|mar|mié|mie|jue|vie|sáb|sab|dom|mon|tue|wed|thu|fri|sat|sun)/i;
     const timePattern = /(\d{1,2}\s*(?:am|pm|h|hs)|\d{1,2}:\d{2}|\d{1,2}\s*a\s*\d{1,2})/i;
     if (daysPattern.test(lower) && timePattern.test(lower)) {
       return false; // This looks like business hours
     }
     
-    // 2. Filter out CSS/JavaScript code patterns
+    // 4. Filter out CSS/JavaScript code patterns
     const codePatterns = [
       /\{[^}]*\}/,  // CSS braces
       /rootmargin/i,
@@ -1672,12 +1703,12 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
       return false; // This looks like code
     }
     
-    // 3. Filter out standalone times without address information
+    // 5. Filter out standalone times without address information
     if (/^\d{1,2}\s*(?:am|pm|h|hs)?\s*a\s*\d{1,2}/i.test(lower) && !/(calle|street|av\.|avenida|boulevard)/i.test(lower)) {
       return false; // Time range without address
     }
     
-    // 4. Must have some address-like characteristics (numbers + address words, or commas for city/country)
+    // 6. Must have some address-like characteristics (numbers + address words, or commas for city/country)
     const hasNumber = /\d/.test(loc);
     const hasAddressWord = /(calle|street|st\.|av\.|avenue|avenida|boulevard|blvd|road|rd|ruta|camino|plaza|paseo)/i.test(lower);
     const hasComma = /,/.test(loc);
@@ -1693,6 +1724,12 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
     
     if (hasNumber && !hasAddressWord && !hasComma && !hasCity) {
       return false; // Has numbers but no address context
+    }
+    
+    // 7. CRITICAL: Must have street/address keyword to be considered a valid location
+    // Exception: If it explicitly has a city name, it's probably valid
+    if (!hasAddressWord && !hasCity) {
+      return false; // No street/address indicators and no city name
     }
     
     return true;
