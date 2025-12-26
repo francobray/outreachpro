@@ -2268,6 +2268,34 @@ router.get('/email-activities', async (req, res) => {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  // Get email activity counts for multiple businesses
+  router.post('/email-activities/counts', async (req, res) => {
+    try {
+      const { businessIds } = req.body;
+      
+      if (!businessIds || !Array.isArray(businessIds)) {
+        return res.status(400).json({ error: 'businessIds array is required' });
+      }
+      
+      // Aggregate email counts by businessId
+      const counts = await EmailActivity.aggregate([
+        { $match: { businessId: { $in: businessIds } } },
+        { $group: { _id: '$businessId', count: { $sum: 1 } } }
+      ]);
+      
+      // Convert to object map for easier lookup
+      const countsMap = {};
+      counts.forEach(item => {
+        countsMap[item._id] = item.count;
+      });
+      
+      res.json({ counts: countsMap });
+    } catch (error) {
+      console.error('[EmailActivities] Error fetching counts:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
   
   // Get Apollo pricing for cost estimator
   router.get('/apollo-pricing', async (req, res) => {
@@ -2474,6 +2502,156 @@ router.delete('/clear', async (req, res) => {
   } catch (error) {
     console.error('[Clear] Error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Seed sample outreach data (for testing)
+router.post('/dev/seed-outreach', async (req, res) => {
+  try {
+    console.log('[Seed Outreach] Starting to seed sample data...');
+    
+    // Get existing businesses
+    const businesses = await Business.find({}).limit(10);
+    
+    if (businesses.length === 0) {
+      return res.status(400).json({ 
+        error: 'No businesses found in database. Please add some businesses first.' 
+      });
+    }
+    
+    console.log(`[Seed Outreach] Found ${businesses.length} businesses`);
+    
+    const emailStatuses = ['sent', 'delivered', 'opened', 'clicked', 'bounced'];
+    const emailTypes = ['test', 'real'];
+    const subjects = [
+      'Boost Your Online Presence with Our Marketing Solution',
+      'Exclusive Offer: Grow Your Business Today',
+      'Is Your Website Leaving Money on the Table?',
+      'Quick Question About Your Digital Strategy',
+      'We Can Help You Get More Customers'
+    ];
+    const templates = [
+      { id: 'template-1', name: 'Cold Outreach Template' },
+      { id: 'template-2', name: 'Follow-up Template' },
+      { id: 'template-3', name: 'Value Proposition Template' },
+    ];
+    const decisionMakers = [
+      { id: 'dm-1', name: 'John Smith', email: 'john.smith@example.com' },
+      { id: 'dm-2', name: 'Maria Garcia', email: 'maria.garcia@example.com' },
+      { id: 'dm-3', name: 'David Lee', email: 'david.lee@example.com' },
+      { id: 'dm-4', name: 'Sarah Johnson', email: 'sarah.johnson@example.com' },
+    ];
+    
+    const createdActivities = [];
+    
+    // Create 3-7 email activities per business
+    for (const business of businesses) {
+      const numEmails = Math.floor(Math.random() * 5) + 3; // 3-7 emails
+      
+      for (let i = 0; i < numEmails; i++) {
+        const dm = decisionMakers[Math.floor(Math.random() * decisionMakers.length)];
+        const template = templates[Math.floor(Math.random() * templates.length)];
+        const subject = subjects[Math.floor(Math.random() * subjects.length)];
+        const status = emailStatuses[Math.floor(Math.random() * emailStatuses.length)];
+        const emailType = emailTypes[Math.floor(Math.random() * emailTypes.length)];
+        
+        // Generate timestamps
+        const daysAgo = Math.floor(Math.random() * 30); // 0-30 days ago
+        const sentAt = new Date();
+        sentAt.setDate(sentAt.getDate() - daysAgo);
+        sentAt.setHours(Math.floor(Math.random() * 24), Math.floor(Math.random() * 60));
+        
+        const emailActivity = {
+          emailId: `email-${business.id}-${Date.now()}-${i}`,
+          businessId: business.id,
+          businessName: business.name,
+          decisionMakerId: dm.id,
+          decisionMakerName: dm.name,
+          decisionMakerEmail: dm.email,
+          subject: subject,
+          templateId: template.id,
+          templateName: template.name,
+          emailType: emailType,
+          status: status,
+          sentAt: sentAt,
+          openCount: 0,
+          clickCount: 0
+        };
+        
+        // Add delivery timestamp (1-4 hours after sent)
+        if (['delivered', 'opened', 'clicked'].includes(status)) {
+          const deliveredAt = new Date(sentAt);
+          deliveredAt.setHours(deliveredAt.getHours() + Math.floor(Math.random() * 4) + 1);
+          emailActivity.deliveredAt = deliveredAt;
+        }
+        
+        // Add opens for opened/clicked emails
+        if (['opened', 'clicked'].includes(status)) {
+          const openCount = Math.floor(Math.random() * 5) + 1; // 1-5 opens
+          emailActivity.openCount = openCount;
+          
+          const openedAt = new Date(emailActivity.deliveredAt);
+          openedAt.setHours(openedAt.getHours() + Math.floor(Math.random() * 48) + 1); // 1-48 hours after delivery
+          emailActivity.openedAt = openedAt;
+          emailActivity.lastOpenedAt = openedAt;
+        }
+        
+        // Add clicks for clicked emails
+        if (status === 'clicked') {
+          const clickCount = Math.floor(Math.random() * 3) + 1; // 1-3 clicks
+          emailActivity.clickCount = clickCount;
+          
+          const clickedAt = new Date(emailActivity.openedAt);
+          clickedAt.setMinutes(clickedAt.getMinutes() + Math.floor(Math.random() * 60) + 5); // 5-65 minutes after opening
+          emailActivity.clickedAt = clickedAt;
+          emailActivity.lastClickedAt = clickedAt;
+        }
+        
+        // Add bounce info for bounced emails
+        if (status === 'bounced') {
+          const bouncedAt = new Date(sentAt);
+          bouncedAt.setMinutes(bouncedAt.getMinutes() + Math.floor(Math.random() * 30) + 5);
+          emailActivity.bouncedAt = bouncedAt;
+        }
+        
+        try {
+          const savedActivity = await EmailActivity.create(emailActivity);
+          createdActivities.push(savedActivity);
+        } catch (error) {
+          console.error('[Seed Outreach] Error creating email activity:', error);
+        }
+      }
+    }
+    
+    console.log(`[Seed Outreach] Created ${createdActivities.length} email activities`);
+    
+    res.json({ 
+      message: `Successfully created ${createdActivities.length} sample email activities for ${businesses.length} businesses`,
+      created: createdActivities.length,
+      businesses: businesses.length
+    });
+  } catch (error) {
+    console.error('[Seed Outreach] Error seeding data:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Clear sample outreach data (for testing)
+router.delete('/dev/clear-outreach', async (req, res) => {
+  try {
+    console.log('[Clear Outreach] Clearing all email activities...');
+    
+    const result = await EmailActivity.deleteMany({});
+    
+    console.log(`[Clear Outreach] Deleted ${result.deletedCount} email activities`);
+    
+    res.json({ 
+      message: `Successfully deleted ${result.deletedCount} email activities`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error('[Clear Outreach] Error clearing data:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 

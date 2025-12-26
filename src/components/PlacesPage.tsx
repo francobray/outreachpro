@@ -34,6 +34,29 @@ interface Place {
   };
   graderScore?: number;
   reportId?: string;
+  outreachCount?: number;
+}
+
+interface EmailActivity {
+  emailId: string;
+  businessId: string;
+  businessName: string;
+  decisionMakerId: string;
+  decisionMakerName: string;
+  decisionMakerEmail: string;
+  subject: string;
+  templateId: string;
+  templateName: string;
+  status: string;
+  sentAt: string;
+  deliveredAt?: string;
+  openedAt?: string;
+  clickedAt?: string;
+  openCount: number;
+  clickCount: number;
+  lastOpenedAt?: string;
+  lastClickedAt?: string;
+  emailType: string;
 }
 
 const PlacesPage: React.FC = () => {
@@ -52,7 +75,7 @@ const PlacesPage: React.FC = () => {
   const [icpScoreFilter, setIcpScoreFilter] = useState('');
   
   // Sort states
-  const [sortField, setSortField] = useState<keyof Place | 'icpScore'>('addedAt');
+  const [sortField, setSortField] = useState<keyof Place | 'icpScore' | 'outreachCount'>('addedAt');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   
   // Pagination
@@ -147,6 +170,19 @@ const PlacesPage: React.FC = () => {
     currentStep: 0,
     totalSteps: 6
   });
+  const [outreachModal, setOutreachModal] = useState<{
+    isOpen: boolean;
+    businessName: string;
+    businessId: string;
+    emailActivities: EmailActivity[];
+    loading: boolean;
+  }>({
+    isOpen: false,
+    businessName: '',
+    businessId: '',
+    emailActivities: [],
+    loading: false
+  });
 
   useEffect(() => {
     fetchPlaces();
@@ -188,6 +224,9 @@ const PlacesPage: React.FC = () => {
         if (enrichmentProgress.isOpen) {
           setEnrichmentProgress({ isOpen: false, businessName: '', messages: [], currentStep: 0, totalSteps: 6 });
         }
+        if (outreachModal.isOpen) {
+          closeOutreachModal();
+        }
       }
     };
 
@@ -216,7 +255,36 @@ const PlacesPage: React.FC = () => {
           locationNames: b.locationNames
         }))
       });
-      setPlaces(businesses);
+
+      // Fetch outreach counts for all businesses
+      const businessIds = businesses.map((b: Place) => b.id).filter(Boolean);
+      if (businessIds.length > 0) {
+        try {
+          const outreachResponse = await fetch('/api/email-activities/counts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ businessIds })
+          });
+          
+          if (outreachResponse.ok) {
+            const outreachData = await outreachResponse.json();
+            // Merge outreach counts with businesses
+            const businessesWithOutreach = businesses.map((b: Place) => ({
+              ...b,
+              outreachCount: outreachData.counts[b.id] || 0
+            }));
+            setPlaces(businessesWithOutreach);
+          } else {
+            setPlaces(businesses);
+          }
+        } catch (error) {
+          console.error('[PlacesPage] Failed to fetch outreach counts:', error);
+          setPlaces(businesses);
+        }
+      } else {
+        setPlaces(businesses);
+      }
+
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch places');
@@ -800,6 +868,14 @@ const PlacesPage: React.FC = () => {
         return sortDirection === 'asc' ? aMaxScore - bMaxScore : bMaxScore - aMaxScore;
       }
       
+      // Handle Outreach Count sorting separately
+      if (sortField === 'outreachCount') {
+        const aCount = a.outreachCount ?? 0;
+        const bCount = b.outreachCount ?? 0;
+        
+        return sortDirection === 'asc' ? aCount - bCount : bCount - aCount;
+      }
+      
       const aValue = a[sortField as keyof Place];
       const bValue = b[sortField as keyof Place];
       
@@ -823,7 +899,7 @@ const PlacesPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  const handleSort = (field: keyof Place | 'icpScore') => {
+  const handleSort = (field: keyof Place | 'icpScore' | 'outreachCount') => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
@@ -1036,6 +1112,52 @@ const PlacesPage: React.FC = () => {
   const closeTypesModal = () => {
     setIsTypesModalOpen(false);
     setSelectedTypesPlace(null);
+  };
+
+  const openOutreachModal = async (place: Place) => {
+    setOutreachModal({
+      isOpen: true,
+      businessName: place.name,
+      businessId: place.id,
+      emailActivities: [],
+      loading: true
+    });
+
+    try {
+      const response = await fetch(`/api/email-activities?businessId=${place.id}`);
+      if (response.ok) {
+        const data = await response.json();
+        setOutreachModal(prev => ({
+          ...prev,
+          emailActivities: data.activities || [],
+          loading: false
+        }));
+      } else {
+        throw new Error('Failed to fetch email activities');
+      }
+    } catch (error) {
+      console.error('Error fetching email activities:', error);
+      setOutreachModal(prev => ({
+        ...prev,
+        loading: false
+      }));
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: 'Failed to load outreach data. Please try again.',
+        type: 'error'
+      });
+    }
+  };
+
+  const closeOutreachModal = () => {
+    setOutreachModal({
+      isOpen: false,
+      businessName: '',
+      businessId: '',
+      emailActivities: [],
+      loading: false
+    });
   };
 
   const paginatedPlaces = filteredPlaces.slice(
@@ -1301,6 +1423,14 @@ const PlacesPage: React.FC = () => {
                     </div>
                   </th>
                   <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Grader</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('outreachCount')}>
+                    <div className="flex items-center justify-center">
+                      Outreach
+                      {sortField === 'outreachCount' && (
+                        sortDirection === 'asc' ? <SortAsc className="w-4 h-4 ml-1" /> : <SortDesc className="w-4 h-4 ml-1" />
+                      )}
+                    </div>
+                  </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Types</th>
                   {/* <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('enriched')}>
                     <div className="flex items-center">
@@ -1462,6 +1592,19 @@ const PlacesPage: React.FC = () => {
                             </button>
                           )}
                         </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      {place.outreachCount !== undefined && place.outreachCount > 0 ? (
+                        <button
+                          onClick={() => openOutreachModal(place)}
+                          className="bg-purple-100 text-purple-800 px-3 py-1 rounded text-xs font-medium hover:bg-purple-200 cursor-pointer transition-colors"
+                          title="View email thread"
+                        >
+                          {place.outreachCount} email{place.outreachCount === 1 ? '' : 's'}
+                        </button>
                       ) : (
                         <span className="text-xs text-gray-400">-</span>
                       )}
@@ -2255,6 +2398,139 @@ const PlacesPage: React.FC = () => {
               </button>
             </div>
           )}
+        </div>
+      </div>
+    )}
+
+    {/* Outreach Modal */}
+    {outreachModal.isOpen && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[85vh] flex flex-col">
+          {/* Sticky Header */}
+          <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-white rounded-t-lg sticky top-0 z-10">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Outreach Thread - {outreachModal.businessName}
+            </h2>
+            <button
+              onClick={closeOutreachModal}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+          
+          {/* Scrollable Content */}
+          <div className="p-6 overflow-y-auto flex-1">
+            {outreachModal.loading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                <p className="ml-4 text-gray-600">Loading email activities...</p>
+              </div>
+            ) : outreachModal.emailActivities.length > 0 ? (
+              <div className="space-y-4">
+                {outreachModal.emailActivities.map((activity, index) => (
+                  <div key={activity.emailId} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">
+                            Email #{outreachModal.emailActivities.length - index}
+                          </span>
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            activity.status === 'clicked' ? 'bg-green-100 text-green-800' :
+                            activity.status === 'opened' ? 'bg-yellow-100 text-yellow-800' :
+                            activity.status === 'delivered' ? 'bg-blue-100 text-blue-800' :
+                            activity.status === 'bounced' || activity.status === 'failed' ? 'bg-red-100 text-red-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {activity.status.charAt(0).toUpperCase() + activity.status.slice(1)}
+                          </span>
+                          {activity.emailType === 'test' && (
+                            <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                              Test
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-md font-semibold text-gray-900 mb-2">{activity.subject}</h3>
+                        <div className="text-sm text-gray-600 space-y-1">
+                          <div className="flex items-center">
+                            <Mail className="h-4 w-4 mr-2 text-gray-400" />
+                            <span><strong>To:</strong> {activity.decisionMakerName} ({activity.decisionMakerEmail})</span>
+                          </div>
+                          <div className="flex items-center">
+                            <span className="text-xs text-gray-500">
+                              <strong>Template:</strong> {activity.templateName}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-3 border-t border-gray-100">
+                      <div>
+                        <div className="text-xs text-gray-500 mb-1">Sent</div>
+                        <div className="text-sm font-medium text-gray-900">
+                          {new Date(activity.sentAt).toLocaleDateString()} {new Date(activity.sentAt).toLocaleTimeString()}
+                        </div>
+                      </div>
+                      
+                      {activity.deliveredAt && (
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">Delivered</div>
+                          <div className="text-sm font-medium text-gray-900">
+                            {new Date(activity.deliveredAt).toLocaleDateString()} {new Date(activity.deliveredAt).toLocaleTimeString()}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {activity.openCount > 0 && (
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">Opens</div>
+                          <div className="text-sm font-medium text-green-700">
+                            {activity.openCount} time{activity.openCount === 1 ? '' : 's'}
+                            {activity.lastOpenedAt && (
+                              <div className="text-xs text-gray-500 mt-0.5">
+                                Last: {new Date(activity.lastOpenedAt).toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {activity.clickCount > 0 && (
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">Clicks</div>
+                          <div className="text-sm font-medium text-green-700">
+                            {activity.clickCount} time{activity.clickCount === 1 ? '' : 's'}
+                            {activity.lastClickedAt && (
+                              <div className="text-xs text-gray-500 mt-0.5">
+                                Last: {new Date(activity.lastClickedAt).toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-12">
+                <Mail className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                <p className="text-gray-500">No email activities found for this business.</p>
+              </div>
+            )}
+          </div>
+          
+          {/* Sticky Footer */}
+          <div className="flex justify-end p-6 border-t border-gray-200 bg-white rounded-b-lg sticky bottom-0 z-10">
+            <button
+              onClick={closeOutreachModal}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
     )}
