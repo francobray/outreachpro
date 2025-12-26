@@ -2521,6 +2521,17 @@ router.post('/dev/seed-outreach', async (req, res) => {
     
     console.log(`[Seed Outreach] Found ${businesses.length} businesses`);
     
+    // Get actual templates from database
+    const realTemplates = await EmailTemplate.find({});
+    
+    if (realTemplates.length === 0) {
+      return res.status(400).json({ 
+        error: 'No email templates found in database. Please initialize templates first (npm run init-db).' 
+      });
+    }
+    
+    console.log(`[Seed Outreach] Found ${realTemplates.length} templates`);
+    
     const emailStatuses = ['sent', 'delivered', 'opened', 'clicked', 'bounced'];
     const emailTypes = ['test', 'real'];
     const subjects = [
@@ -2530,11 +2541,7 @@ router.post('/dev/seed-outreach', async (req, res) => {
       'Quick Question About Your Digital Strategy',
       'We Can Help You Get More Customers'
     ];
-    const templates = [
-      { id: 'template-1', name: 'Cold Outreach Template' },
-      { id: 'template-2', name: 'Follow-up Template' },
-      { id: 'template-3', name: 'Value Proposition Template' },
-    ];
+    const templates = realTemplates.map(t => ({ id: t.id, name: t.name }));
     const decisionMakers = [
       { id: 'dm-1', name: 'John Smith', email: 'john.smith@example.com' },
       { id: 'dm-2', name: 'Maria Garcia', email: 'maria.garcia@example.com' },

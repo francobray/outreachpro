@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2, Trash2, Star, FileText } from 'lucide-react';
+import { Search, Filter, Download, SortAsc, SortDesc, RefreshCw, X, ExternalLink, Mail, Calculator, Info, Map, Loader2, Trash2, Star, FileText, ChevronDown, ChevronUp } from 'lucide-react';
 import AlertModal from './AlertModal';
 
 interface Place {
@@ -176,13 +176,18 @@ const PlacesPage: React.FC = () => {
     businessId: string;
     emailActivities: EmailActivity[];
     loading: boolean;
+    templates: { [key: string]: any };
+    place: Place | null;
   }>({
     isOpen: false,
     businessName: '',
     businessId: '',
     emailActivities: [],
-    loading: false
+    loading: false,
+    templates: {},
+    place: null
   });
+  const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchPlaces();
@@ -234,7 +239,7 @@ const PlacesPage: React.FC = () => {
     return () => {
       document.removeEventListener('keydown', handleEscKey);
     };
-  }, [isModalOpen, isLocationsModalOpen, isTypesModalOpen, icpBreakdownModal, alertModal, progressModal, enrichmentProgress]);
+  }, [isModalOpen, isLocationsModalOpen, isTypesModalOpen, icpBreakdownModal, alertModal, progressModal, enrichmentProgress, outreachModal]);
 
   const fetchPlaces = async () => {
     try {
@@ -1037,7 +1042,7 @@ const PlacesPage: React.FC = () => {
     const headers = [
       'Name', 'Address', 'Website', 'Phone', 'Emails', 'Types', 
       'Rating', 'Total Ratings', 'Number of Locations', 'Location Names',
-      'Country', 'Enriched', 'Added At'
+      'Country', 'Enriched'
     ];
 
     const csvData = filteredPlaces.map(place => [
@@ -1051,8 +1056,7 @@ const PlacesPage: React.FC = () => {
       place.numLocations || '',
       place.locationNames?.join(', ') || '',
       place.country || '',
-      place.enriched ? 'Yes' : 'No',
-      new Date(place.addedAt).toLocaleDateString()
+      place.enriched ? 'Yes' : 'No'
     ]);
 
     const csvContent = [headers, ...csvData]
@@ -1120,23 +1124,48 @@ const PlacesPage: React.FC = () => {
       businessName: place.name,
       businessId: place.id,
       emailActivities: [],
-      loading: true
+      loading: true,
+      templates: {},
+      place: place
     });
+    // Expand all emails by default
+    setExpandedEmails(new Set());
 
     try {
-      const response = await fetch(`/api/email-activities?businessId=${place.id}`);
-      if (response.ok) {
-        const data = await response.json();
+      // Fetch both email activities and templates
+      const [activitiesResponse, templatesResponse] = await Promise.all([
+        fetch(`/api/email-activities?businessId=${place.id}`),
+        fetch('/api/email-templates')
+      ]);
+      
+      if (activitiesResponse.ok && templatesResponse.ok) {
+        const activitiesData = await activitiesResponse.json();
+        const templatesData = await templatesResponse.json();
+        
+        // Create a map of templateId -> template for easy lookup
+        const templatesMap: { [key: string]: any } = {};
+        templatesData.forEach((template: any) => {
+          templatesMap[template.id] = template;
+        });
+        
+        console.log('[Outreach Modal] Loaded data:', {
+          emailCount: activitiesData.activities?.length || 0,
+          templateCount: templatesData.length,
+          templateIds: Object.keys(templatesMap),
+          sampleActivity: activitiesData.activities?.[0]
+        });
+        
         setOutreachModal(prev => ({
           ...prev,
-          emailActivities: data.activities || [],
+          emailActivities: activitiesData.activities || [],
+          templates: templatesMap,
           loading: false
         }));
       } else {
-        throw new Error('Failed to fetch email activities');
+        throw new Error('Failed to fetch email activities or templates');
       }
     } catch (error) {
-      console.error('Error fetching email activities:', error);
+      console.error('Error fetching outreach data:', error);
       setOutreachModal(prev => ({
         ...prev,
         loading: false
@@ -1156,8 +1185,83 @@ const PlacesPage: React.FC = () => {
       businessName: '',
       businessId: '',
       emailActivities: [],
-      loading: false
+      loading: false,
+      templates: {},
+      place: null
     });
+    setExpandedEmails(new Set());
+  };
+
+  // Helper function to replace template variables with real values
+  const replaceTemplateVariables = (content: string, place: Place | null, decisionMakerName: string): string => {
+    if (!place || !content) return content;
+
+    // Extract city and state from address (format: "123 Main St, City, State ZIP")
+    const addressParts = place.address.split(',');
+    const cityState = addressParts.length >= 3 
+      ? `${addressParts[addressParts.length - 2].trim()}, ${addressParts[addressParts.length - 1].trim().split(' ')[0]}`
+      : place.address;
+
+    // Common replacements
+    const replacements: { [key: string]: string } = {
+      '{{LEAD_NAME}}': decisionMakerName || 'there',
+      '{{BUSINESS_NAME}}': place.name || '[Business Name]',
+      '{{BUSINESS_CITY_STATE}}': cityState || '[City, State]',
+      '{{COMPETITOR_LIST}}': 'ABC Company, XYZ Corp, and 123 Services',
+      '{{YOUR_NAME}}': 'David Lee',
+      '{{YOUR_COMPANY}}': 'OutreachPro',
+    };
+
+    let result = content;
+    Object.keys(replacements).forEach(variable => {
+      result = result.replace(new RegExp(variable, 'g'), replacements[variable]);
+    });
+
+    return result;
+  };
+
+  // Helper function to render text with clickable URLs
+  const renderTextWithLinks = (text: string) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const parts = text.split(urlRegex);
+    
+    return parts.map((part, index) => {
+      if (part.match(urlRegex)) {
+        return (
+          <a
+            key={index}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:text-blue-800 underline"
+          >
+            {part}
+          </a>
+        );
+      }
+      return <span key={index}>{part}</span>;
+    });
+  };
+
+  const toggleEmailExpand = (emailId: string) => {
+    setExpandedEmails(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(emailId)) {
+        newSet.delete(emailId);
+      } else {
+        newSet.add(emailId);
+      }
+      return newSet;
+    });
+  };
+
+  const expandAllEmails = () => {
+    const allIds = new Set(outreachModal.emailActivities.map(a => a.emailId));
+    setExpandedEmails(allIds);
+  };
+
+  const collapseAllEmails = () => {
+    setExpandedEmails(new Set());
   };
 
   const paginatedPlaces = filteredPlaces.slice(
@@ -1440,14 +1544,6 @@ const PlacesPage: React.FC = () => {
                       )}
                     </div>
                   </th> */}
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('addedAt')}>
-                    <div className="flex items-center">
-                      Added
-                      {sortField === 'addedAt' && (
-                        sortDirection === 'asc' ? <SortAsc className="w-4 h-4 ml-1" /> : <SortDesc className="w-4 h-4 ml-1" />
-                      )}
-                    </div>
-                  </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -1644,11 +1740,6 @@ const PlacesPage: React.FC = () => {
                         )}
                       </div>
                     </td> */}
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <div className="text-xs text-gray-900">
-                        {new Date(place.addedAt).toLocaleDateString()}
-                      </div>
-                    </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         {/* Enrich Button */}
@@ -2361,12 +2452,12 @@ const PlacesPage: React.FC = () => {
                       </span>
                       <div className="flex-1">
                         <div className="text-gray-900 font-medium">
-                          {step.main}
+                          {renderTextWithLinks(step.main)}
                         </div>
                         {/* Result message (if any) */}
                         {step.result && (
                           <div className="text-green-700 text-sm mt-1">
-                            {step.result}
+                            {renderTextWithLinks(step.result)}
                           </div>
                         )}
                       </div>
@@ -2377,7 +2468,7 @@ const PlacesPage: React.FC = () => {
                       <div className="ml-6 mt-2 space-y-1">
                         {step.details.map((detail, detailIndex) => (
                           <div key={detailIndex} className="text-gray-600 text-xs">
-                            {detail}
+                            {renderTextWithLinks(detail)}
                           </div>
                         ))}
                       </div>
@@ -2404,129 +2495,219 @@ const PlacesPage: React.FC = () => {
 
     {/* Outreach Modal */}
     {outreachModal.isOpen && (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[85vh] flex flex-col">
-          {/* Sticky Header */}
-          <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-white rounded-t-lg sticky top-0 z-10">
-            <h2 className="text-xl font-semibold text-gray-900">
-              Outreach Thread - {outreachModal.businessName}
-            </h2>
-            <button
-              onClick={closeOutreachModal}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-            >
-              <X className="w-6 h-6" />
-            </button>
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[85vh] flex flex-col">
+          {/* Sticky Header - Gmail Style */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white rounded-t-lg sticky top-0 z-10">
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-semibold text-gray-900">
+                Outreach Thread - {outreachModal.businessName}
+              </h2>
+              <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded text-xs font-medium">
+                {outreachModal.emailActivities.length} email{outreachModal.emailActivities.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Expand/Collapse All Buttons */}
+              {outreachModal.emailActivities.length > 1 && (
+                <div className="flex items-center gap-1 mr-4">
+                  <button
+                    onClick={expandAllEmails}
+                    className="p-1.5 text-gray-600 hover:bg-gray-100 rounded transition-colors"
+                    title="Expand all"
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={collapseAllEmails}
+                    className="p-1.5 text-gray-600 hover:bg-gray-100 rounded transition-colors"
+                    title="Collapse all"
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+              <button
+                onClick={closeOutreachModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
           
-          {/* Scrollable Content */}
-          <div className="p-6 overflow-y-auto flex-1">
+          {/* Scrollable Content - Gmail Style Thread */}
+          <div className="overflow-y-auto flex-1 bg-gray-50">
             {outreachModal.loading ? (
               <div className="flex items-center justify-center py-12">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
                 <p className="ml-4 text-gray-600">Loading email activities...</p>
               </div>
             ) : outreachModal.emailActivities.length > 0 ? (
-              <div className="space-y-4">
-                {outreachModal.emailActivities.map((activity, index) => (
-                  <div key={activity.emailId} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
-                          <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">
-                            Email #{outreachModal.emailActivities.length - index}
-                          </span>
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            activity.status === 'clicked' ? 'bg-green-100 text-green-800' :
-                            activity.status === 'opened' ? 'bg-yellow-100 text-yellow-800' :
-                            activity.status === 'delivered' ? 'bg-blue-100 text-blue-800' :
-                            activity.status === 'bounced' || activity.status === 'failed' ? 'bg-red-100 text-red-800' :
-                            'bg-gray-100 text-gray-800'
-                          }`}>
-                            {activity.status.charAt(0).toUpperCase() + activity.status.slice(1)}
-                          </span>
-                          {activity.emailType === 'test' && (
-                            <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                              Test
-                            </span>
-                          )}
-                        </div>
-                        <h3 className="text-md font-semibold text-gray-900 mb-2">{activity.subject}</h3>
-                        <div className="text-sm text-gray-600 space-y-1">
-                          <div className="flex items-center">
-                            <Mail className="h-4 w-4 mr-2 text-gray-400" />
-                            <span><strong>To:</strong> {activity.decisionMakerName} ({activity.decisionMakerEmail})</span>
+              <div className="py-2">
+                {outreachModal.emailActivities.map((activity) => {
+                  const isExpanded = expandedEmails.has(activity.emailId);
+                  
+                  return (
+                    <div key={activity.emailId} className="bg-white border-b border-gray-200 hover:shadow-sm transition-shadow">
+                      {/* Email Header - Always Visible */}
+                      <div 
+                        className="px-6 py-4 cursor-pointer"
+                        onClick={() => toggleEmailExpand(activity.emailId)}
+                      >
+                        <div className="flex items-start gap-3">
+                          {/* Avatar */}
+                          <div className="flex-shrink-0">
+                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-sm">
+                              {activity.decisionMakerName.charAt(0).toUpperCase()}
+                            </div>
                           </div>
-                          <div className="flex items-center">
-                            <span className="text-xs text-gray-500">
-                              <strong>Template:</strong> {activity.templateName}
-                            </span>
+                          
+                          {/* Email Content */}
+                          <div className="flex-1 min-w-0">
+                            {/* Sender Info */}
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-gray-900 text-sm">
+                                  {activity.decisionMakerName}
+                                </span>
+                                <span className="text-gray-500 text-xs">
+                                  &lt;{activity.decisionMakerEmail}&gt;
+                                </span>
+                                {activity.emailType === 'test' && (
+                                  <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">
+                                    Test
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <span className="text-xs text-gray-500">
+                                  {new Date(activity.sentAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                                </span>
+                                {isExpanded ? (
+                                  <ChevronUp className="w-4 h-4 text-gray-400" />
+                                ) : (
+                                  <ChevronDown className="w-4 h-4 text-gray-400" />
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Subject with Status - Same Line */}
+                            <div className="flex items-center gap-2 mb-2 flex-wrap">
+                              <span className="text-sm text-gray-900 font-medium">{activity.subject}</span>
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                activity.status === 'clicked' ? 'bg-green-50 text-green-700 border border-green-200' :
+                                activity.status === 'opened' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' :
+                                activity.status === 'delivered' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                                activity.status === 'bounced' || activity.status === 'failed' ? 'bg-red-50 text-red-700 border border-red-200' :
+                                'bg-gray-50 text-gray-700 border border-gray-200'
+                              }`}>
+                                {activity.status === 'clicked' && '✓ Clicked'}
+                                {activity.status === 'opened' && '👁 Opened'}
+                                {activity.status === 'delivered' && '✓ Delivered'}
+                                {activity.status === 'bounced' && '✗ Bounced'}
+                                {activity.status === 'failed' && '✗ Failed'}
+                                {activity.status === 'sent' && '→ Sent'}
+                              </span>
+                              {activity.openCount > 0 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-50 text-green-700 border border-green-200">
+                                  📖 {activity.openCount}
+                                </span>
+                              )}
+                              {activity.clickCount > 0 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                                  🖱 {activity.clickCount}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
+                      
+                      {/* Expanded Content - Collapsible Body */}
+                      {isExpanded && (
+                        <div className="px-6 pb-4 pt-0">
+                          <div className="ml-13 border-t border-gray-100 pt-3">
+                            {/* Email Body */}
+                            {(() => {
+                              const template = outreachModal.templates[activity.templateId];
+                              
+                              if (template) {
+                                const emailContent = replaceTemplateVariables(
+                                  template.text || template.html || 'No content available',
+                                  outreachModal.place,
+                                  activity.decisionMakerName
+                                );
+                                
+                                return (
+                                  <div className="mb-4">
+                                    <div className="bg-white border border-gray-200 rounded-lg p-4">
+                                      <div className="text-xs font-medium text-gray-700 mb-2">Email Content</div>
+                                      <div 
+                                        className="text-xs text-gray-800 whitespace-pre-wrap leading-relaxed"
+                                        style={{ fontFamily: 'inherit' }}
+                                      >
+                                        {emailContent}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              
+                              // If no template found, show a message
+                              return (
+                                <div className="mb-4">
+                                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                                    <div className="text-xs font-medium text-gray-500 mb-1">Email Content</div>
+                                    <div className="text-xs text-gray-500">
+                                      Template content not available (ID: {activity.templateId})
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                            
+                            {/* Template Info */}
+                            <div className="text-xs text-gray-500">
+                              <span className="font-medium">Template:</span> {activity.templateName}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-3 border-t border-gray-100">
-                      <div>
-                        <div className="text-xs text-gray-500 mb-1">Sent</div>
-                        <div className="text-sm font-medium text-gray-900">
-                          {new Date(activity.sentAt).toLocaleDateString()} {new Date(activity.sentAt).toLocaleTimeString()}
-                        </div>
-                      </div>
-                      
-                      {activity.deliveredAt && (
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">Delivered</div>
-                          <div className="text-sm font-medium text-gray-900">
-                            {new Date(activity.deliveredAt).toLocaleDateString()} {new Date(activity.deliveredAt).toLocaleTimeString()}
-                          </div>
-                        </div>
-                      )}
-                      
-                      {activity.openCount > 0 && (
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">Opens</div>
-                          <div className="text-sm font-medium text-green-700">
-                            {activity.openCount} time{activity.openCount === 1 ? '' : 's'}
-                            {activity.lastOpenedAt && (
-                              <div className="text-xs text-gray-500 mt-0.5">
-                                Last: {new Date(activity.lastOpenedAt).toLocaleDateString()}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      
-                      {activity.clickCount > 0 && (
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">Clicks</div>
-                          <div className="text-sm font-medium text-green-700">
-                            {activity.clickCount} time{activity.clickCount === 1 ? '' : 's'}
-                            {activity.lastClickedAt && (
-                              <div className="text-xs text-gray-500 mt-0.5">
-                                Last: {new Date(activity.lastClickedAt).toLocaleDateString()}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
-              <div className="text-center py-12">
-                <Mail className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-500">No email activities found for this business.</p>
+              <div className="flex flex-col items-center justify-center py-16 px-4">
+                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                  <Mail className="h-8 w-8 text-gray-400" />
+                </div>
+                <p className="text-gray-500 text-center">No email activities found for this business.</p>
+                <p className="text-gray-400 text-sm text-center mt-1">Send your first email to start tracking engagement.</p>
               </div>
             )}
           </div>
           
           {/* Sticky Footer */}
-          <div className="flex justify-end p-6 border-t border-gray-200 bg-white rounded-b-lg sticky bottom-0 z-10">
+          <div className="flex justify-between items-center px-6 py-3 border-t border-gray-200 bg-gray-50 rounded-b-lg sticky bottom-0 z-10">
+            <div className="text-sm text-gray-600">
+              {outreachModal.emailActivities.length > 0 && (
+                <span>
+                  Total engagement: {' '}
+                  <span className="font-medium text-gray-900">
+                    {outreachModal.emailActivities.reduce((acc, a) => acc + a.openCount, 0)} opens
+                  </span>
+                  {', '}
+                  <span className="font-medium text-gray-900">
+                    {outreachModal.emailActivities.reduce((acc, a) => acc + a.clickCount, 0)} clicks
+                  </span>
+                </span>
+              )}
+            </div>
             <button
               onClick={closeOutreachModal}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
             >
               Close
             </button>
