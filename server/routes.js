@@ -415,7 +415,7 @@ async function enrichBusinessData(placeId, options = {}) {
       numLocations: detectedNumLocations, 
       locationNames: detectedLocationNames, 
       usedPuppeteer: detectLocationsUsedPuppeteer 
-    } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode, sitemapData });
+    } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode, sitemapData, businessName: existingBusiness.name });
     
     // Use detected locations if available, otherwise keep default of 1
     if (detectedNumLocations && detectedNumLocations > 0) {

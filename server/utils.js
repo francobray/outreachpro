@@ -1213,7 +1213,7 @@ export const analyzeWebsiteForICP = (html, website) => {
 
 // Detect locations from the homepage HTML
 export const detectLocations = async (html, baseUrl, options = {}) => {
-  const { noPuppeteer = false, debugMode = false, sitemapData = null } = options;
+  const { noPuppeteer = false, debugMode = false, sitemapData = null, businessName = null } = options;
   let locationSet = new Set();
   let hasLocationsPage = false;
   let usedPuppeteer = false;
@@ -1784,10 +1784,11 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   console.log(`[PlaceDetails] Found ${uniqueLocations.length} valid locations (after filtering):`, uniqueLocations);
   
   // CRITICAL: If we only found 1 location, it's likely just the main business address, not a multi-location business
-  // Return 1 location only if we're confident it's a multi-location business (had a locations page)
+  // Return 1 location with the business name as the location name (not the address)
   if (uniqueLocations.length === 1 && !hasLocationsPage) {
-    console.log(`[PlaceDetails] Only found 1 location without a dedicated locations page - likely the main business address. Returning 1 location.`);
-    return { numLocations: 1, locationNames: [], hasLocationsPage: false, usedPuppeteer };
+    console.log(`[PlaceDetails] Only found 1 location without a dedicated locations page - likely the main business address. Using business name as location name.`);
+    const locationName = businessName || 'Main Location';
+    return { numLocations: 1, locationNames: [locationName], hasLocationsPage: false, usedPuppeteer };
   }
   
   return { numLocations: uniqueLocations.length, locationNames: uniqueLocations, hasLocationsPage, usedPuppeteer };
