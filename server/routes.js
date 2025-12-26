@@ -475,6 +475,13 @@ async function enrichBusinessData(placeId, options = {}) {
       
       console.log(`[Enrichment] Refined location names:`, locationNames);
       sendProgress(`✓ Found ${numLocations} location(s) on website`);
+      
+      // Show individual location names as sub-messages
+      if (locationNames.length > 0) {
+        locationNames.forEach((location, index) => {
+          sendProgress(`  ${index + 1}. ${location}`);
+        });
+      }
     } else {
       console.log('[Enrichment] No distinct locations detected on homepage.');
       sendProgress('✓ No additional locations found on website');
@@ -524,6 +531,13 @@ async function enrichBusinessData(placeId, options = {}) {
               locationNames
             });
             sendProgress(`✓ Found ${numLocations} total locations via Google Places`);
+            
+            // Show individual location names as sub-messages
+            if (apiLocationNames.length > 0) {
+              apiLocationNames.forEach((location, index) => {
+                sendProgress(`  ${index + 1}. ${location}`);
+              });
+            }
           } else {
             sendProgress('✓ No additional locations found via Google Places');
           }
