@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import ApiCallLog from './models/ApiCallLog.js';
 import { compareTwoStrings } from 'string-similarity';
+import { parseStringPromise } from 'xml2js';
 
 let puppeteer, puppeteerExtra, StealthPlugin, robotsParser;
 
@@ -794,6 +795,225 @@ export async function getApolloCosts() {
 }
 
 /**
+ * Fetch and parse sitemap.xml from a website
+ * @param {string} baseUrl - Base URL of the website
+ * @returns {Promise<Object>} - Parsed sitemap with categorized URLs
+ */
+export const parseSitemap = async (baseUrl) => {
+  console.log(`[Sitemap] Fetching sitemap for ${baseUrl}`);
+  
+  const result = {
+    found: false,
+    urls: [],
+    categorized: {
+      locations: [],
+      contact: [],
+      about: [],
+      menu: [],
+      other: []
+    }
+  };
+
+  try {
+    // Normalize base URL
+    const url = new URL(baseUrl);
+    const sitemapUrl = `${url.protocol}//${url.host}/sitemap.xml`;
+    
+    console.log(`[Sitemap] Trying: ${sitemapUrl}`);
+    
+    // Check robots.txt first (optional, best practice)
+    const canAccess = await checkRobotsTxt(sitemapUrl);
+    if (!canAccess) {
+      console.log(`[Sitemap] Access blocked by robots.txt`);
+      return result;
+    }
+    
+    // Fetch sitemap
+    const response = await fetch(sitemapUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; OutreachPro/1.0; +https://outreachpro.com)'
+      },
+      timeout: 10000
+    });
+    
+    if (!response.ok) {
+      console.log(`[Sitemap] Not found or inaccessible (${response.status})`);
+      return result;
+    }
+    
+    const xmlContent = await response.text();
+    
+    // Parse XML
+    const parsed = await parseStringPromise(xmlContent, {
+      trim: true,
+      normalize: true,
+      explicitArray: false
+    });
+    
+    console.log(`[Sitemap] Successfully parsed sitemap.xml`);
+    
+    // Handle sitemap index (contains multiple sitemaps)
+    if (parsed.sitemapindex) {
+      console.log(`[Sitemap] Found sitemap index`);
+      const sitemaps = Array.isArray(parsed.sitemapindex.sitemap) 
+        ? parsed.sitemapindex.sitemap 
+        : [parsed.sitemapindex.sitemap];
+      
+      // Fetch first sitemap from index (limit to avoid too many requests)
+      if (sitemaps.length > 0 && sitemaps[0].loc) {
+        const firstSitemapUrl = sitemaps[0].loc;
+        console.log(`[Sitemap] Fetching first sitemap from index: ${firstSitemapUrl}`);
+        
+        const subResponse = await fetch(firstSitemapUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; OutreachPro/1.0; +https://outreachpro.com)'
+          },
+          timeout: 10000
+        });
+        
+        if (subResponse.ok) {
+          const subXml = await subResponse.text();
+          const subParsed = await parseStringPromise(subXml, {
+            trim: true,
+            normalize: true,
+            explicitArray: false
+          });
+          
+          if (subParsed.urlset && subParsed.urlset.url) {
+            result.urls = extractUrlsFromSitemap(subParsed);
+          }
+        }
+      }
+    }
+    // Handle regular sitemap
+    else if (parsed.urlset && parsed.urlset.url) {
+      result.urls = extractUrlsFromSitemap(parsed);
+    }
+    
+    if (result.urls.length > 0) {
+      result.found = true;
+      result.categorized = categorizeUrls(result.urls);
+      
+      console.log(`[Sitemap] Found ${result.urls.length} URLs:`);
+      console.log(`[Sitemap]   - Locations: ${result.categorized.locations.length}`);
+      console.log(`[Sitemap]   - Contact: ${result.categorized.contact.length}`);
+      console.log(`[Sitemap]   - About: ${result.categorized.about.length}`);
+      console.log(`[Sitemap]   - Menu: ${result.categorized.menu.length}`);
+      console.log(`[Sitemap]   - Other: ${result.categorized.other.length}`);
+    } else {
+      console.log(`[Sitemap] No URLs found in sitemap`);
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.log(`[Sitemap] Error parsing sitemap: ${error.message}`);
+    return result;
+  }
+};
+
+/**
+ * Extract URLs from parsed sitemap object
+ * @param {Object} parsed - Parsed sitemap XML
+ * @returns {Array<string>} - Array of URLs
+ */
+function extractUrlsFromSitemap(parsed) {
+  const urls = [];
+  
+  if (parsed.urlset && parsed.urlset.url) {
+    const urlEntries = Array.isArray(parsed.urlset.url) 
+      ? parsed.urlset.url 
+      : [parsed.urlset.url];
+    
+    urlEntries.forEach(entry => {
+      if (entry.loc) {
+        urls.push(entry.loc);
+      }
+    });
+  }
+  
+  return urls;
+}
+
+/**
+ * Categorize URLs from sitemap into different types
+ * @param {Array<string>} urls - Array of URLs
+ * @returns {Object} - Categorized URLs
+ */
+function categorizeUrls(urls) {
+  const categorized = {
+    locations: [],
+    contact: [],
+    about: [],
+    menu: [],
+    other: []
+  };
+  
+  // Patterns for categorization
+  const patterns = {
+    locations: [
+      /\/location(s)?/i,
+      /\/store(s)?/i,
+      /\/branch(es)?/i,
+      /\/locale(s)?/i,
+      /\/sucursal(es)?/i,
+      /\/tienda(s)?/i,
+      /\/lojas?/i, // Portuguese
+      /\/negozi/i, // Italian
+      /\/find-us/i,
+      /\/where-to-find/i
+    ],
+    contact: [
+      /\/contact(o)?/i,
+      /\/contacto/i,
+      /\/contato/i,
+      /\/contatti/i,
+      /\/get-in-touch/i,
+      /\/reach-us/i
+    ],
+    about: [
+      /\/about/i,
+      /\/sobre/i,
+      /\/chi-siamo/i,
+      /\/quienes-somos/i,
+      /\/nosotros/i,
+      /\/our-story/i,
+      /\/historia/i
+    ],
+    menu: [
+      /\/menu/i,
+      /\/carta/i,
+      /\/food/i,
+      /\/products?/i,
+      /\/shop/i,
+      /\/store/i,
+      /\/order/i,
+      /\/pedir/i
+    ]
+  };
+  
+  urls.forEach(url => {
+    let categorizedFlag = false;
+    
+    // Check each category
+    for (const [category, categoryPatterns] of Object.entries(patterns)) {
+      if (categoryPatterns.some(pattern => pattern.test(url))) {
+        categorized[category].push(url);
+        categorizedFlag = true;
+        break; // Only categorize once
+      }
+    }
+    
+    // If not categorized, add to "other"
+    if (!categorizedFlag) {
+      categorized.other.push(url);
+    }
+  });
+  
+  return categorized;
+}
+
+/**
  * Analyze website for ICP-related variables
  * @param {string} html - Homepage HTML
  * @param {string} website - Base URL
@@ -835,26 +1055,70 @@ export const analyzeWebsiteForICP = (html, website) => {
   console.log(`[Website Analysis]   WhatsApp: ${analysis.hasWhatsApp}`);
 
   // 3. Check for Reservation CTAs (English, Spanish, Italian, Portuguese)
-  const reservationKeywords = [
-    // English
-    'reservation', 'reserve', 'book a table', 'book now', 'make a booking',
-    // Spanish
-    'reserva', 'reservas', 'reservar', 'hacer reserva', 'reserva tu mesa',
-    // Italian
-    'prenotazione', 'prenota', 'prenotare',
-    // Portuguese
-    'reserva', 'reservar', 'fazer reserva',
-    // Platforms
-    'opentable', 'resy', 'tock', 'yelp reservations', 'tablein', 'pastarossaonline'
-  ];
+  // Using more specific patterns to avoid false positives like "derechos reservados"
   const reservationPatterns = [
-    ...reservationKeywords.map(kw => new RegExp(kw, 'i')),
+    // English
+    /\breservation\b/i,
+    /\breserve a table\b/i,
+    /\bbook a table\b/i,
+    /\bbook now\b/i,
+    /\bmake a booking\b/i,
+    /\btable reservation\b/i,
+    // Spanish - specific phrases for table booking
+    /\breserva\s+(tu|su|una)\s+mesa\b/i,  // "reserva tu/su/una mesa"
+    /\breservar\s+mesa\b/i,                // "reservar mesa"
+    /\breservas\s+online\b/i,              // "reservas online"
+    /\bhacer\s+(una\s+)?reserva\b/i,       // "hacer (una) reserva"
+    /\breservaciones\b/i,                  // "reservaciones"
+    // Italian
+    /\bprenotazione\b/i,
+    /\bprenota\s+(un\s+)?tavolo\b/i,       // "prenota (un) tavolo"
+    /\bprenotare\b/i,
+    // Portuguese
+    /\breservar\s+mesa\b/i,                // "reservar mesa"
+    /\bfazer\s+reserva\b/i,                // "fazer reserva"
+    /\breserva\s+online\b/i,               // "reserva online"
+    // Platforms
+    /\bopentable\b/i,
+    /\bresy\b/i,
+    /\btock\b/i,
+    /\byelp\s+reservations\b/i,
+    /\btablein\b/i,
+    /\bpastarossaonline\b/i,
     /href="[^"]*opentable\.com/i,
     /href="[^"]*resy\.com/i,
     /href="[^"]*exploretock\.com/i,
     /href="[^"]*pastarossaonline\.com/i
   ];
-  analysis.hasReservation = reservationPatterns.some(pattern => pattern.test(htmlLower));
+  
+  // Exclude false positives
+  const falsePositivePatterns = [
+    /derechos\s+reservados/i,              // "derechos reservados" (rights reserved)
+    /rights\s+reserved/i,                  // "rights reserved"
+    /diritti\s+riservati/i,                // "diritti riservati" (Italian rights reserved)
+    /todos\s+os\s+direitos\s+reservados/i  // Portuguese rights reserved
+  ];
+  
+  let hasReservationMatch = reservationPatterns.some(pattern => pattern.test(htmlLower));
+  const hasFalsePositive = falsePositivePatterns.some(pattern => pattern.test(htmlLower));
+  
+  // If we found a match but it's likely a false positive, do additional validation
+  if (hasReservationMatch && hasFalsePositive) {
+    // Only count as reservation if we have strong indicators
+    const strongIndicators = [
+      /\breserva\s+(tu|su|una)\s+mesa\b/i,
+      /\breservar\s+mesa\b/i,
+      /\btable\s+reservation\b/i,
+      /\bbook\s+a\s+table\b/i,
+      /\bopentable\b/i,
+      /\bresy\b/i,
+      /href="[^"]*opentable\.com/i,
+      /href="[^"]*resy\.com/i
+    ];
+    hasReservationMatch = strongIndicators.some(pattern => pattern.test(htmlLower));
+  }
+  
+  analysis.hasReservation = hasReservationMatch;
   console.log(`[Website Analysis]   Reservation: ${analysis.hasReservation}`);
 
   // 4. Check for Third Party Delivery (Global and Regional platforms)
@@ -888,33 +1152,59 @@ export const analyzeWebsiteForICP = (html, website) => {
   console.log(`[Website Analysis]   Third Party Delivery: ${analysis.hasThirdPartyDelivery}`);
 
   // 5. Check for Direct Ordering (Multilingual)
-  const directOrderingKeywords = [
-    // English
-    'order online', 'order now', 'online ordering', 'place order', 'order pickup',
-    'order delivery', 'add to cart', 'checkout', 'buy now', 'shop now', 'delivery',
-    // Spanish
-    'pedir online', 'pedir ahora', 'hacer pedido', 'ordenar', 'pedido online',
-    'añadir al carrito', 'agregar al carrito', 'comprar ahora', 'pedir delivery',
-    'pedir domicilio', 'takeaway', 'take away', 'para llevar', 'delivery', 'envíos',
-    'envios', 'pedí', 'pedi', 'comprá', 'compra',
-    // Italian
-    'ordina online', 'ordina ora', 'fare ordine', 'aggiungi al carrello',
-    'acquista ora', 'asporto', 'consegna',
-    // Portuguese
-    'pedir online', 'fazer pedido', 'adicionar ao carrinho', 'comprar agora', 'entrega',
-    // General
-    'menu', 'carta', 'menú'
+  // Use more specific patterns to avoid false positives from third-party delivery mentions
+  const strongDirectOrderingIndicators = [
+    // Shopping cart / checkout systems
+    /add\s+to\s+cart/i,
+    /añadir\s+al\s+carrito/i,
+    /agregar\s+al\s+carrito/i,
+    /aggiungi\s+al\s+carrello/i,
+    /adicionar\s+ao\s+carrinho/i,
+    /\bcheckout\b/i,
+    /\bcarrito\b.*\bcompra/i,
+    /shopping\s+cart/i,
+    
+    // Online ordering platforms (owned systems)
+    /order\s+online/i,
+    /pedir\s+online/i,
+    /pedido\s+online/i,
+    /ordina\s+online/i,
+    /online\s+ordering/i,
+    /place\s+(your\s+)?order/i,
+    /hacer\s+(tu\s+)?pedido/i,
+    
+    // E-commerce platforms
+    /shopify/i,
+    /woocommerce/i,
+    /square\s+online/i,
+    /toast\s+takeout/i,
+    /chownow/i,
+    /slice/i,
+    /olo\./i,
+    /direct\s+order/i,
+    /own\s+ordering/i
   ];
-  // Look for ordering keywords combined with form elements or buttons
-  const hasOrderingKeywords = directOrderingKeywords.some(kw => htmlLower.includes(kw));
-  const buttonText = $('button, a').text().toLowerCase();
-  const hasOrderingUI = /(order|menu|cart|checkout|pedir|pedido|ordenar|carrito|ordina|compra|delivery|envío|envio|takeaway)/i.test(buttonText);
-  const hasMenuItems = $('.menu-item, .product, .dish, .carta, .plato').length > 0 || 
-                       htmlLower.includes('add to cart') || 
-                       htmlLower.includes('añadir al carrito') ||
-                       htmlLower.includes('agregar al carrito');
   
-  analysis.hasDirectOrdering = hasOrderingKeywords && (hasOrderingUI || hasMenuItems);
+  // Check for strong indicators
+  const hasStrongIndicators = strongDirectOrderingIndicators.some(pattern => pattern.test(htmlLower));
+  
+  // Check for form elements that suggest ordering functionality
+  const hasOrderForm = $('form').toArray().some(form => {
+    const formText = $(form).text().toLowerCase();
+    return /order|pedir|pedido|ordenar|ordina|checkout|carrito|cart/i.test(formText);
+  });
+  
+  // Check for shopping cart elements
+  const hasCartElements = $(
+    '.cart, .shopping-cart, .carrito, .checkout, ' +
+    '[class*="cart"], [class*="carrito"], [class*="checkout"], ' +
+    '[id*="cart"], [id*="carrito"], [id*="checkout"]'
+  ).length > 0;
+  
+  // Only mark as direct ordering if we have strong evidence
+  // If only third-party delivery is found, don't count generic "order" or "delivery" keywords
+  analysis.hasDirectOrdering = hasStrongIndicators || hasOrderForm || hasCartElements;
+  
   console.log(`[Website Analysis]   Direct Ordering: ${analysis.hasDirectOrdering}`);
 
   console.log(`[Website Analysis] Completed analysis for ${website}`);
@@ -923,7 +1213,7 @@ export const analyzeWebsiteForICP = (html, website) => {
 
 // Detect locations from the homepage HTML
 export const detectLocations = async (html, baseUrl, options = {}) => {
-  const { noPuppeteer = false, debugMode = false } = options;
+  const { noPuppeteer = false, debugMode = false, sitemapData = null } = options;
   let locationSet = new Set();
   let hasLocationsPage = false;
   let usedPuppeteer = false;
@@ -944,6 +1234,14 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
     'localizacao', 'localizacoes', 'onde-estamos', 'nossos-locais', 'lojas'
   ];
   let locationsPageUrl = null;
+
+  // First, check sitemap data if available
+  if (sitemapData && sitemapData.found && sitemapData.categorized.locations.length > 0) {
+    console.log(`[PlaceDetails] Found ${sitemapData.categorized.locations.length} location page(s) in sitemap`);
+    // Use the first locations page from sitemap
+    locationsPageUrl = sitemapData.categorized.locations[0];
+    console.log(`[PlaceDetails] Using locations page from sitemap: ${locationsPageUrl}`);
+  }
 
   // First, check for location cards/sections on the homepage
   // Look for common patterns: cards, location items, address blocks, etc.
@@ -1018,49 +1316,7 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
     }
   });
 
-  // If no locations page link found, try common URL patterns directly
-  if (!locationsPageUrl) {
-    console.log(`[PlaceDetails] No locations page link found. Trying common URL patterns...`);
-    const commonPaths = [
-      '/locales', '/locations', '/shops', '/sucursales', '/tiendas',
-      '/donde-estamos', '/our-locations', '/our-shops', '/store-locator',
-      '/find-us', '/puntos-de-venta'
-    ];
-    
-    for (const path of commonPaths) {
-      try {
-        const testUrl = new URL(path, baseUrl).href;
-        console.log(`[PlaceDetails] Trying: ${testUrl}`);
-        
-        // Try to fetch the page
-        const { html: testHtml, usedPuppeteer: testUsedPuppeteer } = await fetchHtmlWithFallback(testUrl, { noPuppeteer, debugMode });
-        
-        if (testUsedPuppeteer) {
-          usedPuppeteer = true;
-        }
-        
-        // Check if the page exists and has content (not a 404 page)
-        const $test = cheerio.load(testHtml);
-        const bodyText = $test('body').text().toLowerCase();
-        
-        // Simple heuristic: if page has location-related words and addresses, it's probably a locations page
-        const hasLocationContent = (bodyText.includes('location') || bodyText.includes('sucursal') || 
-                                   bodyText.includes('tienda') || bodyText.includes('local')) &&
-                                  (bodyText.length > 500); // Must have substantial content
-        
-        if (hasLocationContent) {
-          console.log(`[PlaceDetails] ✅ Found locations page at: ${testUrl}`);
-          locationsPageUrl = testUrl;
-          hasLocationsPage = true;
-          break; // Stop trying other patterns
-        }
-      } catch (error) {
-        // Ignore errors and try next pattern
-        console.log(`[PlaceDetails] Pattern ${path} failed, trying next...`);
-      }
-    }
-  }
-
+  // Only proceed if we found a locations page from sitemap or homepage HTML
   if (locationsPageUrl) {
     try {
       const absoluteLocationsUrl = new URL(locationsPageUrl, baseUrl).href;

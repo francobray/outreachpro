@@ -18,6 +18,7 @@ import {
   findSimilarBusinesses,
   cloneEnrichmentData,
   scrapeLinktree,
+  parseSitemap,
 } from './utils.js';
 
 import Business from './models/Business.js';
@@ -355,6 +356,58 @@ async function enrichBusinessData(placeId, options = {}) {
     if (websiteAnalysis.hasThirdPartyDelivery) features.push('3rd Party Delivery');
     sendProgress(`✓ Analysis complete. Found: ${features.length > 0 ? features.join(', ') : 'No special features'}`);
 
+    // Parse sitemap.xml to discover pages
+    console.log(`[Enrichment] Parsing sitemap.xml`);
+    sendProgress('Checking sitemap for additional pages...');
+    const sitemapData = await parseSitemap(website);
+    if (sitemapData.found) {
+      const sitemapInfo = [];
+      if (sitemapData.categorized.locations.length > 0) {
+        sitemapInfo.push(`${sitemapData.categorized.locations.length} location page(s)`);
+      }
+      if (sitemapData.categorized.contact.length > 0) {
+        sitemapInfo.push(`${sitemapData.categorized.contact.length} contact page(s)`);
+      }
+      if (sitemapData.categorized.menu.length > 0) {
+        sitemapInfo.push(`${sitemapData.categorized.menu.length} menu page(s)`);
+      }
+      sendProgress(`✓ Sitemap found: ${sitemapData.urls.length} total URLs (${sitemapInfo.join(', ')})`);
+      
+      // Send detailed URLs as sub-messages
+      if (sitemapData.categorized.locations.length > 0) {
+        sendProgress(`  Locations (${sitemapData.categorized.locations.length}):`);
+        sitemapData.categorized.locations.forEach(url => {
+          sendProgress(`    ${url}`);
+        });
+      }
+      if (sitemapData.categorized.contact.length > 0) {
+        sendProgress(`  Contact (${sitemapData.categorized.contact.length}):`);
+        sitemapData.categorized.contact.forEach(url => {
+          sendProgress(`    ${url}`);
+        });
+      }
+      if (sitemapData.categorized.about.length > 0) {
+        sendProgress(`  About (${sitemapData.categorized.about.length}):`);
+        sitemapData.categorized.about.forEach(url => {
+          sendProgress(`    ${url}`);
+        });
+      }
+      if (sitemapData.categorized.menu.length > 0) {
+        sendProgress(`  Menu (${sitemapData.categorized.menu.length}):`);
+        sitemapData.categorized.menu.forEach(url => {
+          sendProgress(`    ${url}`);
+        });
+      }
+      if (sitemapData.categorized.other.length > 0) {
+        sendProgress(`  Other (${sitemapData.categorized.other.length}):`);
+        sitemapData.categorized.other.forEach(url => {
+          sendProgress(`    ${url}`);
+        });
+      }
+    } else {
+      sendProgress('  No sitemap found');
+    }
+
     // Detect locations from the homepage HTML
     console.log(`[Enrichment] Detecting locations from homepage HTML`);
     sendProgress('Scanning for business locations...');
@@ -362,7 +415,7 @@ async function enrichBusinessData(placeId, options = {}) {
       numLocations: detectedNumLocations, 
       locationNames: detectedLocationNames, 
       usedPuppeteer: detectLocationsUsedPuppeteer 
-    } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode });
+    } = await detectLocations(homepageHtml, website, { noPuppeteer, debugMode, sitemapData });
     
     // Use detected locations if available, otherwise keep default of 1
     if (detectedNumLocations && detectedNumLocations > 0) {
@@ -521,7 +574,24 @@ async function enrichBusinessData(placeId, options = {}) {
     allEmails.push(...extractEmails(homepageHtml));
     
     // Scrape emails from contact/about pages
-    const contactPages = findContactPages(homepageHtml);
+    let contactPages = [];
+    
+    // First, try to use sitemap contact pages if available
+    if (sitemapData && sitemapData.found) {
+      contactPages = [
+        ...sitemapData.categorized.contact,
+        ...sitemapData.categorized.about
+      ];
+      if (contactPages.length > 0) {
+        console.log(`[Enrichment] Using ${contactPages.length} contact/about page(s) from sitemap`);
+      }
+    }
+    
+    // If no sitemap contact pages, fallback to manual detection
+    if (contactPages.length === 0) {
+      contactPages = findContactPages(homepageHtml);
+    }
+    
     if (contactPages.length > 0) {
       console.log(`[Enrichment] Found contact/about pages to scrape:`, contactPages);
       for (const pageUrl of contactPages) {
@@ -531,7 +601,7 @@ async function enrichBusinessData(placeId, options = {}) {
             const { html: pageHtml, usedPuppeteer: pageUsedPuppeteer } = await fetchHtmlWithFallback(pageUrl, { noPuppeteer, debugMode });
             allEmails.push(...extractEmails(pageHtml));
             scrapedPages.add(pageUrl);
-  } catch (error) {
+          } catch (error) {
             console.error(`[Enrichment] Error scraping page ${pageUrl}:`, error.message);
           }
         }
