@@ -1245,11 +1245,12 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
 
   // First, check for location cards/sections on the homepage
   // Look for common patterns: cards, location items, address blocks, etc.
+  // BE CONSERVATIVE: Only look for explicit location-related selectors to avoid false positives
   const locationSelectors = [
     '[data-location-id]', '[data-location]', 
     '.location-item', '.location-card', '.location', '.address-block',
-    '.card', '.sucursal', '.sede', '.local', '.branch', '.store',
-    '[class*="location"]', '[class*="sucursal"]', '[class*="address"]', '[class*="card"]'
+    '.sucursal', '.sede', '.local', '.branch', '.store', '.store-location',
+    '[class*="location"]', '[class*="sucursal"]', '[class*="branch"]', '[class*="store-location"]'
   ];
   
   const locationElements = $(locationSelectors.join(', '));
@@ -1267,11 +1268,22 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
       lines.forEach(line => {
         const hasNumber = /\d+/.test(line);
         const hasCommaOrDelimiter = /[,|]/.test(line);
-        const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|mitre|callao|santa fe|corrientes)/i;
+        // More specific street/avenue keywords to avoid matching city names as street names
+        const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|camino|paseo|boulevard|blvd)/i;
         
-        // If it looks like an address or location name
-        if ((hasNumber && (hasCommaOrDelimiter || addressKeywords.test(line)))) {
-          if (line.length > 10 && line.length < 150) {
+        // Exclude obvious false positives: product names, menu items, short strings, numbers-only
+        const falsePositivePatterns = [
+          /^\d+$/, // Just numbers
+          /^[a-z\s]+$/i, // Just words without structure
+          /(chocolate|vanilla|strawberry|flavor|taste|ingredients|cream|ice|gelato|sorbet|kg|gr|ml|lt)/i, // Food/product terms
+          /^\d+\s*(kg|gr|g|ml|l|lt|oz|lb)/i // Measurements
+        ];
+        
+        const isFalsePositive = falsePositivePatterns.some(pattern => pattern.test(line));
+        
+        // If it looks like an address or location name AND is not a false positive
+        if (!isFalsePositive && (hasNumber && (hasCommaOrDelimiter || addressKeywords.test(line)))) {
+          if (line.length > 15 && line.length < 150) { // Require longer text for valid addresses
             locationSet.add(line);
           }
         }
@@ -1279,7 +1291,7 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
       
       // Also check for data attributes
       const locationId = $el.attr('data-location-id') || $el.attr('data-location');
-      if (locationId && locationId.length > 2 && locationId.length < 100) {
+      if (locationId && locationId.length > 2 && locationId.length < 100 && !/^[0-9]+$/.test(locationId)) {
         locationSet.add(locationId);
       }
     });
@@ -1331,12 +1343,11 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
       const $$ = cheerio.load(locationsPageHtml);
       
       // Strategy 1: Look for location/address cards and sections
-      // Common patterns: card, location, address, sucursal (Spanish for branch), sede, local
+      // BE CONSERVATIVE: Only look for explicit location-related selectors
       const locationSelectors = [
-        '.card', '.location', '.location-card', '.location-item', '.address', '.address-block',
+        '.location', '.location-card', '.location-item', '.address', '.address-block',
         '.sucursal', '.sede', '.local', '.branch', '.store', '.store-location',
-        '[class*="location"]', '[class*="sucursal"]', '[class*="address"]', '[class*="store"]',
-        '.elementor-column', '.elementor-widget-wrap'
+        '[class*="location"]', '[class*="sucursal"]', '[class*="branch"]', '[class*="store-location"]'
       ];
       
       $$(locationSelectors.join(', ')).each((i, el) => {
@@ -1355,6 +1366,14 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
         // - "123 Main St, New York, NY 10001"
         const lines = elementText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
         
+        // Exclude obvious false positives
+        const falsePositivePatterns = [
+          /^\d+$/, // Just numbers
+          /^[a-z\s]+$/i, // Just words without structure
+          /(chocolate|vanilla|strawberry|flavor|taste|ingredients|cream|ice|gelato|sorbet|kg|gr|ml|lt)/i, // Food/product terms
+          /^\d+\s*(kg|gr|g|ml|l|lt|oz|lb)/i // Measurements
+        ];
+        
         // Look for lines that look like addresses (contain numbers and commas, or typical address keywords)
         lines.forEach(line => {
           // Check if line contains address-like patterns
@@ -1362,9 +1381,11 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
           const hasCommaOrDelimiter = /[,|]/.test(line);
           const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|camino|paseo|boulevard|blvd)/i;
           
+          const isFalsePositive = falsePositivePatterns.some(pattern => pattern.test(line));
+          
           // If it looks like an address or location name, add it
-          if ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line)) {
-            if (line.length > 10 && line.length < 150) { // Reasonable length
+          if (!isFalsePositive && ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line))) {
+            if (line.length > 15 && line.length < 150) { // Require longer text for valid addresses
               locationSet.add(line);
             }
           }
@@ -1561,10 +1582,18 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
     console.log(`[PlaceDetails] No locations page link found. Analyzing homepage for location details.`);
     
     // Try to find location sections on the homepage itself
+    // BE CONSERVATIVE: Only look for explicit location-related selectors
     const locationSelectors = [
-      '.card', '.location', '.location-card', '.location-item', '.address', '.address-block',
+      '.location', '.location-card', '.location-item', '.address', '.address-block',
       '.sucursal', '.sede', '.local', '.branch', '.store', '.store-location',
-      '[class*="location"]', '[class*="sucursal"]', '[class*="address"]', '[class*="store"]'
+      '[class*="location"]', '[class*="sucursal"]', '[class*="branch"]', '[class*="store-location"]'
+    ];
+    
+    const falsePositivePatterns = [
+      /^\d+$/, // Just numbers
+      /^[a-z\s]+$/i, // Just words without structure
+      /(chocolate|vanilla|strawberry|flavor|taste|ingredients|cream|ice|gelato|sorbet|kg|gr|ml|lt)/i, // Food/product terms
+      /^\d+\s*(kg|gr|g|ml|l|lt|oz|lb)/i // Measurements
     ];
     
     $(locationSelectors.join(', ')).each((i, el) => {
@@ -1576,8 +1605,10 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
         const hasCommaOrDelimiter = /[,|]/.test(line);
         const addressKeywords = /(av\.|avenue|street|st\.|calle|avenida|ruta|route|camino|paseo|boulevard|blvd)/i;
         
-        if ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line)) {
-          if (line.length > 10 && line.length < 150) {
+        const isFalsePositive = falsePositivePatterns.some(pattern => pattern.test(line));
+        
+        if (!isFalsePositive && ((hasNumber && hasCommaOrDelimiter) || addressKeywords.test(line))) {
+          if (line.length > 15 && line.length < 150) { // Require longer text for valid addresses
             locationSet.add(line);
           }
         }
@@ -1598,7 +1629,7 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
         if (matches) {
           matches.forEach(match => {
             const cleaned = match.trim();
-            if (cleaned.length > 10 && cleaned.length < 150) {
+            if (cleaned.length > 15 && cleaned.length < 150) { // Require longer text
               locationSet.add(cleaned);
             }
           });
@@ -1682,6 +1713,14 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   }
   
   console.log(`[PlaceDetails] Found ${uniqueLocations.length} valid locations (after filtering):`, uniqueLocations);
+  
+  // CRITICAL: If we only found 1 location, it's likely just the main business address, not a multi-location business
+  // Return 1 location only if we're confident it's a multi-location business (had a locations page)
+  if (uniqueLocations.length === 1 && !hasLocationsPage) {
+    console.log(`[PlaceDetails] Only found 1 location without a dedicated locations page - likely the main business address. Returning 1 location.`);
+    return { numLocations: 1, locationNames: [], hasLocationsPage: false, usedPuppeteer };
+  }
+  
   return { numLocations: uniqueLocations.length, locationNames: uniqueLocations, hasLocationsPage, usedPuppeteer };
 };
 
