@@ -69,7 +69,7 @@ const PlacesPage: React.FC = () => {
   // Filter states
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
-  const [ratingFilter, setRatingFilter] = useState('');
+  const [countryFilter, setCountryFilter] = useState('');
   const [enrichedFilter, setEnrichedFilter] = useState('');
   const [icpScoreFilter, setIcpScoreFilter] = useState('');
   
@@ -194,7 +194,7 @@ const PlacesPage: React.FC = () => {
 
   useEffect(() => {
     applyFilters();
-  }, [places, searchTerm, typeFilter, ratingFilter, enrichedFilter, icpScoreFilter, sortField, sortDirection]);
+  }, [places, searchTerm, typeFilter, countryFilter, enrichedFilter, icpScoreFilter, sortField, sortDirection]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -748,7 +748,7 @@ const PlacesPage: React.FC = () => {
     console.log('[PlacesPage] Applying filters:', {
       searchTerm,
       typeFilter,
-      ratingFilter,
+      countryFilter,
       enrichedFilter,
       icpScoreFilter,
       totalPlaces: places.length
@@ -777,12 +777,11 @@ const PlacesPage: React.FC = () => {
       console.log(`[PlacesPage] Type filter: ${beforeType} -> ${filtered.length} results`);
     }
 
-    // Rating filter
-    if (ratingFilter) {
-      const rating = parseFloat(ratingFilter);
-      const beforeRating = filtered.length;
-      filtered = filtered.filter(place => place.rating && place.rating >= rating);
-      console.log(`[PlacesPage] Rating filter: ${beforeRating} -> ${filtered.length} results`);
+    // Country filter
+    if (countryFilter) {
+      const beforeCountry = filtered.length;
+      filtered = filtered.filter(place => place.country === countryFilter);
+      console.log(`[PlacesPage] Country filter: ${beforeCountry} -> ${filtered.length} results`);
     }
 
     // Enriched filter
@@ -1065,6 +1064,16 @@ const PlacesPage: React.FC = () => {
       place.types?.forEach(type => types.add(type));
     });
     return Array.from(types).sort();
+  };
+
+  const getUniqueCountries = () => {
+    const countries = new Set<string>();
+    places.forEach(place => {
+      if (place.country) {
+        countries.add(place.country);
+      }
+    });
+    return Array.from(countries).sort();
   };
 
   const openDecisionMakersModal = (place: Place) => {
@@ -1379,21 +1388,20 @@ const PlacesPage: React.FC = () => {
               </select>
             </div>
 
-            {/* Rating Filter */}
+            {/* Country Filter */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Min Rating
+                Country
               </label>
               <select
-                value={ratingFilter}
-                onChange={(e) => setRatingFilter(e.target.value)}
+                value={countryFilter}
+                onChange={(e) => setCountryFilter(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="">Any Rating</option>
-                <option value="4.5">4.5+</option>
-                <option value="4.0">4.0+</option>
-                <option value="3.5">3.5+</option>
-                <option value="3.0">3.0+</option>
+                <option value="">All Countries</option>
+                {getUniqueCountries().map(country => (
+                  <option key={country} value={country}>{country}</option>
+                ))}
               </select>
             </div>
 
