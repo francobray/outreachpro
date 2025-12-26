@@ -1629,7 +1629,17 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
         if (matches) {
           matches.forEach(match => {
             const cleaned = match.trim();
-            if (cleaned.length > 15 && cleaned.length < 150) { // Require longer text
+            
+            // Filter out obvious false positives immediately
+            const isFalsePositive = 
+              /^\d+\s*porciones/i.test(cleaned) ||  // Starts with "X PORCIONES"
+              /^\d{4}\s/i.test(cleaned) ||  // Starts with 4-digit year
+              /^\d+\s*(años|years)/i.test(cleaned) ||  // Starts with "X años"
+              /helado|gelato|chocolate|chantilly|cerezas|almendras|pionono/i.test(cleaned) ||  // Food terms
+              /decorada|elaborado|rectangular|barra/i.test(cleaned) ||  // Product description
+              /tradición|familia|región|artesanos|recetas/i.test(cleaned);  // Historical text
+            
+            if (!isFalsePositive && cleaned.length > 15 && cleaned.length < 150) {
               locationSet.add(cleaned);
             }
           });
@@ -1645,34 +1655,56 @@ export const detectLocations = async (html, baseUrl, options = {}) => {
   const validLocations = locations.filter(loc => {
     const lower = loc.toLowerCase();
     
+    // 0. CRITICAL FIRST CHECK: If text starts with a number followed by "porciones" or contains obvious product terms, reject immediately
+    if (/^\d+\s*porciones/i.test(loc)) {
+      console.log(`[PlaceDetails] Filtering out (starts with porciones): ${loc.substring(0, 50)}...`);
+      return false;
+    }
+    
+    if (/^\d{4}\s/i.test(loc)) { // Starts with 4-digit year
+      console.log(`[PlaceDetails] Filtering out (starts with year): ${loc.substring(0, 50)}...`);
+      return false;
+    }
+    
+    if (/^\d+\s*(años|years)/i.test(loc)) { // Starts with age/years
+      console.log(`[PlaceDetails] Filtering out (starts with años/years): ${loc.substring(0, 50)}...`);
+      return false;
+    }
+    
     // 1. Filter out product/menu descriptions (portions, servings, food items)
     const productPatterns = [
-      /\d+\s*porciones/i, // "8 PORCIONES", "12 PORCIONES"
-      /\d+\s*servings/i,
-      /\d+\s*persons/i,
-      /\d+\s*personas/i,
-      /(barra|rectangular|decorada|elaborado|fina capa)/i, // Product description terms
-      /(helado|ice cream|gelato|sorbet|cremolada)/i, // Ice cream terms
-      /(chocolate|vainilla|vanilla|frutilla|strawberry|cereza|cherry|dulce de leche|almendras|almonds|chantilly|crema|cream)/i, // Flavors/ingredients
-      /(pionono|bizcocho|cake|torta)/i, // Cake/dessert terms
-      /decorada con/i, // "decorada con chocolate"
-      /corazón de/i // "corazón de chocolate"
+      /porciones/i, // Any mention of portions
+      /servings/i,
+      /barra\s+rectangular/i, // "barra rectangular"
+      /decorada\s+con/i, // "decorada con chocolate"
+      /elaborado\s+con/i, // "elaborado con"
+      /helado\s+de\s+(crema|vainilla|chocolate|dulce)/i, // "helado de crema/vainilla/etc"
+      /corazón\s+de\s+chocolate/i, // "corazón de chocolate"
+      /fina\s+capa\s+de/i, // "fina capa de"
+      /pionono\s+borracho/i, // "pionono borracho"
+      /chantilly/i, // chantilly cream
+      /cerezas\s+y\s+almendras/i // specific dessert decorations
     ];
     if (productPatterns.some(pattern => pattern.test(lower))) {
+      console.log(`[PlaceDetails] Filtering out (product pattern): ${loc.substring(0, 50)}...`);
       return false; // This is a product/menu description
     }
     
     // 2. Filter out historical/about us text
     const historicalPatterns = [
-      /^\d{4}\s/i, // Starts with year like "1957"
-      /\d+\s*(años|years|generaciones|generations)/i, // "70 años", "tres generaciones"
-      /(tradición|tradition|historia|history|familia|family|comienza|comenzó|started|founded)/i,
-      /(artesanos|craftsmen|trabajaron|worked|utilizando|using|recetas|recipes)/i,
-      /(región|region|norte|sur|este|oeste|north|south|east|west)\s+(de|of)/i, // Geographic descriptions in stories
-      /se encuentra a unos/i,
-      /se habían pasado/i
+      /tradición\s+comienza/i, // "tradición comienza"
+      /familia\s+\w+\s+en\s+la\s+región/i, // "familia X en la región"
+      /generaciones\s+de\s+artesanos/i, // "generaciones de artesanos"
+      /trabajaron\s+en\s+la/i, // "trabajaron en la"
+      /utilizando\s+recetas/i, // "utilizando recetas"
+      /recetas\s+familiares/i, // "recetas familiares"
+      /se\s+habían\s+pasado/i, // "se habían pasado"
+      /se\s+encuentra\s+a\s+unos/i, // "se encuentra a unos"
+      /conocida\s+como/i, // "conocida como"
+      /norte\s+de\s+italia/i // "norte de Italia"
     ];
     if (historicalPatterns.some(pattern => pattern.test(lower))) {
+      console.log(`[PlaceDetails] Filtering out (historical pattern): ${loc.substring(0, 50)}...`);
       return false; // This is historical/about us text
     }
     

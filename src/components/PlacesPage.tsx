@@ -70,7 +70,6 @@ const PlacesPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [ratingFilter, setRatingFilter] = useState('');
-  const [locationFilter, setLocationFilter] = useState('');
   const [enrichedFilter, setEnrichedFilter] = useState('');
   const [icpScoreFilter, setIcpScoreFilter] = useState('');
   
@@ -195,7 +194,7 @@ const PlacesPage: React.FC = () => {
 
   useEffect(() => {
     applyFilters();
-  }, [places, searchTerm, typeFilter, ratingFilter, locationFilter, enrichedFilter, icpScoreFilter, sortField, sortDirection]);
+  }, [places, searchTerm, typeFilter, ratingFilter, enrichedFilter, icpScoreFilter, sortField, sortDirection]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -750,7 +749,6 @@ const PlacesPage: React.FC = () => {
       searchTerm,
       typeFilter,
       ratingFilter,
-      locationFilter,
       enrichedFilter,
       icpScoreFilter,
       totalPlaces: places.length
@@ -785,17 +783,6 @@ const PlacesPage: React.FC = () => {
       const beforeRating = filtered.length;
       filtered = filtered.filter(place => place.rating && place.rating >= rating);
       console.log(`[PlacesPage] Rating filter: ${beforeRating} -> ${filtered.length} results`);
-    }
-
-    // Location filter
-    if (locationFilter) {
-      const beforeLocation = filtered.length;
-      filtered = filtered.filter(place =>
-        place.locationNames?.some(location => 
-          location.toLowerCase().includes(locationFilter.toLowerCase())
-        )
-      );
-      console.log(`[PlacesPage] Location filter: ${beforeLocation} -> ${filtered.length} results`);
     }
 
     // Enriched filter
@@ -1080,14 +1067,6 @@ const PlacesPage: React.FC = () => {
     return Array.from(types).sort();
   };
 
-  const getUniqueLocations = () => {
-    const locations = new Set<string>();
-    places.forEach(place => {
-      place.locationNames?.forEach(location => locations.add(location));
-    });
-    return Array.from(locations).sort();
-  };
-
   const openDecisionMakersModal = (place: Place) => {
     setSelectedPlace(place);
     setIsModalOpen(true);
@@ -1367,7 +1346,7 @@ const PlacesPage: React.FC = () => {
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
             {/* Search */}
-            <div>
+            <div className="lg:col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Search
               </label>
@@ -1434,23 +1413,6 @@ const PlacesPage: React.FC = () => {
                 <option value="high">High (≥7)</option>
                 <option value="medium">Medium (5-7)</option>
                 <option value="low">Low (&lt;5)</option>
-              </select>
-            </div>
-
-            {/* Location Filter */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Location
-              </label>
-              <select
-                value={locationFilter}
-                onChange={(e) => setLocationFilter(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">All Locations</option>
-                {getUniqueLocations().map(location => (
-                  <option key={location} value={location}>{location}</option>
-                ))}
               </select>
             </div>
 
@@ -2484,17 +2446,6 @@ const PlacesPage: React.FC = () => {
               })()}
             </div>
           </div>
-          
-          {enrichmentProgress.currentStep === enrichmentProgress.totalSteps && (
-            <div className="mt-4 flex justify-center flex-shrink-0">
-              <button
-                onClick={() => setEnrichmentProgress({ isOpen: false, businessName: '', messages: [], currentStep: 0, totalSteps: 6 })}
-                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
-              >
-                Close
-              </button>
-            </div>
-          )}
         </div>
       </div>
     )}
